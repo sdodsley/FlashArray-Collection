@@ -387,6 +387,7 @@ def copy_from_volume(module, array):
     """Create Volume Clone"""
     changed = True
     if not module.check_mode:
+        changed = False
         volfact = []
         tgt = get_target(module, array)
 
@@ -394,6 +395,7 @@ def copy_from_volume(module, array):
             try:
                 volfact = array.copy_volume(module.params['name'],
                                             module.params['target'])
+                changed = True
             except Exception:
                 module.fail_json(msg='Copy volume {0} to volume {1} failed.'.format(module.params['name'],
                                                                                     module.params['target']))
@@ -402,6 +404,7 @@ def copy_from_volume(module, array):
                 volfact = array.copy_volume(module.params['name'],
                                             module.params['target'],
                                             overwrite=module.params['overwrite'])
+                changed = True
             except Exception:
                 module.fail_json(msg='Copy volume {0} to volume {1} failed.'.format(module.params['name'],
                                                                                     module.params['target']))
