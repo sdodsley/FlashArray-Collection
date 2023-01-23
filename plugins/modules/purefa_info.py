@@ -1438,7 +1438,7 @@ def generate_host_dict(module, array):
             host_info[hostname]["preferred_array"] = hosts[host]["preferred_array"]
     if VLAN_VERSION in api_version:
         arrayv6 = get_array(module)
-        hosts = list(arrayv6.get_hosts())
+        hosts = list(arrayv6.get_hosts().items)
         for host in range(0, len(hosts)):
             hostname = hosts.item[host].name
             host_info[hostname]["vlan"] = getattr(hosts[host], "vlan", None)
