@@ -421,7 +421,9 @@ def main():
         )
     else:
         app_state = list(res.items)[0]
-        if LooseVersion(app_state.version) != LooseVersion(array.get_rest_version()):
+        if LooseVersion(app_state.version) != LooseVersion(
+            list(array.get_arrays().items)[0].version
+        ):
             module.fail_json(
                 msg="Offload app version must match Purity version. Please upgrade."
             )
