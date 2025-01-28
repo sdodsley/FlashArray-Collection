@@ -81,6 +81,7 @@ options:
     - This requires the array receiving the request is a member of a fleet
       and the context name to be a member of the same fleet.
     type: str
+    default: ""
     version_added: '1.33.0'
 extends_documentation_fragment:
 - purestorage.flasharray.purestorage.fa
@@ -774,7 +775,7 @@ def main():
                 default="present",
                 choices=["absent", "copy", "present", "rename"],
             ),
-            context=dict(type="str"),
+            context=dict(type="str", default=""),
         )
     )
 
