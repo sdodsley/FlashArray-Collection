@@ -113,6 +113,7 @@ options:
     - This requires the array receiving the request is a member of a fleet
       and the context name to be a member of the same fleet.
     type: str
+    default: ""
     version_added: '1.33.0'
 extends_documentation_fragment:
 - purestorage.flasharray.purestorage.fa
@@ -911,7 +912,7 @@ def main():
             ),
             with_default_protection=dict(type="bool", default=True),
             add_to_pgs=dict(type="list", elements="str"),
-            context=dict(type="str"),
+            context=dict(type="str", default=""),
         )
     )
 
