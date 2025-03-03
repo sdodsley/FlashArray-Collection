@@ -670,13 +670,20 @@ def restore_pgsnapvolume(module, array):
                             overwrite=module.params["overwrite"],
                         )
                 else:
-                    res = array.post_volumes(
-                        names=[module.params["target"]],
-                        volume=VolumePost(source=Reference(name=source_volume)),
-                        with_default_protection=module.params[
-                            "with_default_protection"
-                        ],
-                    )
+                    if module.params["overwrite"]:
+                        res = array.post_volumes(
+                            names=[module.params["target"]],
+                            volume=VolumePost(source=Reference(name=source_volume)),
+                            overwrite=module.params["overwrite"],
+                        )
+                    else:
+                        res = array.post_volumes(
+                            names=[module.params["target"]],
+                            volume=VolumePost(source=Reference(name=source_volume)),
+                            with_default_protection=module.params[
+                                "with_default_protection"
+                            ],
+                        )
         else:
             res = array.post_volumes(
                 names=[module.params["target"]],
@@ -917,7 +924,11 @@ def main():
     )
 
     required_if = [("state", "copy", ["suffix", "restore"])]
-    mutually_exclusive = [["now", "remote"]]
+    mutually_exclusive = [
+        ["now", "remote"],
+        ["overwrite", "add_to_pgs"],
+        ["overwrite", "with_default_protection"],
+    ]
 
     module = AnsibleModule(
         argument_spec,
