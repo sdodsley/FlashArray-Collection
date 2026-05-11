@@ -73,6 +73,7 @@ from plugins.modules.purefa_info import (
     generate_vmsnap_dict,
     generate_subs_dict,
     generate_fleet_dict,
+    generate_tgroups_dict,
     generate_preset_dict,
     generate_workload_dict,
     generate_realms_dict,
@@ -510,6 +511,34 @@ class TestMain:
         mock_module.exit_json.assert_called_once()
         call_args = mock_module.exit_json.call_args[1]
         assert "admins" in call_args["purefa_info"]
+
+    @patch("plugins.modules.purefa_info.LooseVersion")
+    @patch("plugins.modules.purefa_info.generate_tgroups_dict")
+    @patch("plugins.modules.purefa_info.get_array")
+    @patch("plugins.modules.purefa_info.AnsibleModule")
+    def test_main_tgroups_subset(
+        self, mock_ansible_module, mock_get_array, mock_gen_tgroups, mock_loose_version
+    ):
+        """Test main with tgroups subset"""
+        mock_loose_version.side_effect = float
+        mock_module = Mock()
+        mock_module.params = {
+            "gather_subset": ["tgroups"],
+        }
+        mock_ansible_module.return_value = mock_module
+
+        mock_array = Mock()
+        mock_array.get_rest_version.return_value = "2.54"
+        mock_get_array.return_value = mock_array
+
+        mock_gen_tgroups.return_value = {"app-stack": {"arrays": [], "tgroups": []}}
+
+        main()
+
+        mock_gen_tgroups.assert_called_once_with(mock_array)
+        mock_module.exit_json.assert_called_once()
+        call_args = mock_module.exit_json.call_args[1]
+        assert "tgroups" in call_args["purefa_info"]
 
 
 class TestGenerateDefaultDict:
@@ -1492,6 +1521,59 @@ class TestGenerateFleetDict:
 
         assert "test-fleet" in result
         assert "members" in result["test-fleet"]
+
+
+class TestGenerateTgroupsDict:
+    """Test cases for generate_tgroups_dict function"""
+
+    def test_generate_tgroups_dict_success(self):
+        """Test topology groups dict generation"""
+        from types import SimpleNamespace
+
+        mock_array = Mock()
+
+        mock_tgroup = SimpleNamespace(
+            name="app-stack",
+            id="tg-1",
+            context=SimpleNamespace(name="array-a"),
+            parent_topology_group=SimpleNamespace(name="parent-stack"),
+        )
+        array_member = SimpleNamespace(
+            topology_group=SimpleNamespace(name="app-stack"),
+            member=SimpleNamespace(name="array-b", resource_type="remote-arrays"),
+            status="joined",
+            status_details="",
+        )
+        child_member = SimpleNamespace(
+            topology_group=SimpleNamespace(name="app-stack"),
+            member=SimpleNamespace(
+                name="app-stack-dev", resource_type="topology-groups"
+            ),
+            status="joined",
+            status_details="",
+        )
+
+        mock_array.get_topology_groups.return_value = Mock(items=[mock_tgroup])
+        mock_array.get_topology_groups_members.return_value = Mock(
+            items=[array_member, child_member]
+        )
+
+        result = generate_tgroups_dict(mock_array)
+
+        assert "app-stack" in result
+        assert result["app-stack"]["id"] == "tg-1"
+        assert result["app-stack"]["context"] == "array-a"
+        assert result["app-stack"]["parent_topology_group"] == "parent-stack"
+        assert result["app-stack"]["arrays"] == [
+            {"name": "array-b", "status": "joined", "status_details": ""}
+        ]
+        assert result["app-stack"]["tgroups"] == [
+            {
+                "name": "app-stack-dev",
+                "status": "joined",
+                "status_details": "",
+            }
+        ]
 
 
 class TestGeneratePresetDict:
