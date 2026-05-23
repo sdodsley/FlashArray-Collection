@@ -155,6 +155,7 @@ All modules are idempotent with the exception of modules that change or set pass
 - purefa_subnet - manage network subnets on the FlashArray
 - purefa_syslog - manage the Syslog settings on the FlashArray
 - purefa_syslog_settings - manage the global syslog server settings on the FlashArray
+- purefa_tgroup - manage topology groups and their memberships on the FlashArray
 - purefa_token - manage FlashArray user API tokens
 - purefa_timeout - manage the GUI idle timeout on the FlashArray
 - purefa_user - manage local user accounts on the FlashArray

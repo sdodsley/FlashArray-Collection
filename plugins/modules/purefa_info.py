@@ -35,8 +35,8 @@ options:
         capacity, network, subnet, interfaces, hgroups, pgroups, hosts,
         admins, volumes, snapshots, pods, replication, vgroups, offload, apps,
         arrays, certs, kmip, clients, policies, dir_snaps, filesystems,
-        alerts, virtual_machines, subscriptions, realms, fleet, presets and
-        workloads.
+        alerts, virtual_machines, subscriptions, realms, fleet, presets,
+        workloads and tgroups.
     type: list
     elements: str
     required: false
@@ -123,6 +123,7 @@ DSROLE_POLICY_API_VERSION = "2.36"
 CONTEXT_API_VERSION = "2.38"
 QUOTA_API_VERSION = "2.42"
 TAGS_API_VERSION = "2.39"
+TGROUP_API_VERSION = "2.54"
 
 
 def _is_cbs(array):
@@ -3009,6 +3010,41 @@ def generate_fleet_dict(array):
     return fleet_info
 
 
+def generate_tgroups_dict(array):
+    tgroups_info = {}
+    tgroups = list(array.get_topology_groups().items)
+    for tgroup in tgroups:
+        tgroups_info[tgroup.name] = {
+            "id": getattr(tgroup, "id", None),
+            "context": tgroup.context.name,
+            "parent_topology_group": tgroup.parent_topology_group.name,
+            "arrays": [],
+            "tgroups": [],
+        }
+
+    if not tgroups_info:
+        return tgroups_info
+
+    members = list(array.get_topology_groups_members().items)
+    for member in members:
+        group_name = member.topology_group.name
+        member_ref = member.member
+        member_name = member_ref.name
+        member_type = member_ref.resource_type
+        if group_name not in tgroups_info or not member_name:
+            continue
+        member_info = {
+            "name": member_name,
+            "status": member.status,
+            "status_details": member.status_details,
+        }
+        if member_type == "remote-arrays":
+            tgroups_info[group_name]["arrays"].append(member_info)
+        elif member_type == "topology-groups":
+            tgroups_info[group_name]["tgroups"].append(member_info)
+    return tgroups_info
+
+
 def generate_preset_dict(array):
 
     def to_plain(value):
@@ -3249,6 +3285,7 @@ def main():
         "fleet",
         "presets",
         "workloads",
+        "tgroups",
     )
     subset_test = (test in valid_subsets for test in subset)
     if not all(subset_test):
@@ -3349,6 +3386,10 @@ def main():
             info["presets"] = generate_preset_dict(array)
         if "workloads" in subset or "all" in subset:
             info["workloads"] = generate_workload_dict(array)
+    if LooseVersion(TGROUP_API_VERSION) <= LooseVersion(api_version) and (
+        "tgroups" in subset or "all" in subset
+    ):
+        info["tgroups"] = generate_tgroups_dict(array)
     module.exit_json(changed=False, purefa_info=info)
 
 
