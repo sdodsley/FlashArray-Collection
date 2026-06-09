@@ -143,6 +143,12 @@ def remove(duplicate):
     return final_list
 
 
+def _get_dns_field(config, field):
+    if isinstance(config, dict):
+        return config.get(field)
+    return getattr(config, field, None)
+
+
 def _get_source(module, array):
     res = get_with_context(
         array,
@@ -181,13 +187,19 @@ def delete_dns(module, array):
 def create_dns(module, array):
     """Set DNS settings"""
     changed = False
-    current_dns = list(array.get_dns().items)[0]
-    if current_dns["domain"] != module.params["domain"] or sorted(
+    current_dns = list(
+        get_with_context(array, "get_dns", CONTEXT_API_VERSION, module).items
+    )[0]
+    if _get_dns_field(current_dns, "domain") != module.params["domain"] or sorted(
         module.params["nameservers"]
-    ) != sorted(current_dns["nameservers"]):
+    ) != sorted(_get_dns_field(current_dns, "nameservers") or []):
         changed = True
         if not module.check_mode:
-            res = array.patch_dns(
+            res = get_with_context(
+                array,
+                "patch_dns",
+                CONTEXT_API_VERSION,
+                module,
                 names=["management"],
                 dns=DnsPatch(
                     domain=module.params["domain"],
@@ -337,13 +349,21 @@ def main():
     state = module.params["state"]
     array = get_array(module)
     api_version = array.get_rest_version()
+    if module.params["context"] and LooseVersion(CONTEXT_API_VERSION) > LooseVersion(
+        api_version
+    ):
+        module.fail_json(
+            msg=f"`context` requires REST API version {CONTEXT_API_VERSION} or higher for DNS operations"
+        )
     if module.params["nameservers"]:
         module.params["nameservers"] = remove(module.params["nameservers"])
         if module.params["service"] == "management":
             module.params["nameservers"] = module.params["nameservers"][0:3]
 
     if LooseVersion(MULTIPLE_DNS) <= LooseVersion(api_version):
-        configs = list(array.get_dns().items)
+        configs = list(
+            get_with_context(array, "get_dns", CONTEXT_API_VERSION, module).items
+        )
         exists = False
         for config in configs:
             if config.name == module.params["name"]:

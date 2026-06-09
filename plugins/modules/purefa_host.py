@@ -377,6 +377,7 @@ from ansible_collections.purestorage.flasharray.plugins.module_utils.version imp
 from ansible_collections.purestorage.flasharray.plugins.module_utils.api_helpers import (
     get_with_context,
     check_response,
+    get_cached_api_version,
 )
 
 VLAN_API_VERSION = "2.16"
@@ -443,15 +444,7 @@ def _set_host_initiators(module, array):
 
 def _update_host_initiators(module, array, answer=False):
     """Change host initiator if iscsi or nvme or add new FC WWNs"""
-    current_connectors = list(
-        get_with_context(
-            array,
-            "get_hosts",
-            CONTEXT_API_VERSION,
-            module,
-            names=[module.params["name"]],
-        ).items
-    )[0]
+    current_connectors = get_host(module, array)
     if module.params["nqn"]:
         if module.params["nqn"] != [""]:
             if sorted(current_connectors.nqns) != sorted(module.params["nqn"]):
@@ -683,15 +676,7 @@ def _set_chap_security(module, array):
 def _update_chap_security(module, array, answer=False):
     """Change CHAP usernames and passwords"""
     pattern = re.compile("[^ ]{12,255}")
-    chap = list(
-        get_with_context(
-            array,
-            "get_hosts",
-            CONTEXT_API_VERSION,
-            module,
-            names=[module.params["name"]],
-        ).items
-    )[0].chap
+    chap = get_host(module, array).chap
     if module.params["host_user"]:
         if module.params["host_password"] == "clear":
             if hasattr(chap, "host_user"):
@@ -775,15 +760,7 @@ def _update_chap_security(module, array, answer=False):
 
 def _update_host_personality(module, array, answer=False):
     """Change host personality"""
-    host = list(
-        get_with_context(
-            array,
-            "get_hosts",
-            CONTEXT_API_VERSION,
-            module,
-            names=[module.params["name"]],
-        ).items
-    )[0]
+    host = get_host(module, array)
     if not hasattr(host, "personality") and module.params["personality"] != "delete":
         answer = True
         if not module.check_mode:
@@ -826,15 +803,7 @@ def _update_host_personality(module, array, answer=False):
 
 def _update_preferred_array(module, array, answer=False):
     """Update existing preferred array list"""
-    preferred_array = list(
-        get_with_context(
-            array,
-            "get_hosts",
-            CONTEXT_API_VERSION,
-            module,
-            names=[module.params["name"]],
-        ).items
-    )[0].preferred_arrays
+    preferred_array = get_host(module, array).preferred_arrays
     if preferred_array == [] and module.params["preferred_array"] != ["delete"]:
         answer = True
         preferred_array_list = []
@@ -916,19 +885,7 @@ def _set_vlan(module, array):
 
 def _update_vlan(module, array):
     changed = False
-    host_vlan = getattr(
-        list(
-            get_with_context(
-                array,
-                "get_hosts",
-                CONTEXT_API_VERSION,
-                module,
-                names=[module.params["name"]],
-            ).items
-        )[0],
-        "vlan",
-        None,
-    )
+    host_vlan = getattr(get_host(module, array), "vlan", None)
     if module.params["vlan"] != host_vlan:
         changed = True
         if not module.check_mode:
@@ -960,38 +917,34 @@ def get_multi_hosts(module, array):
             hosts.append(
                 module.params["name"] + str(host_num).zfill(module.params["digits"])
             )
-    res = get_with_context(array, "get_hosts", CONTEXT_API_VERSION, module, names=hosts)
-    return bool(res.status_code == 200)
+    return len(_get_hosts(module, array, hosts)) == len(hosts)
+
+
+def _get_hosts(module, array, names):
+    res = get_with_context(
+        array,
+        "get_hosts",
+        CONTEXT_API_VERSION,
+        module,
+        names=names,
+        allow_errors=True,
+    )
+    return list(getattr(res, "items", []) or [])
+
+
+def _get_named_host(module, array, name):
+    hosts = _get_hosts(module, array, [name])
+    return hosts[0] if hosts else None
 
 
 def get_host(module, array):
     """Return host or None"""
-    host = None
-    res = get_with_context(
-        array,
-        "get_hosts",
-        CONTEXT_API_VERSION,
-        module,
-        names=[module.params["name"]],
-    )
-    if res.status_code == 200:
-        host = list(res.items)[0]
-    return host
+    return _get_named_host(module, array, module.params["name"])
 
 
 def rename_exists(module, array):
     """Determine if rename target already exists"""
-    exists = False
-    res = get_with_context(
-        array,
-        "get_hosts",
-        CONTEXT_API_VERSION,
-        module,
-        names=[module.params["rename"]],
-    )
-    if res.status_code == 200:
-        exists = True
-    return exists
+    return _get_named_host(module, array, module.params["rename"]) is not None
 
 
 def make_multi_hosts(module, array):
@@ -1079,11 +1032,6 @@ def update_host(module, array):
     renamed = False
     vol_changed = False
     vlan_changed = False
-    # Need api_version for VLAN_API_VERSION check
-    from ansible_collections.purestorage.flasharray.plugins.module_utils.api_helpers import (
-        get_cached_api_version,
-    )
-
     api_version = get_cached_api_version(array)
     if module.params["state"] == "present":
         if (
@@ -1169,16 +1117,10 @@ def delete_host(module, array):
     """Delete a host"""
     changed = True
     if not module.check_mode:
-        host_res = get_with_context(
-            array,
-            "get_hosts",
-            CONTEXT_API_VERSION,
-            module,
-            names=[module.params["name"]],
-        )
-        has_hg = hasattr(list(host_res.items)[0].host_group, "name")
+        host_res = get_host(module, array)
+        has_hg = hasattr(host_res.host_group, "name")
         if has_hg:
-            host_group_name = list(host_res.items)[0].host_group.name
+            host_group_name = host_res.host_group.name
             res = get_with_context(
                 array,
                 "delete_host_groups_hosts",
@@ -1239,15 +1181,7 @@ def move_host(module, array):
         module.fail_json(msg="host must be provided with current realm name")
     # if "::" in module.params["name"]:
     #    current_realm = module.params["name"].split("::")[0]
-    current_connections = list(
-        get_with_context(
-            array,
-            "get_hosts",
-            CONTEXT_API_VERSION,
-            module,
-            names=[module.params["name"]],
-        ).items
-    )[0].connection_count
+    current_connections = get_host(module, array).connection_count
     if current_connections > 0:
         module.fail_json(msg="Hosts cannot be moved with existing volume connections.")
     changed = True
@@ -1376,11 +1310,6 @@ def main():
             msg="py-pure-client sdk is required to support 'vlan' parameter"
         )
     array = get_array(module)
-    # Need api_version for VLAN_API_VERSION check
-    from ansible_collections.purestorage.flasharray.plugins.module_utils.api_helpers import (
-        get_cached_api_version,
-    )
-
     api_version = get_cached_api_version(array)
     pattern = re.compile("^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$")
     if module.params["rename"]:
