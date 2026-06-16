@@ -96,6 +96,7 @@ class TestGetHost:
         result = get_host(mock_module, mock_array)
 
         assert result == mock_host
+        assert mock_get_with_context.call_args.kwargs["allow_errors"] is True
 
     @patch("plugins.modules.purefa_host.get_with_context")
     def test_get_host_not_exists(self, mock_get_with_context):
@@ -104,11 +105,12 @@ class TestGetHost:
         mock_module.params = {"name": "nonexistent-host"}
         mock_array = Mock()
 
-        mock_get_with_context.return_value = Mock(status_code=404)
+        mock_get_with_context.return_value = Mock(status_code=200, items=[])
 
         result = get_host(mock_module, mock_array)
 
         assert result is None
+        assert mock_get_with_context.call_args.kwargs["allow_errors"] is True
 
 
 class TestGetMultiHosts:
@@ -127,11 +129,14 @@ class TestGetMultiHosts:
         }
         mock_array = Mock()
 
-        mock_get_with_context.return_value = Mock(status_code=200)
+        mock_get_with_context.return_value = Mock(
+            status_code=200, items=[Mock(), Mock(), Mock()]
+        )
 
         result = get_multi_hosts(mock_module, mock_array)
 
         assert result is True
+        assert mock_get_with_context.call_args.kwargs["allow_errors"] is True
 
     @patch("plugins.modules.purefa_host.get_with_context")
     def test_get_multi_hosts_not_exist(self, mock_get_with_context):
@@ -146,11 +151,14 @@ class TestGetMultiHosts:
         }
         mock_array = Mock()
 
-        mock_get_with_context.return_value = Mock(status_code=404)
+        mock_get_with_context.return_value = Mock(
+            status_code=207, items=[Mock(), Mock()]
+        )
 
         result = get_multi_hosts(mock_module, mock_array)
 
         assert result is False
+        assert mock_get_with_context.call_args.kwargs["allow_errors"] is True
 
     @patch("plugins.modules.purefa_host.get_with_context")
     def test_get_multi_hosts_with_suffix(self, mock_get_with_context):
@@ -165,13 +173,16 @@ class TestGetMultiHosts:
         }
         mock_array = Mock()
 
-        mock_get_with_context.return_value = Mock(status_code=200)
+        mock_get_with_context.return_value = Mock(
+            status_code=200, items=[Mock(), Mock()]
+        )
 
         result = get_multi_hosts(mock_module, mock_array)
 
         assert result is True
         # Verify the hosts list includes suffix
         call_args = mock_get_with_context.call_args
+        assert call_args.kwargs["allow_errors"] is True
         assert "host001_server" in call_args.kwargs["names"]
         assert "host002_server" in call_args.kwargs["names"]
 
@@ -186,11 +197,12 @@ class TestRenameExists:
         mock_module.params = {"rename": "new-host-name"}
         mock_array = Mock()
 
-        mock_get_with_context.return_value = Mock(status_code=200)
+        mock_get_with_context.return_value = Mock(status_code=200, items=[Mock()])
 
         result = rename_exists(mock_module, mock_array)
 
         assert result is True
+        assert mock_get_with_context.call_args.kwargs["allow_errors"] is True
 
     @patch("plugins.modules.purefa_host.get_with_context")
     def test_rename_exists_false(self, mock_get_with_context):
@@ -199,11 +211,12 @@ class TestRenameExists:
         mock_module.params = {"rename": "new-host-name"}
         mock_array = Mock()
 
-        mock_get_with_context.return_value = Mock(status_code=404)
+        mock_get_with_context.return_value = Mock(status_code=200, items=[])
 
         result = rename_exists(mock_module, mock_array)
 
         assert result is False
+        assert mock_get_with_context.call_args.kwargs["allow_errors"] is True
 
 
 class TestMakeHost:
@@ -402,9 +415,7 @@ class TestDeleteHost:
 class TestUpdateHost:
     """Test cases for update_host function"""
 
-    @patch(
-        "ansible_collections.purestorage.flasharray.plugins.module_utils.api_helpers.get_cached_api_version"
-    )
+    @patch("plugins.modules.purefa_host.get_cached_api_version")
     @patch("plugins.modules.purefa_host.LooseVersion")
     def test_update_host_no_changes(self, mock_loose_version, mock_get_api_version):
         """Test update_host with no changes needed"""
@@ -1426,6 +1437,7 @@ class TestMoveHostExtended:
         with pytest.raises(SystemExit):
             move_host(mock_module, mock_array)
 
+        assert mock_get_with_context.call_args.kwargs["allow_errors"] is True
         mock_module.fail_json.assert_called_once_with(
             msg="Hosts cannot be moved with existing volume connections."
         )
@@ -1796,6 +1808,7 @@ class TestUpdateHostInitiatorsExtended:
         result = _update_host_initiators(mock_module, mock_array)
 
         assert result is True
+        assert mock_get.call_args_list[0].kwargs["allow_errors"] is True
 
     @patch("plugins.modules.purefa_host.check_response")
     @patch("plugins.modules.purefa_host.get_with_context")
@@ -2217,9 +2230,7 @@ class TestMakeHostWithVolume:
 class TestUpdateHostRename:
     """Test cases for update_host with rename"""
 
-    @patch(
-        "ansible_collections.purestorage.flasharray.plugins.module_utils.api_helpers.get_cached_api_version"
-    )
+    @patch("plugins.modules.purefa_host.get_cached_api_version")
     @patch("plugins.modules.purefa_host.rename_exists")
     @patch("plugins.modules.purefa_host.check_response")
     @patch("plugins.modules.purefa_host.get_with_context")
@@ -2263,9 +2274,7 @@ class TestUpdateHostRename:
 
         mock_module.exit_json.assert_called_once_with(changed=True)
 
-    @patch(
-        "ansible_collections.purestorage.flasharray.plugins.module_utils.api_helpers.get_cached_api_version"
-    )
+    @patch("plugins.modules.purefa_host.get_cached_api_version")
     @patch("plugins.modules.purefa_host.rename_exists")
     @patch("plugins.modules.purefa_host.get_with_context")
     @patch("plugins.modules.purefa_host.LooseVersion", side_effect=lambda x: x)
@@ -2303,9 +2312,7 @@ class TestUpdateHostRename:
 class TestUpdateHostDisconnectVolume:
     """Test cases for update_host disconnecting a volume"""
 
-    @patch(
-        "ansible_collections.purestorage.flasharray.plugins.module_utils.api_helpers.get_cached_api_version"
-    )
+    @patch("plugins.modules.purefa_host.get_cached_api_version")
     @patch("plugins.modules.purefa_host._disconnect_volume")
     @patch("plugins.modules.purefa_host.get_with_context")
     @patch("plugins.modules.purefa_host.LooseVersion", side_effect=lambda x: x)
@@ -2374,6 +2381,7 @@ class TestDeleteHostWithHostGroup:
 
         mock_module.exit_json.assert_called_once_with(changed=True)
         assert mock_get.call_count == 4
+        assert mock_get.call_args_list[0].kwargs["allow_errors"] is True
 
 
 class TestSetChapSecurityValidation:
@@ -2471,6 +2479,7 @@ class TestUpdateVlanPaths:
 
         assert result is True
         assert mock_get.call_count == 2
+        assert mock_get.call_args_list[0].kwargs["allow_errors"] is True
 
     @patch("plugins.modules.purefa_host.get_with_context")
     def test_update_vlan_no_change(self, mock_get):
@@ -2620,9 +2629,7 @@ class TestUpdateHostWithAllOptions:
     """Test cases for update_host with all update paths"""
 
     @patch("plugins.modules.purefa_host._update_vlan")
-    @patch(
-        "ansible_collections.purestorage.flasharray.plugins.module_utils.api_helpers.get_cached_api_version"
-    )
+    @patch("plugins.modules.purefa_host.get_cached_api_version")
     @patch("plugins.modules.purefa_host.get_with_context")
     @patch("plugins.modules.purefa_host.LooseVersion", side_effect=lambda x: x)
     def test_update_host_with_vlan(
@@ -2657,9 +2664,7 @@ class TestUpdateHostWithAllOptions:
         mock_module.exit_json.assert_called_once_with(changed=True)
 
     @patch("plugins.modules.purefa_host._update_host_initiators")
-    @patch(
-        "ansible_collections.purestorage.flasharray.plugins.module_utils.api_helpers.get_cached_api_version"
-    )
+    @patch("plugins.modules.purefa_host.get_cached_api_version")
     @patch("plugins.modules.purefa_host.get_with_context")
     @patch("plugins.modules.purefa_host.LooseVersion", side_effect=lambda x: x)
     def test_update_host_with_initiators(
@@ -2694,9 +2699,7 @@ class TestUpdateHostWithAllOptions:
         mock_module.exit_json.assert_called_once_with(changed=True)
 
     @patch("plugins.modules.purefa_host._connect_new_volume")
-    @patch(
-        "ansible_collections.purestorage.flasharray.plugins.module_utils.api_helpers.get_cached_api_version"
-    )
+    @patch("plugins.modules.purefa_host.get_cached_api_version")
     @patch("plugins.modules.purefa_host.get_with_context")
     @patch("plugins.modules.purefa_host.LooseVersion", side_effect=lambda x: x)
     def test_update_host_connect_new_volume(
@@ -2732,9 +2735,7 @@ class TestUpdateHostWithAllOptions:
         mock_module.exit_json.assert_called_once_with(changed=True)
 
     @patch("plugins.modules.purefa_host._update_host_personality")
-    @patch(
-        "ansible_collections.purestorage.flasharray.plugins.module_utils.api_helpers.get_cached_api_version"
-    )
+    @patch("plugins.modules.purefa_host.get_cached_api_version")
     @patch("plugins.modules.purefa_host.get_with_context")
     @patch("plugins.modules.purefa_host.LooseVersion", side_effect=lambda x: x)
     def test_update_host_with_personality(
@@ -2769,9 +2770,7 @@ class TestUpdateHostWithAllOptions:
         mock_module.exit_json.assert_called_once_with(changed=True)
 
     @patch("plugins.modules.purefa_host._update_preferred_array")
-    @patch(
-        "ansible_collections.purestorage.flasharray.plugins.module_utils.api_helpers.get_cached_api_version"
-    )
+    @patch("plugins.modules.purefa_host.get_cached_api_version")
     @patch("plugins.modules.purefa_host.get_with_context")
     @patch("plugins.modules.purefa_host.LooseVersion", side_effect=lambda x: x)
     def test_update_host_with_preferred_array(
@@ -2806,9 +2805,7 @@ class TestUpdateHostWithAllOptions:
         mock_module.exit_json.assert_called_once_with(changed=True)
 
     @patch("plugins.modules.purefa_host._update_chap_security")
-    @patch(
-        "ansible_collections.purestorage.flasharray.plugins.module_utils.api_helpers.get_cached_api_version"
-    )
+    @patch("plugins.modules.purefa_host.get_cached_api_version")
     @patch("plugins.modules.purefa_host.get_with_context")
     @patch("plugins.modules.purefa_host.LooseVersion", side_effect=lambda x: x)
     def test_update_host_with_chap(
