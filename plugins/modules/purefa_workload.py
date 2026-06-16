@@ -74,6 +74,56 @@ options:
       one is available
     default: false
     type: bool
+  parameters:
+    description:
+    - Parameter values to apply when creating a workload from the preset.
+    - Parameters are only applied on the create path and are not applied
+      when recovering an existing destroyed workload.
+    type: list
+    elements: dict
+    suboptions:
+      name:
+        description:
+        - Name of the preset parameter to set.
+        type: str
+        required: true
+      value:
+        description:
+        - Value for the preset parameter.
+        - Exactly one of C(string), C(integer), C(boolean), or
+          C(resource_reference) must be provided.
+        type: dict
+        required: true
+        suboptions:
+          string:
+            description:
+            - String parameter value.
+            type: str
+          integer:
+            description:
+            - Integer parameter value.
+            type: int
+          boolean:
+            description:
+            - Boolean parameter value.
+            type: bool
+          resource_reference:
+            description:
+            - Reference to another resource.
+            type: dict
+            suboptions:
+              id:
+                description:
+                - ID of the referenced resource.
+                type: str
+              name:
+                description:
+                - Name of the referenced resource.
+                type: str
+              resource_type:
+                description:
+                - Optional resource type for the reference.
+                type: str
   volume_count:
     description:
     - Number of additional volumes to add to an existing workload
@@ -103,6 +153,19 @@ EXAMPLES = r"""
     preset: bar
     host: myhost
     recommendation: true
+    fa_url: 10.10.10.2
+    api_token: e31060a7-21fc-e277-6240-25983c6c4592
+
+- name: Create a workload using preset parameters
+  purestorage.flasharray.purefa_workload:
+    name: foo
+    preset: bar
+    context: arr1
+    parameters:
+      - name: replication_target
+        value:
+          resource_reference:
+            name: arr2
     fa_url: 10.10.10.2
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
 
@@ -170,6 +233,9 @@ HAS_PURESTORAGE = True
 try:
     from pypureclient.flasharray import (
         WorkloadConfigurationReference,
+        WorkloadParameter,
+        WorkloadParameterValue,
+        WorkloadParameterValueResourceReference,
         WorkloadPatch,
         WorkloadPost,
         WorkloadPlacementRecommendation,
@@ -195,6 +261,161 @@ from ansible_collections.purestorage.flasharray.plugins.module_utils.api_helpers
 VERSION = 1.5
 USER_AGENT_BASE = "Ansible"
 MIN_REQUIRED_API_VERSION = "2.40"
+SUPPORTED_PARAMETER_VALUE_TYPES = (
+    "string",
+    "integer",
+    "boolean",
+    "resource_reference",
+)
+
+
+def _parameter_fail(module, parameter_name, message):
+    module.fail_json(msg=f"Invalid workload parameter '{parameter_name}': {message}")
+
+
+def _coerce_parameter_list(parameter_items):
+    if parameter_items is None:
+        return []
+    try:
+        return list(parameter_items)
+    except TypeError:
+        return []
+
+
+def _supplied_option_keys(value_definition, allowed_keys):
+    return [
+        key
+        for key in allowed_keys
+        if key in value_definition and value_definition[key] is not None
+    ]
+
+
+def _build_resource_reference(module, parameter_name, resource_reference):
+    if not isinstance(resource_reference, dict):
+        _parameter_fail(
+            module,
+            parameter_name,
+            "resource_reference must be a dictionary",
+        )
+    unknown_keys = set(resource_reference) - {"id", "name", "resource_type"}
+    if unknown_keys:
+        _parameter_fail(
+            module,
+            parameter_name,
+            "resource_reference contains unsupported keys: {0}".format(
+                ", ".join(sorted(unknown_keys))
+            ),
+        )
+    identifier_keys = _supplied_option_keys(resource_reference, ("id", "name"))
+    if len(identifier_keys) != 1:
+        _parameter_fail(
+            module,
+            parameter_name,
+            "resource_reference must include exactly one of id or name",
+        )
+    return WorkloadParameterValueResourceReference(
+        **{
+            key: resource_reference[key]
+            for key in resource_reference
+            if resource_reference[key] is not None
+        }
+    )
+
+
+def _build_parameter_value(module, parameter_name, value_definition):
+    if not isinstance(value_definition, dict):
+        _parameter_fail(module, parameter_name, "value must be a dictionary")
+    unknown_keys = set(value_definition) - set(SUPPORTED_PARAMETER_VALUE_TYPES)
+    if unknown_keys:
+        _parameter_fail(
+            module,
+            parameter_name,
+            "value contains unsupported keys: {0}".format(
+                ", ".join(sorted(unknown_keys))
+            ),
+        )
+    supplied_value_types = _supplied_option_keys(
+        value_definition, SUPPORTED_PARAMETER_VALUE_TYPES
+    )
+    if len(supplied_value_types) != 1:
+        _parameter_fail(
+            module,
+            parameter_name,
+            "value must include exactly one of {0}".format(
+                ", ".join(SUPPORTED_PARAMETER_VALUE_TYPES)
+            ),
+        )
+
+    value_type = supplied_value_types[0]
+    normalized_value = value_definition[value_type]
+    if value_type == "string":
+        if not isinstance(normalized_value, str):
+            _parameter_fail(module, parameter_name, "string value must be a string")
+    elif value_type == "integer":
+        if isinstance(normalized_value, bool) or not isinstance(normalized_value, int):
+            _parameter_fail(module, parameter_name, "integer value must be an integer")
+    elif value_type == "boolean":
+        if not isinstance(normalized_value, bool):
+            _parameter_fail(
+                module, parameter_name, "boolean value must be true or false"
+            )
+    elif value_type == "resource_reference":
+        normalized_value = _build_resource_reference(
+            module, parameter_name, normalized_value
+        )
+
+    return value_type, WorkloadParameterValue(**{value_type: normalized_value})
+
+
+def _build_workload_parameters(module, preset_config):
+    raw_parameters = module.params.get("parameters") or []
+    if not raw_parameters:
+        return None
+
+    preset_parameters = {}
+    for preset_parameter in _coerce_parameter_list(
+        getattr(preset_config, "parameters", [])
+    ):
+        if getattr(preset_parameter, "name", None):
+            preset_parameters[preset_parameter.name] = preset_parameter
+
+    normalized_parameters = []
+    seen_parameters = set()
+    for raw_parameter in raw_parameters:
+        if not isinstance(raw_parameter, dict):
+            module.fail_json(msg="Each workload parameter must be a dictionary")
+        parameter_name = raw_parameter.get("name")
+        if not parameter_name:
+            module.fail_json(msg="Each workload parameter requires a name")
+        if parameter_name in seen_parameters:
+            _parameter_fail(module, parameter_name, "parameter names must be unique")
+        if parameter_name not in preset_parameters:
+            _parameter_fail(
+                module,
+                parameter_name,
+                "parameter is not defined by preset {0}".format(
+                    module.params["preset"]
+                ),
+            )
+        if "value" not in raw_parameter:
+            _parameter_fail(module, parameter_name, "parameter requires a value")
+
+        value_type, parameter_value = _build_parameter_value(
+            module, parameter_name, raw_parameter["value"]
+        )
+        preset_type = getattr(preset_parameters[parameter_name], "type", None)
+        if preset_type and preset_type != value_type:
+            _parameter_fail(
+                module,
+                parameter_name,
+                "expected type {0}, got {1}".format(preset_type, value_type),
+            )
+
+        normalized_parameters.append(
+            WorkloadParameter(name=parameter_name, value=parameter_value)
+        )
+        seen_parameters.add(parameter_name)
+    return normalized_parameters
 
 
 def _create_volume(module, array):
@@ -251,17 +472,11 @@ def _connect_volumes(module, array):
 def create_workload(module, array, fleet, preset_config):
     """Create fleet workload using existing preset"""
     changed = True
-    parameters = preset_config.parameters
-    repl_config = preset_config.periodic_replication_configurations
-    placement_config = preset_config.placement_configurations
-    qos_config = preset_config.qos_configurations
-    snap_config = preset_config.snapshot_configurations
-    vol_config = preset_config.volume_configurations
-    tags = preset_config.workload_tags
+    workload_parameters = _build_workload_parameters(module, preset_config)
     if module.params["recommendation"]:
         # Start the workload calculation for the preset being used
         res = array.post_workloads_placement_recommendations(
-            inputs=WorkloadPlacementRecommendation(),
+            inputs=WorkloadPlacementRecommendation(parameters=workload_parameters),
             preset_names=[module.params["preset"]],
             context_names=[module.params["context"]],
         )
@@ -287,7 +502,7 @@ def create_workload(module, array, fleet, preset_config):
         res = array.post_workloads(
             names=[module.params["name"]],
             preset_names=[module.params["preset"]],
-            workload=WorkloadPost(),
+            workload=WorkloadPost(parameters=workload_parameters),
             context_names=[module.params["context"]],
         )
         check_response(
@@ -430,6 +645,30 @@ def main():
             rename=dict(type="str"),
             eradicate=dict(type="bool", default=False),
             placement=dict(type="str"),
+            parameters=dict(
+                type="list",
+                elements="dict",
+                options=dict(
+                    name=dict(type="str", required=True),
+                    value=dict(
+                        type="dict",
+                        required=True,
+                        options=dict(
+                            string=dict(type="str"),
+                            integer=dict(type="int"),
+                            boolean=dict(type="bool"),
+                            resource_reference=dict(
+                                type="dict",
+                                options=dict(
+                                    id=dict(type="str"),
+                                    name=dict(type="str"),
+                                    resource_type=dict(type="str"),
+                                ),
+                            ),
+                        ),
+                    ),
+                ),
+            ),
             volume_count=dict(type="int"),
             volume_configuration=dict(type="str"),
             recommendation=dict(type="bool", default=False),

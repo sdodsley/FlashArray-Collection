@@ -43,6 +43,7 @@ sys.modules[
 ] = MagicMock()
 
 from plugins.modules.purefa_workload import (
+    _build_workload_parameters,
     delete_workload,
     eradicate_workload,
     recover_workload,
@@ -51,6 +52,13 @@ from plugins.modules.purefa_workload import (
     expand_workload,
     connect_or_disconnect_volumes,
 )
+
+
+def _mock_preset_parameter(name, parameter_type):
+    preset_parameter = Mock()
+    preset_parameter.name = name
+    preset_parameter.type = parameter_type
+    return preset_parameter
 
 
 class TestDeleteWorkload:
@@ -138,7 +146,7 @@ class TestCreateWorkload:
         mock_array = Mock()
         mock_fleet = Mock()
         mock_preset_config = Mock()
-        mock_preset_config.parameters = Mock()
+        mock_preset_config.parameters = []
         mock_preset_config.periodic_replication_configurations = []
         mock_preset_config.placement_configurations = []
         mock_preset_config.qos_configurations = []
@@ -149,6 +157,199 @@ class TestCreateWorkload:
         create_workload(mock_module, mock_array, mock_fleet, mock_preset_config)
 
         mock_module.exit_json.assert_called_once_with(changed=True)
+
+
+class TestBuildWorkloadParameters:
+    """Test cases for workload parameter normalization"""
+
+    @patch("plugins.modules.purefa_workload.WorkloadParameter")
+    @patch("plugins.modules.purefa_workload.WorkloadParameterValue")
+    @patch("plugins.modules.purefa_workload.WorkloadParameterValueResourceReference")
+    def test_build_workload_parameters_resource_reference(
+        self,
+        mock_resource_reference,
+        mock_parameter_value,
+        mock_parameter,
+    ):
+        """Test resource reference workload parameters are normalized"""
+        mock_module = Mock()
+        mock_module.params = {
+            "preset": "fleet:Oracle",
+            "parameters": [
+                {
+                    "name": "replication_target",
+                    "value": {"resource_reference": {"name": "slcfax2"}},
+                }
+            ],
+        }
+        mock_preset_config = Mock()
+        mock_preset_config.parameters = [
+            _mock_preset_parameter("replication_target", "resource_reference")
+        ]
+
+        result = _build_workload_parameters(mock_module, mock_preset_config)
+
+        assert result == [mock_parameter.return_value]
+        mock_resource_reference.assert_called_once_with(name="slcfax2")
+        mock_parameter_value.assert_called_once_with(
+            resource_reference=mock_resource_reference.return_value
+        )
+        mock_parameter.assert_called_once_with(
+            name="replication_target", value=mock_parameter_value.return_value
+        )
+
+    @patch("plugins.modules.purefa_workload.WorkloadParameter")
+    @patch("plugins.modules.purefa_workload.WorkloadParameterValue")
+    def test_build_workload_parameters_boolean_false(
+        self, mock_parameter_value, mock_parameter
+    ):
+        """Test boolean false is treated as a supplied value"""
+        mock_module = Mock()
+        mock_module.params = {
+            "preset": "fleet:Oracle",
+            "parameters": [{"name": "enable_replication", "value": {"boolean": False}}],
+        }
+        mock_preset_config = Mock()
+        mock_preset_config.parameters = [
+            _mock_preset_parameter("enable_replication", "boolean")
+        ]
+
+        result = _build_workload_parameters(mock_module, mock_preset_config)
+
+        assert result == [mock_parameter.return_value]
+        mock_parameter_value.assert_called_once_with(boolean=False)
+        mock_parameter.assert_called_once_with(
+            name="enable_replication", value=mock_parameter_value.return_value
+        )
+
+    @patch("plugins.modules.purefa_workload.WorkloadParameter")
+    @patch("plugins.modules.purefa_workload.WorkloadParameterValue")
+    def test_build_workload_parameters_boolean_false_ignores_none_value_types(
+        self, mock_parameter_value, mock_parameter
+    ):
+        """Test Ansible-normalized None value types are ignored for booleans"""
+        mock_module = Mock()
+        mock_module.params = {
+            "preset": "fleet:Oracle",
+            "parameters": [
+                {
+                    "name": "enable_replication",
+                    "value": {
+                        "string": None,
+                        "integer": None,
+                        "boolean": False,
+                        "resource_reference": None,
+                    },
+                }
+            ],
+        }
+        mock_preset_config = Mock()
+        mock_preset_config.parameters = [
+            _mock_preset_parameter("enable_replication", "boolean")
+        ]
+
+        result = _build_workload_parameters(mock_module, mock_preset_config)
+
+        assert result == [mock_parameter.return_value]
+        mock_parameter_value.assert_called_once_with(boolean=False)
+        mock_parameter.assert_called_once_with(
+            name="enable_replication", value=mock_parameter_value.return_value
+        )
+
+    def test_build_workload_parameters_rejects_multiple_value_types(self):
+        """Test multiple parameter value types are rejected"""
+        import pytest
+
+        mock_module = Mock()
+        mock_module.params = {
+            "preset": "fleet:Oracle",
+            "parameters": [
+                {
+                    "name": "replication_target",
+                    "value": {"string": "slcfax2", "integer": 1},
+                }
+            ],
+        }
+        mock_module.fail_json.side_effect = SystemExit(1)
+        mock_preset_config = Mock()
+        mock_preset_config.parameters = [
+            _mock_preset_parameter("replication_target", "string")
+        ]
+
+        with pytest.raises(SystemExit):
+            _build_workload_parameters(mock_module, mock_preset_config)
+
+        mock_module.fail_json.assert_called_once()
+
+    @patch("plugins.modules.purefa_workload.WorkloadParameter")
+    @patch("plugins.modules.purefa_workload.WorkloadParameterValue")
+    @patch("plugins.modules.purefa_workload.WorkloadParameterValueResourceReference")
+    def test_build_workload_parameters_resource_reference_ignores_none_fields(
+        self,
+        mock_resource_reference,
+        mock_parameter_value,
+        mock_parameter,
+    ):
+        """Test Ansible-normalized None fields are ignored for resource references"""
+        mock_module = Mock()
+        mock_module.params = {
+            "preset": "fleet:Oracle",
+            "parameters": [
+                {
+                    "name": "replication_target",
+                    "value": {
+                        "string": None,
+                        "integer": None,
+                        "boolean": None,
+                        "resource_reference": {
+                            "id": None,
+                            "name": "slcfax2",
+                            "resource_type": None,
+                        },
+                    },
+                }
+            ],
+        }
+        mock_preset_config = Mock()
+        mock_preset_config.parameters = [
+            _mock_preset_parameter("replication_target", "resource_reference")
+        ]
+
+        result = _build_workload_parameters(mock_module, mock_preset_config)
+
+        assert result == [mock_parameter.return_value]
+        mock_resource_reference.assert_called_once_with(name="slcfax2")
+        mock_parameter_value.assert_called_once_with(
+            resource_reference=mock_resource_reference.return_value
+        )
+        mock_parameter.assert_called_once_with(
+            name="replication_target", value=mock_parameter_value.return_value
+        )
+
+    def test_build_workload_parameters_rejects_invalid_resource_reference(self):
+        """Test invalid resource references are rejected"""
+        import pytest
+
+        mock_module = Mock()
+        mock_module.params = {
+            "preset": "fleet:Oracle",
+            "parameters": [
+                {
+                    "name": "replication_target",
+                    "value": {"resource_reference": {"id": "123", "name": "slcfax2"}},
+                }
+            ],
+        }
+        mock_module.fail_json.side_effect = SystemExit(1)
+        mock_preset_config = Mock()
+        mock_preset_config.parameters = [
+            _mock_preset_parameter("replication_target", "resource_reference")
+        ]
+
+        with pytest.raises(SystemExit):
+            _build_workload_parameters(mock_module, mock_preset_config)
+
+        mock_module.fail_json.assert_called_once()
 
 
 class TestConnectOrDisconnectVolumes:
@@ -333,7 +534,7 @@ class TestCreateWorkloadSuccess:
         mock_array.post_workloads.return_value = Mock(status_code=200)
         mock_fleet = Mock()
         mock_preset_config = Mock()
-        mock_preset_config.parameters = Mock()
+        mock_preset_config.parameters = []
         mock_preset_config.periodic_replication_configurations = Mock()
         mock_preset_config.placement_configurations = Mock()
         mock_preset_config.qos_configurations = Mock()
@@ -344,6 +545,65 @@ class TestCreateWorkloadSuccess:
         create_workload(mock_module, mock_array, mock_fleet, mock_preset_config)
 
         mock_array.post_workloads.assert_called_once()
+        mock_module.exit_json.assert_called_once_with(changed=True)
+
+    @patch("plugins.modules.purefa_workload._build_workload_parameters")
+    @patch("plugins.modules.purefa_workload.WorkloadPlacementRecommendation")
+    @patch("plugins.modules.purefa_workload.WorkloadPost")
+    @patch("plugins.modules.purefa_workload.check_response")
+    def test_create_workload_passes_parameters_to_recommendation_and_create(
+        self,
+        mock_check_response,
+        mock_workload_post,
+        mock_recommendation,
+        mock_build_workload_parameters,
+    ):
+        """Test create_workload passes parameters into recommendation and create APIs"""
+        mock_module = Mock()
+        mock_module.check_mode = False
+        mock_module.params = {
+            "name": "test-workload",
+            "preset": "test-preset",
+            "context": "pod1",
+            "recommendation": True,
+            "host": "",
+        }
+        mock_array = Mock()
+        mock_array.post_workloads.return_value = Mock(status_code=200)
+        mock_calc = Mock()
+        mock_calc.name = "calc-1"
+        mock_array.post_workloads_placement_recommendations.return_value = Mock(
+            status_code=200, items=[mock_calc]
+        )
+        recommendation_result = Mock(status="completed")
+        placement_target = Mock()
+        placement_target.name = "arrayB"
+        recommendation_result.results = [Mock()]
+        recommendation_result.results[0].placements = [Mock()]
+        recommendation_result.results[0].placements[0].targets = [placement_target]
+        mock_array.get_workloads_placement_recommendations.return_value = Mock(
+            items=[recommendation_result]
+        )
+        mock_build_workload_parameters.return_value = [Mock(name="param-1")]
+        mock_preset_config = Mock()
+
+        create_workload(mock_module, mock_array, Mock(), mock_preset_config)
+
+        mock_build_workload_parameters.assert_called_once_with(
+            mock_module, mock_preset_config
+        )
+        mock_recommendation.assert_called_once_with(
+            parameters=mock_build_workload_parameters.return_value
+        )
+        mock_workload_post.assert_called_once_with(
+            parameters=mock_build_workload_parameters.return_value
+        )
+        mock_array.post_workloads.assert_called_once_with(
+            names=["test-workload"],
+            preset_names=["test-preset"],
+            workload=mock_workload_post.return_value,
+            context_names=["arrayB"],
+        )
         mock_module.exit_json.assert_called_once_with(changed=True)
 
     def test_create_workload_check_mode(self):
@@ -360,7 +620,7 @@ class TestCreateWorkloadSuccess:
         mock_array = Mock()
         mock_fleet = Mock()
         mock_preset_config = Mock()
-        mock_preset_config.parameters = Mock()
+        mock_preset_config.parameters = []
         mock_preset_config.periodic_replication_configurations = Mock()
         mock_preset_config.placement_configurations = Mock()
         mock_preset_config.qos_configurations = Mock()
