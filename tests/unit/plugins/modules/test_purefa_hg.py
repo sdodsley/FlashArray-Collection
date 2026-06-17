@@ -51,6 +51,27 @@ from plugins.modules.purefa_hg import (
     update_hostgroup,
     delete_hostgroup,
 )
+import plugins.modules.purefa_hg as _hg_module
+
+
+def _passthrough_with_context(client, method_name, context_version, module, **kwargs):
+    """Mirror api_helpers.*_with_context for tests (api_helpers is mocked out).
+
+    Adds context_names only when the API version supports it and a context is
+    set, matching the real helper so both old-API and context assertions hold.
+    """
+    api_version = client.get_rest_version()
+    if LooseVersion(context_version) <= LooseVersion(api_version) and module.params.get(
+        "context"
+    ):
+        kwargs["context_names"] = [module.params["context"]]
+    return getattr(client, method_name)(**kwargs)
+
+
+_hg_module.get_with_context = _passthrough_with_context
+_hg_module.post_with_context = _passthrough_with_context
+_hg_module.patch_with_context = _passthrough_with_context
+_hg_module.delete_with_context = _passthrough_with_context
 
 
 class TestRenameExists:
