@@ -56,6 +56,31 @@ from plugins.modules.purefa_pgsnap import (
     eradicate_pgsnapshot,
     restore_pgsnapshot_all,
 )
+import plugins.modules.purefa_pgsnap as _pgsnap_module
+
+
+def _passthrough_with_context(client, method_name, context_version, module, **kwargs):
+    """Mirror api_helpers.*_with_context for tests (api_helpers is mocked out).
+
+    Adds context_names only when the API version supports it and a context is
+    set, matching the real helper so both old-API and context assertions hold.
+    """
+    api_version = client.get_rest_version()
+    if LooseVersion(context_version) <= LooseVersion(api_version) and module.params.get(
+        "context"
+    ):
+        kwargs["context_names"] = [module.params["context"]]
+    return getattr(client, method_name)(**kwargs)
+
+
+_pgsnap_module.get_with_context = _passthrough_with_context
+_pgsnap_module.post_with_context = _passthrough_with_context
+_pgsnap_module.patch_with_context = _passthrough_with_context
+_pgsnap_module.delete_with_context = _passthrough_with_context
+# api_helpers/version are mocked at import; point LooseVersion at the real
+# implementation so main()'s context-default check evaluates a real comparison.
+# Per-test @patch("...LooseVersion") decorators still override this as needed.
+_pgsnap_module.LooseVersion = LooseVersion
 
 
 class TestCheckOffload:
@@ -2237,11 +2262,11 @@ class TestRestorePgsnapshotAll:
 
         restore_pgsnapshot_all(mock_module, mock_array)
 
+        # Empty context is omitted by the get_with_context helper (#1005 fix)
         mock_array.post_protection_groups.assert_called_once_with(
             names=["pg1_clone"],
             source_names=["pg1.snap1"],
             overwrite=False,
-            context_names=[""],
         )
         mock_module.exit_json.assert_called_once_with(changed=True)
 
@@ -2272,11 +2297,11 @@ class TestRestorePgsnapshotAll:
 
         restore_pgsnapshot_all(mock_module, mock_array)
 
+        # Empty context is omitted by the get_with_context helper (#1005 fix)
         mock_array.post_protection_groups.assert_called_once_with(
             names=["pg1"],
             source_names=["pg1.snap1"],
             overwrite=True,
-            context_names=[""],
         )
         mock_module.exit_json.assert_called_once_with(changed=True)
 
@@ -2340,12 +2365,11 @@ class TestRestorePgsnapshotAll:
 
         restore_pgsnapshot_all(mock_module, mock_array)
 
-        # Should use the resolved suffix
+        # Should use the resolved suffix; empty context omitted by helper (#1005 fix)
         mock_array.post_protection_groups.assert_called_once_with(
             names=["pg1_clone"],
             source_names=["pg1.snap-actual"],
             overwrite=False,
-            context_names=[""],
         )
 
     @patch("plugins.modules.purefa_pgsnap.LooseVersion")
