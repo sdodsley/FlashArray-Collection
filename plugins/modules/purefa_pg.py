@@ -431,9 +431,7 @@ def make_pgroup(module, array):
                 module,
                 names=[module.params["name"]],
                 protection_group=ProtectionGroup(
-                    snapshot_schedule=SnapshotSchedule(
-                        enabled=module.params["enabled"]
-                    )
+                    snapshot_schedule=SnapshotSchedule(enabled=module.params["enabled"])
                 ),
             )
         check_response(res, module, f"Enabling pgroup {module.params['name']} failed")
@@ -597,9 +595,7 @@ def update_pgroup(module, array):
                 module,
                 names=[module.params["name"]],
                 protection_group=ProtectionGroup(
-                    snapshot_schedule=SnapshotSchedule(
-                        enabled=module.params["enabled"]
-                    )
+                    snapshot_schedule=SnapshotSchedule(enabled=module.params["enabled"])
                 ),
             )
             check_response(
