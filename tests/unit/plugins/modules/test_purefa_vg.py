@@ -56,6 +56,22 @@ from plugins.modules.purefa_vg import (
     eradicate_vgroup,
     recover_vgroup,
 )
+import plugins.modules.purefa_vg as _vg_module
+
+
+def _passthrough_with_context(client, method_name, context_version, module, **kwargs):
+    """Mirror api_helpers.*_with_context for tests by calling the array method directly.
+
+    api_helpers is mocked out at import time, so the real helpers are unavailable.
+    The context_names argument is intentionally omitted - no test asserts on it.
+    """
+    return getattr(client, method_name)(**kwargs)
+
+
+_vg_module.get_with_context = _passthrough_with_context
+_vg_module.post_with_context = _passthrough_with_context
+_vg_module.patch_with_context = _passthrough_with_context
+_vg_module.delete_with_context = _passthrough_with_context
 
 
 class TestRenameExists:

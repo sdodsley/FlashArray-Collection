@@ -59,6 +59,27 @@ from plugins.modules.purefa_pg import (
     check_pg_on_offload,
     main,
 )
+import plugins.modules.purefa_pg as _pg_module
+
+
+def _passthrough_with_context(client, method_name, context_version, module, **kwargs):
+    """Mirror api_helpers.*_with_context for tests (api_helpers is mocked out).
+
+    Adds context_names only when the API version supports it and a context is
+    set, matching the real helper so both old-API and context assertions hold.
+    """
+    api_version = client.get_rest_version()
+    if LooseVersion(context_version) <= LooseVersion(api_version) and module.params.get(
+        "context"
+    ):
+        kwargs["context_names"] = [module.params["context"]]
+    return getattr(client, method_name)(**kwargs)
+
+
+_pg_module.get_with_context = _passthrough_with_context
+_pg_module.post_with_context = _passthrough_with_context
+_pg_module.patch_with_context = _passthrough_with_context
+_pg_module.delete_with_context = _passthrough_with_context
 
 
 class TestGetPod:
@@ -2024,13 +2045,20 @@ class TestMain:
             mock_module.fail_json.call_args
         )
 
+    @patch("plugins.modules.purefa_pg.LooseVersion", side_effect=LooseVersion)
     @patch("plugins.modules.purefa_pg.get_pod")
     @patch("plugins.modules.purefa_pg.get_pending_pgroup")
     @patch("plugins.modules.purefa_pg.get_pgroup")
     @patch("plugins.modules.purefa_pg.get_array")
     @patch("plugins.modules.purefa_pg.AnsibleModule")
     def test_main_invalid_pgname_in_pod(
-        self, mock_ansible, mock_get_array, mock_get_pg, mock_get_pending, mock_get_pod
+        self,
+        mock_ansible,
+        mock_get_array,
+        mock_get_pg,
+        mock_get_pending,
+        mock_get_pod,
+        mock_lv,
     ):
         """Test main fails with invalid pgroup name in pod (::)"""
         import pytest
@@ -2054,6 +2082,7 @@ class TestMain:
         mock_ansible.return_value = mock_module
         mock_array = Mock()
         mock_array.get_rest_version.return_value = "2.38"
+        mock_array.get_arrays.return_value.items = [Mock()]
         mock_get_array.return_value = mock_array
 
         with pytest.raises(SystemExit):
@@ -2061,13 +2090,20 @@ class TestMain:
 
         mock_module.fail_json.assert_called()
 
+    @patch("plugins.modules.purefa_pg.LooseVersion", side_effect=LooseVersion)
     @patch("plugins.modules.purefa_pg.get_pod")
     @patch("plugins.modules.purefa_pg.get_pending_pgroup")
     @patch("plugins.modules.purefa_pg.get_pgroup")
     @patch("plugins.modules.purefa_pg.get_array")
     @patch("plugins.modules.purefa_pg.AnsibleModule")
     def test_main_invalid_pgname_single_colon(
-        self, mock_ansible, mock_get_array, mock_get_pg, mock_get_pending, mock_get_pod
+        self,
+        mock_ansible,
+        mock_get_array,
+        mock_get_pg,
+        mock_get_pending,
+        mock_get_pod,
+        mock_lv,
     ):
         """Test main fails with invalid pgroup name with single colon container"""
         import pytest
@@ -2091,6 +2127,7 @@ class TestMain:
         mock_ansible.return_value = mock_module
         mock_array = Mock()
         mock_array.get_rest_version.return_value = "2.38"
+        mock_array.get_arrays.return_value.items = [Mock()]
         mock_get_array.return_value = mock_array
 
         with pytest.raises(SystemExit):
@@ -2098,13 +2135,20 @@ class TestMain:
 
         mock_module.fail_json.assert_called()
 
+    @patch("plugins.modules.purefa_pg.LooseVersion", side_effect=LooseVersion)
     @patch("plugins.modules.purefa_pg.get_pod")
     @patch("plugins.modules.purefa_pg.get_pending_pgroup")
     @patch("plugins.modules.purefa_pg.get_pgroup")
     @patch("plugins.modules.purefa_pg.get_array")
     @patch("plugins.modules.purefa_pg.AnsibleModule")
     def test_main_invalid_pgname_standalone(
-        self, mock_ansible, mock_get_array, mock_get_pg, mock_get_pending, mock_get_pod
+        self,
+        mock_ansible,
+        mock_get_array,
+        mock_get_pg,
+        mock_get_pending,
+        mock_get_pod,
+        mock_lv,
     ):
         """Test main fails with invalid standalone pgroup name"""
         import pytest
@@ -2128,6 +2172,7 @@ class TestMain:
         mock_ansible.return_value = mock_module
         mock_array = Mock()
         mock_array.get_rest_version.return_value = "2.38"
+        mock_array.get_arrays.return_value.items = [Mock()]
         mock_get_array.return_value = mock_array
 
         with pytest.raises(SystemExit):
@@ -2180,6 +2225,7 @@ class TestMain:
         mock_module.fail_json.assert_called()
         assert "SafeMode" in str(mock_module.fail_json.call_args)
 
+    @patch("plugins.modules.purefa_pg.LooseVersion", side_effect=LooseVersion)
     @patch("plugins.modules.purefa_pg.check_response")
     @patch("plugins.modules.purefa_pg.get_pod")
     @patch("plugins.modules.purefa_pg.get_pending_pgroup")
@@ -2194,6 +2240,7 @@ class TestMain:
         mock_get_pending,
         mock_get_pod,
         mock_check_response,
+        mock_lv,
     ):
         """Test main fails when pod doesn't exist for pgroup in pod"""
         import pytest
@@ -2217,6 +2264,7 @@ class TestMain:
         mock_ansible.return_value = mock_module
         mock_array = Mock()
         mock_array.get_rest_version.return_value = "2.38"
+        mock_array.get_arrays.return_value.items = [Mock()]
         mock_get_array.return_value = mock_array
         mock_get_pg.return_value = None
         mock_get_pending.return_value = None

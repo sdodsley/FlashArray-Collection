@@ -210,6 +210,10 @@ from ansible_collections.purestorage.flasharray.plugins.module_utils.version imp
 )
 from ansible_collections.purestorage.flasharray.plugins.module_utils.api_helpers import (
     check_response,
+    get_with_context,
+    post_with_context,
+    patch_with_context,
+    delete_with_context,
 )
 
 PRIORITY_API_VERSION = "2.11"
@@ -222,19 +226,18 @@ MAX_IOPS = 100000000
 
 def rename_exists(module, array):
     """Determine if rename target already exists"""
-    api_version = array.get_rest_version()
-    if LooseVersion(CONTEXT_API_VERSION) <= LooseVersion(api_version):
-        res = array.get_volume_groups(
-            names=[module.params["rename"]], context_names=[module.params["context"]]
-        )
-    else:
-        res = array.get_volume_groups(names=[module.params["rename"]])
+    res = get_with_context(
+        array,
+        "get_volume_groups",
+        CONTEXT_API_VERSION,
+        module,
+        names=[module.params["rename"]],
+    )
     return bool(res.status_code == 200)
 
 
 def get_multi_vgroups(module, array):
     """Return True is all volume groups exist or None"""
-    api_version = array.get_rest_version()
     names = []
     for vg_num in range(
         module.params["start"], module.params["count"] + module.params["start"]
@@ -244,60 +247,56 @@ def get_multi_vgroups(module, array):
             + str(vg_num).zfill(module.params["digits"])
             + module.params["suffix"]
         )
-    if LooseVersion(CONTEXT_API_VERSION) <= LooseVersion(api_version):
-        res = array.get_volume_groups(
-            names=names, context_names=[module.params["context"]], destroyed=False
-        )
-    else:
-        res = array.get_volume_groups(names=names, destroyed=False)
+    res = get_with_context(
+        array,
+        "get_volume_groups",
+        CONTEXT_API_VERSION,
+        module,
+        names=names,
+        destroyed=False,
+    )
     return bool(res.status_code == 200)
 
 
 def get_pending_vgroup(module, array):
     """Get Deleted Volume Group"""
-    api_version = array.get_rest_version()
-    if LooseVersion(CONTEXT_API_VERSION) <= LooseVersion(api_version):
-        res = array.get_volume_groups(
-            names=[module.params["name"]],
-            destroyed=True,
-            context_names=[module.params["context"]],
-        )
-    else:
-        res = array.get_volume_groups(names=[module.params["name"]], destroyed=True)
+    res = get_with_context(
+        array,
+        "get_volume_groups",
+        CONTEXT_API_VERSION,
+        module,
+        names=[module.params["name"]],
+        destroyed=True,
+    )
     return bool(res.status_code == 200)
 
 
 def get_vgroup(module, array):
     """Get Volume Group"""
-    api_version = array.get_rest_version()
-    if LooseVersion(CONTEXT_API_VERSION) <= LooseVersion(api_version):
-        res = array.get_volume_groups(
-            names=[module.params["name"]],
-            destroyed=False,
-            context_names=[module.params["context"]],
-        )
-    else:
-        res = array.get_volume_groups(names=[module.params["name"]], destroyed=False)
+    res = get_with_context(
+        array,
+        "get_volume_groups",
+        CONTEXT_API_VERSION,
+        module,
+        names=[module.params["name"]],
+        destroyed=False,
+    )
     return bool(res.status_code == 200)
 
 
 def rename_vgroup(module, array):
     changed = False
-    api_version = array.get_rest_version()
     if not rename_exists(module, array):
         changed = True
         if not module.check_mode:
-            if LooseVersion(CONTEXT_API_VERSION) <= LooseVersion(api_version):
-                res = array.patch_volume_groups(
-                    names=[module.params["name"]],
-                    context_names=[module.params["context"]],
-                    volume_group=VolumeGroupPatch(name=module.params["rename"]),
-                )
-            else:
-                res = array.patch_volume_groups(
-                    names=[module.params["name"]],
-                    volume_group=VolumeGroupPatch(name=module.params["rename"]),
-                )
+            res = patch_with_context(
+                array,
+                "patch_volume_groups",
+                CONTEXT_API_VERSION,
+                module,
+                names=[module.params["name"]],
+                volume_group=VolumeGroupPatch(name=module.params["rename"]),
+            )
             check_response(res, module, f"Rename to {module.params['rename']} failed")
     module.exit_json(changed=changed)
 
@@ -310,29 +309,18 @@ def make_vgroup(module, array):
         if int(human_to_bytes(module.params["bw_qos"])) in range(MIN_BWS, MAX_BWS):
             changed = True
             if not module.check_mode:
-                if LooseVersion(CONTEXT_API_VERSION) <= LooseVersion(api_version):
-                    res = array.post_volume_groups(
-                        context_names=[module.params["context"]],
-                        names=[module.params["name"]],
-                        volume_group=VolumeGroupPost(
-                            qos=Qos(
-                                bandwidth_limit=int(
-                                    human_to_bytes(module.params["bw_qos"])
-                                )
-                            )
-                        ),
-                    )
-                else:
-                    res = array.post_volume_groups(
-                        names=[module.params["name"]],
-                        volume_group=VolumeGroupPost(
-                            qos=Qos(
-                                bandwidth_limit=int(
-                                    human_to_bytes(module.params["bw_qos"])
-                                )
-                            )
-                        ),
-                    )
+                res = post_with_context(
+                    array,
+                    "post_volume_groups",
+                    CONTEXT_API_VERSION,
+                    module,
+                    names=[module.params["name"]],
+                    volume_group=VolumeGroupPost(
+                        qos=Qos(
+                            bandwidth_limit=int(human_to_bytes(module.params["bw_qos"]))
+                        )
+                    ),
+                )
                 check_response(
                     res, module, f"Vgroup {module.params['name']} creation failed"
                 )
@@ -346,25 +334,18 @@ def make_vgroup(module, array):
         if int(human_to_real(module.params["iops_qos"])) in range(MIN_IOPS, MAX_IOPS):
             changed = True
             if not module.check_mode:
-                if LooseVersion(CONTEXT_API_VERSION) <= LooseVersion(api_version):
-                    res = array.post_volume_groups(
-                        context_names=[module.params["context"]],
-                        names=[module.params["name"]],
-                        volume_group=VolumeGroupPost(
-                            qos=Qos(
-                                iops_limit=int(human_to_real(module.params["iops_qos"]))
-                            )
-                        ),
-                    )
-                else:
-                    res = array.post_volume_groups(
-                        names=[module.params["name"]],
-                        volume_group=VolumeGroupPost(
-                            qos=Qos(
-                                iops_limit=int(human_to_real(module.params["iops_qos"]))
-                            )
-                        ),
-                    )
+                res = post_with_context(
+                    array,
+                    "post_volume_groups",
+                    CONTEXT_API_VERSION,
+                    module,
+                    names=[module.params["name"]],
+                    volume_group=VolumeGroupPost(
+                        qos=Qos(
+                            iops_limit=int(human_to_real(module.params["iops_qos"]))
+                        )
+                    ),
+                )
                 check_response(
                     res, module, f"Vgroup {module.params['name']} creation failed"
                 )
@@ -379,35 +360,21 @@ def make_vgroup(module, array):
         ) and bw_qos_size in range(MIN_BWS, MAX_BWS):
             changed = True
             if not module.check_mode:
-                if LooseVersion(CONTEXT_API_VERSION) <= LooseVersion(api_version):
-                    res = array.post_volume_groups(
-                        context_names=[module.params["context"]],
-                        names=[module.params["name"]],
-                        volume_group=VolumeGroupPost(
-                            qos=Qos(
-                                iops_limit=int(
-                                    human_to_real(module.params["iops_qos"])
-                                ),
-                                bandwidth_limit=int(
-                                    human_to_bytes(module.params["bw_qos"])
-                                ),
-                            )
-                        ),
-                    )
-                else:
-                    res = array.post_volume_groups(
-                        names=[module.params["name"]],
-                        volume_group=VolumeGroupPost(
-                            qos=Qos(
-                                iops_limit=int(
-                                    human_to_real(module.params["iops_qos"])
-                                ),
-                                bandwidth_limit=int(
-                                    human_to_bytes(module.params["bw_qos"])
-                                ),
-                            )
-                        ),
-                    )
+                res = post_with_context(
+                    array,
+                    "post_volume_groups",
+                    CONTEXT_API_VERSION,
+                    module,
+                    names=[module.params["name"]],
+                    volume_group=VolumeGroupPost(
+                        qos=Qos(
+                            iops_limit=int(human_to_real(module.params["iops_qos"])),
+                            bandwidth_limit=int(
+                                human_to_bytes(module.params["bw_qos"])
+                            ),
+                        )
+                    ),
+                )
                 check_response(
                     res, module, f"Vgroup {module.params['name']} creation failed"
                 )
@@ -416,17 +383,14 @@ def make_vgroup(module, array):
     else:
         changed = True
         if not module.check_mode:
-            if LooseVersion(CONTEXT_API_VERSION) <= LooseVersion(api_version):
-                res = array.post_volume_groups(
-                    context_names=[module.params["context"]],
-                    names=[module.params["name"]],
-                    volume_group=VolumeGroupPost(),
-                )
-            else:
-                res = array.post_volume_groups(
-                    names=[module.params["name"]],
-                    volume_group=VolumeGroupPost(),
-                )
+            res = post_with_context(
+                array,
+                "post_volume_groups",
+                CONTEXT_API_VERSION,
+                module,
+                names=[module.params["name"]],
+                volume_group=VolumeGroupPost(),
+            )
             check_response(
                 res, module, f"Vgroup {module.params['name']} creation failed"
             )
@@ -438,16 +402,14 @@ def make_vgroup(module, array):
             ),
         )
         if not module.check_mode:
-            if LooseVersion(CONTEXT_API_VERSION) <= LooseVersion(api_version):
-                res = array.patch_volume_groups(
-                    names=[module.params["name"]],
-                    volume_group=volume_group,
-                    context_names=[module.params["context"]],
-                )
-            else:
-                res = array.patch_volume_groups(
-                    names=[module.params["name"]], volume_group=volume_group
-                )
+            res = patch_with_context(
+                array,
+                "patch_volume_groups",
+                CONTEXT_API_VERSION,
+                module,
+                names=[module.params["name"]],
+                volume_group=volume_group,
+            )
             check_response(
                 res,
                 module,
@@ -494,14 +456,14 @@ def make_multi_vgroups(module, array):
     elif bw_qos_size != 0 and iops_qos_size == 0:
         volume_group = VolumeGroupPost(qos=Qos(bandwidth_limit=bw_qos_size))
     if not module.check_mode:
-        if LooseVersion(CONTEXT_API_VERSION) <= LooseVersion(api_version):
-            res = array.post_volume_groups(
-                names=names,
-                volume_group=volume_group,
-                context_names=[module.params["context"]],
-            )
-        else:
-            res = array.post_volume_groups(names=names, volume_group=volume_group)
+        res = post_with_context(
+            array,
+            "post_volume_groups",
+            CONTEXT_API_VERSION,
+            module,
+            names=names,
+            volume_group=volume_group,
+        )
         check_response(
             res,
             module,
@@ -514,14 +476,14 @@ def make_multi_vgroups(module, array):
                     priority_adjustment_value=module.params["priority_value"],
                 ),
             )
-            if LooseVersion(CONTEXT_API_VERSION) <= LooseVersion(api_version):
-                res = array.patch_volume_groups(
-                    names=names,
-                    volume_group=volume_group,
-                    context_names=[module.params["context"]],
-                )
-            else:
-                res = array.patch_volume_groups(names=names, volume_group=volume_group)
+            res = patch_with_context(
+                array,
+                "patch_volume_groups",
+                CONTEXT_API_VERSION,
+                module,
+                names=names,
+                volume_group=volume_group,
+            )
             check_response(
                 res,
                 module,
@@ -536,14 +498,15 @@ def update_vgroup(module, array):
     changed = False
 
     # Fetch the volume group
-    if LooseVersion(CONTEXT_API_VERSION) <= LooseVersion(api_version):
-        vg_all = list(
-            array.get_volume_groups(
-                names=[module.params["name"]], context_names=[module.params["context"]]
-            ).items
-        )[0]
-    else:
-        vg_all = list(array.get_volume_groups(names=[module.params["name"]]).items)[0]
+    vg_all = list(
+        get_with_context(
+            array,
+            "get_volume_groups",
+            CONTEXT_API_VERSION,
+            module,
+            names=[module.params["name"]],
+        ).items
+    )[0]
 
     kwargs = {"names": [module.params["name"]]}
     if LooseVersion(CONTEXT_API_VERSION) <= LooseVersion(api_version):
@@ -635,20 +598,16 @@ def update_vgroup(module, array):
 
 def recover_vgroup(module, array):
     """Recover Volume Group"""
-    api_version = array.get_rest_version()
     changed = True
     if not module.check_mode:
-        if LooseVersion(CONTEXT_API_VERSION) <= LooseVersion(api_version):
-            res = array.patch_volume_groups(
-                names=[module.params["name"]],
-                context_names=[module.params["context"]],
-                volume_group=VolumeGroupPatch(destroyed=False),
-            )
-        else:
-            res = array.patch_volume_groups(
-                names=[module.params["name"]],
-                volume_group=VolumeGroupPatch(destroyed=False),
-            )
+        res = patch_with_context(
+            array,
+            "patch_volume_groups",
+            CONTEXT_API_VERSION,
+            module,
+            names=[module.params["name"]],
+            volume_group=VolumeGroupPatch(destroyed=False),
+        )
         check_response(
             res, module, f"Recovery of volume group {module.params['name']} failed"
         )
@@ -658,15 +617,15 @@ def recover_vgroup(module, array):
 
 def eradicate_vgroup(module, array):
     """Eradicate Volume Group"""
-    api_version = array.get_rest_version()
     changed = True
     if not module.check_mode:
-        if LooseVersion(CONTEXT_API_VERSION) <= LooseVersion(api_version):
-            res = array.delete_volume_groups(
-                names=[module.params["name"]], context_names=[module.params["context"]]
-            )
-        else:
-            res = array.delete_volume_groups(names=[module.params["name"]])
+        res = delete_with_context(
+            array,
+            "delete_volume_groups",
+            CONTEXT_API_VERSION,
+            module,
+            names=[module.params["name"]],
+        )
         check_response(
             res, module, f"Eradicating vgroup {module.params['name']} failed"
         )
@@ -675,20 +634,16 @@ def eradicate_vgroup(module, array):
 
 def delete_vgroup(module, array):
     """Delete Volume Group"""
-    api_version = array.get_rest_version()
     changed = True
     if not module.check_mode:
-        if LooseVersion(CONTEXT_API_VERSION) <= LooseVersion(api_version):
-            res = array.patch_volume_groups(
-                names=[module.params["name"]],
-                context_names=[module.params["context"]],
-                volume_group=VolumeGroupPatch(destroyed=True),
-            )
-        else:
-            res = array.patch_volume_groups(
-                names=[module.params["name"]],
-                volume_group=VolumeGroupPatch(destroyed=True),
-            )
+        res = patch_with_context(
+            array,
+            "patch_volume_groups",
+            CONTEXT_API_VERSION,
+            module,
+            names=[module.params["name"]],
+            volume_group=VolumeGroupPatch(destroyed=True),
+        )
         check_response(
             res, module, f"Deletion of volume group {module.params['name']} failed"
         )
@@ -726,6 +681,13 @@ def main():
         )
     state = module.params["state"]
     array = get_array(module)
+    api_version = array.get_rest_version()
+    if (
+        LooseVersion(CONTEXT_API_VERSION) <= LooseVersion(api_version)
+        and not module.params["context"]
+    ):
+        # If no context is provided set the context to the local array name
+        module.params["context"] = list(array.get_arrays().items)[0].name
     vgroup = get_vgroup(module, array)
     xvgroup = get_pending_vgroup(module, array)
 
