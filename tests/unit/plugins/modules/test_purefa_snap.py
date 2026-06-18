@@ -58,6 +58,27 @@ from plugins.modules.purefa_snap import (
     eradicate_snapshot,
     recover_snapshot,
 )
+import plugins.modules.purefa_snap as _snap_module
+
+
+def _passthrough_with_context(client, method_name, context_version, module, **kwargs):
+    """Mirror api_helpers.*_with_context for tests (api_helpers is mocked out).
+
+    Adds context_names only when the API version supports it and a context is
+    set, matching the real helper so both old-API and context assertions hold.
+    """
+    api_version = client.get_rest_version()
+    if LooseVersion(context_version) <= LooseVersion(api_version) and module.params.get(
+        "context"
+    ):
+        kwargs["context_names"] = [module.params["context"]]
+    return getattr(client, method_name)(**kwargs)
+
+
+_snap_module.get_with_context = _passthrough_with_context
+_snap_module.post_with_context = _passthrough_with_context
+_snap_module.patch_with_context = _passthrough_with_context
+_snap_module.delete_with_context = _passthrough_with_context
 
 
 class TestCheckOffload:
@@ -1512,6 +1533,7 @@ class TestEradicateSnapshotPaths:
 class TestStateCopySnapshotNotFound:
     """Test cases for state=copy when snapshot does not exist (issue #978)"""
 
+    @patch("plugins.modules.purefa_snap.LooseVersion", side_effect=LooseVersion)
     @patch("plugins.modules.purefa_snap.get_deleted_snapshot")
     @patch("plugins.modules.purefa_snap.get_snapshot")
     @patch("plugins.modules.purefa_snap.get_volume")
@@ -1526,6 +1548,7 @@ class TestStateCopySnapshotNotFound:
         mock_get_volume,
         mock_get_snapshot,
         mock_get_deleted_snapshot,
+        mock_lv,
     ):
         """Test that state=copy fails with error when snapshot doesn't exist"""
         from plugins.modules.purefa_snap import main
@@ -1546,6 +1569,7 @@ class TestStateCopySnapshotNotFound:
 
         mock_array = Mock()
         mock_array.get_rest_version.return_value = "2.38"
+        mock_array.get_arrays.return_value.items = [Mock()]
         mock_get_array.return_value = mock_array
 
         mock_check_target.return_value = True
