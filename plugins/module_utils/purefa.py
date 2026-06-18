@@ -75,34 +75,62 @@ def get_array(module):
             "version": VERSION,
             "platform": platform.platform(),
         }
-    array_name = module.params["fa_url"]
-    api = module.params["api_token"]
-    if HAS_PYPURECLIENT:
-        if array_name and api:
-            system = flasharray.Client(
-                target=array_name,
-                api_token=api,
-                user_agent=user_agent,
-            )
-        elif environ.get("PUREFA_URL") and environ.get("PUREFA_API"):
-            system = flasharray.Client(
-                target=(environ.get("PUREFA_URL")),
-                api_token=(environ.get("PUREFA_API")),
-                user_agent=user_agent,
-            )
-        else:
-            module.fail_json(
-                msg="You must set PUREFA_URL and PUREFA_API environment variables "
-                "or the fa_url and api_token module arguments"
-            )
-        try:
-            system.get_hardware()
-        except Exception:
-            module.fail_json(
-                msg="Pure Storage FlashArray authentication failed. Check your credentials"
-            )
-    else:
+    if not HAS_PYPURECLIENT:
         module.fail_json(msg="py-pure-client and/or requests are not installed.")
+
+    # Module parameters take precedence over the matching PUREFA_* env vars.
+    # Three mutually-exclusive authentication modes are supported:
+    #   1. api_token - static API token (default, backwards compatible).
+    #   2. id_token - a pre-signed JWT, exchanged by the array for an access
+    #      token.
+    #   3. private_key_file with client_id, key_id, issuer and username - the
+    #      SDK signs the JWT locally before exchange.
+    # Modes 2 and 3 require a matching API Client registered on the array
+    # (see the purefa_apiclient module).
+    target = module.params["fa_url"] or environ.get("PUREFA_URL")
+    api = module.params["api_token"] or environ.get("PUREFA_API")
+    id_token = module.params.get("id_token") or environ.get("PUREFA_ID_TOKEN")
+    private_key_file = module.params.get("private_key_file") or environ.get(
+        "PUREFA_PRIVATE_KEY_FILE"
+    )
+    private_key_password = module.params.get("private_key_password") or environ.get(
+        "PUREFA_PRIVATE_KEY_PASSWORD"
+    )
+    username = module.params.get("username") or environ.get("PUREFA_USERNAME")
+    client_id = module.params.get("client_id") or environ.get("PUREFA_CLIENT_ID")
+    key_id = module.params.get("key_id") or environ.get("PUREFA_KEY_ID")
+    issuer = module.params.get("issuer") or environ.get("PUREFA_ISSUER")
+
+    common = {"target": target, "user_agent": user_agent}
+
+    if target and api:
+        system = flasharray.Client(api_token=api, **common)
+    elif target and id_token:
+        system = flasharray.Client(id_token=id_token, **common)
+    elif target and private_key_file and client_id and key_id and issuer and username:
+        system = flasharray.Client(
+            private_key_file=private_key_file,
+            private_key_password=private_key_password,
+            client_id=client_id,
+            key_id=key_id,
+            issuer=issuer,
+            username=username,
+            **common,
+        )
+    else:
+        module.fail_json(
+            msg="You must set PUREFA_URL and PUREFA_API environment variables "
+            "or the fa_url and api_token module arguments. Alternatively, use "
+            "token-based authentication via id_token, or private_key_file with "
+            "client_id, key_id, issuer and username (or the matching PUREFA_* "
+            "environment variables)."
+        )
+    try:
+        system.get_hardware()
+    except Exception:
+        module.fail_json(
+            msg="Pure Storage FlashArray authentication failed. Check your credentials"
+        )
     return system
 
 
@@ -112,5 +140,14 @@ def purefa_argument_spec():
     return dict(
         fa_url=dict(),
         api_token=dict(no_log=True),
+        # OAuth2 / API-client token authentication (alternatives to api_token).
+        # See the purefa_apiclient module for registering the trusted key.
+        id_token=dict(no_log=True),
+        private_key_file=dict(no_log=False),
+        private_key_password=dict(no_log=True),
+        username=dict(),
+        client_id=dict(),
+        key_id=dict(no_log=False),
+        issuer=dict(),
         disable_warnings=dict(type="bool", default=False),
     )
