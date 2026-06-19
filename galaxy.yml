@@ -1,19 +1,20 @@
 namespace: purestorage
 name: flasharray
-version: 1.42.0
+version: 1.43.0
 readme: README.md
 authors:
-  - Pure Storage Ansible Team <pure-ansible-team@purestorage.com>
-description: Collection of modules to manage Pure Storage FlashArrays (including Cloud Block Store)
+  - Everpure Ansible Team <pure-ansible-team@everpuredata.com>
+description: Collection of modules to manage Everpure FlashArrays (including Cloud Block Store)
 license:
   - GPL-3.0-or-later
   - BSD-2-Clause
 tags:
+  - everpure
   - purestorage
   - flasharray
   - cloudblockstore
   - storage
 dependencies: {}
-repository: https://github.com/Pure-Storage-Ansible/FlashArray-Collection
-documentation: https://github.com/Pure-Storage-Ansible/FlashArray-Collection
-issues: https://github.com/Pure-Storage-Ansible/FlashArray-Collection/issues
+repository: https://github.com/Everpure-Ansible/FlashArray-Collection
+documentation: https://github.com/Everpure-Ansible/FlashArray-Collection
+issues: https://github.com/Everpure-Ansible/FlashArray-Collection/issues
