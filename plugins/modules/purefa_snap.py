@@ -357,7 +357,10 @@ def create_snapshot(module, array):
             module.params["suffix"] = None
         changed = True
         if not module.check_mode:
-            if LooseVersion(CONTEXT_API_VERSION) <= LooseVersion(api_version):
+            if (
+                LooseVersion(CONTEXT_API_VERSION) <= LooseVersion(api_version)
+                and module.params["context"]
+            ):
                 res = array.post_remote_volume_snapshots(
                     source_names=[module.params["name"]],
                     context_names=[module.params["context"]],
@@ -393,7 +396,10 @@ def create_snapshot(module, array):
         changed = True
         if not module.check_mode:
             if LooseVersion(THROTTLE_API) <= LooseVersion(api_version):
-                if LooseVersion(CONTEXT_API_VERSION) <= LooseVersion(api_version):
+                if (
+                    LooseVersion(CONTEXT_API_VERSION) <= LooseVersion(api_version)
+                    and module.params["context"]
+                ):
                     res = array.post_volume_snapshots(
                         allow_throttle=module.params["throttle"],
                         context_names=[module.params["context"]],
