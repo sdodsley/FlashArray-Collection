@@ -17,12 +17,12 @@ plugins:
       namespace: ''
       version_added: 1.9.0
     purefa_admin:
-      description: Configure Pure Storage FlashArray Global Admin settings
+      description: Configure Everpure FlashArray Global Admin settings
       name: purefa_admin
       namespace: ''
       version_added: 1.12.0
     purefa_alert:
-      description: Configure Pure Storage FlashArray alert email settings
+      description: Configure Everpure FlashArray alert email settings
       name: purefa_alert
       namespace: ''
       version_added: 1.0.0
@@ -32,7 +32,7 @@ plugins:
       namespace: ''
       version_added: 1.5.0
     purefa_arrayname:
-      description: Configure Pure Storage FlashArray array name
+      description: Configure Everpure FlashArray array name
       name: purefa_arrayname
       namespace: ''
       version_added: 1.0.0
@@ -42,7 +42,7 @@ plugins:
       namespace: ''
       version_added: 1.29.0
     purefa_banner:
-      description: Configure Pure Storage FlashArray GUI and SSH MOTD message
+      description: Configure Everpure FlashArray GUI and SSH MOTD message
       name: purefa_banner
       namespace: ''
       version_added: 1.0.0
@@ -62,12 +62,12 @@ plugins:
       namespace: ''
       version_added: 1.0.0
     purefa_console:
-      description: Enable or Disable Pure Storage FlashArray Console Lock
+      description: Enable or Disable Everpure FlashArray Console Lock
       name: purefa_console
       namespace: ''
       version_added: 1.0.0
     purefa_default_protection:
-      description: Manage SafeMode default protection for a Pure Storage FlashArray
+      description: Manage SafeMode default protection for a Everpure FlashArray
       name: purefa_default_protection
       namespace: ''
       version_added: 1.14.0
@@ -102,17 +102,17 @@ plugins:
       namespace: ''
       version_added: 1.31.0
     purefa_endpoint:
-      description: Manage VMware protocol-endpoints on Pure Storage FlashArrays
+      description: Manage VMware protocol-endpoints on Everpure FlashArrays
       name: purefa_endpoint
       namespace: ''
       version_added: 1.0.0
     purefa_eradication:
-      description: Configure Pure Storage FlashArray Eradication Timer
+      description: Configure Everpure FlashArray Eradication Timer
       name: purefa_eradication
       namespace: ''
       version_added: 1.9.0
     purefa_eula:
-      description: Sign Pure Storage FlashArray EULA
+      description: Sign Everpure FlashArray EULA
       name: purefa_eula
       namespace: ''
       version_added: 1.0.0
@@ -142,22 +142,22 @@ plugins:
       namespace: ''
       version_added: 1.24.0
     purefa_hg:
-      description: Manage hostgroups on Pure Storage FlashArrays
+      description: Manage hostgroups on Everpure FlashArrays
       name: purefa_hg
       namespace: ''
       version_added: 1.0.0
     purefa_host:
-      description: Manage hosts on Pure Storage FlashArrays
+      description: Manage hosts on Everpure FlashArrays
       name: purefa_host
       namespace: ''
       version_added: 1.0.0
     purefa_info:
-      description: Collect information from Pure Storage FlashArray
+      description: Collect information from Everpure FlashArray
       name: purefa_info
       namespace: ''
       version_added: 1.0.0
     purefa_inventory:
-      description: Collect information from Pure Storage FlashArray
+      description: Collect information from Everpure FlashArray
       name: purefa_inventory
       namespace: ''
       version_added: 1.0.0
@@ -167,12 +167,12 @@ plugins:
       namespace: ''
       version_added: 1.10.0
     purefa_logging:
-      description: Manage Pure Storage FlashArray Audit and Session logs
+      description: Manage Everpure FlashArray Audit and Session logs
       name: purefa_logging
       namespace: ''
       version_added: 1.19.0
     purefa_maintenance:
-      description: Configure Pure Storage FlashArray Maintenance Windows
+      description: Configure Everpure FlashArray Maintenance Windows
       name: purefa_maintenance
       namespace: ''
       version_added: 1.7.0
@@ -182,12 +182,12 @@ plugins:
       namespace: ''
       version_added: 1.14.0
     purefa_network:
-      description: Manage network interfaces in a Pure Storage FlashArray
+      description: Manage network interfaces in a Everpure FlashArray
       name: purefa_network
       namespace: ''
       version_added: 1.0.0
     purefa_ntp:
-      description: Configure Pure Storage FlashArray NTP settings
+      description: Configure Everpure FlashArray NTP settings
       name: purefa_ntp
       namespace: ''
       version_added: 1.0.0
@@ -197,33 +197,32 @@ plugins:
       namespace: ''
       version_added: 1.0.0
     purefa_pg:
-      description: Manage protection groups on Pure Storage FlashArrays
+      description: Manage protection groups on Everpure FlashArrays
       name: purefa_pg
       namespace: ''
       version_added: 1.0.0
     purefa_pgsched:
-      description: Manage protection groups replication schedules on Pure Storage
-        FlashArrays
+      description: Manage protection groups replication schedules on Everpure FlashArrays
       name: purefa_pgsched
       namespace: ''
       version_added: 1.0.0
     purefa_pgsnap:
-      description: Manage protection group snapshots on Pure Storage FlashArrays
+      description: Manage protection group snapshots on Everpure FlashArrays
       name: purefa_pgsnap
       namespace: ''
       version_added: 1.0.0
     purefa_phonehome:
-      description: Enable or Disable Pure Storage FlashArray Phonehome
+      description: Enable or Disable Everpure FlashArray Phonehome
       name: purefa_phonehome
       namespace: ''
       version_added: 1.0.0
     purefa_pod:
-      description: Manage AC pods in Pure Storage FlashArrays
+      description: Manage AC pods in Everpure FlashArrays
       name: purefa_pod
       namespace: ''
       version_added: 1.0.0
     purefa_pod_replica:
-      description: Manage ActiveDR pod replica links between Pure Storage FlashArrays
+      description: Manage ActiveDR pod replica links between Everpure FlashArrays
       name: purefa_pod_replica
       namespace: ''
       version_added: 1.0.0
@@ -238,12 +237,12 @@ plugins:
       namespace: ''
       version_added: 1.0.0
     purefa_ra:
-      description: Enable or Disable Pure Storage FlashArray Remote Assist
+      description: Enable or Disable Everpure FlashArray Remote Assist
       name: purefa_ra
       namespace: ''
       version_added: 1.0.0
     purefa_realm:
-      description: Manage realms on Pure Storage FlashArrays
+      description: Manage realms on Everpure FlashArrays
       name: purefa_realm
       namespace: ''
       version_added: 1.33.0
@@ -268,7 +267,7 @@ plugins:
       namespace: ''
       version_added: 1.0.0
     purefa_snap:
-      description: Manage volume snapshots on Pure Storage FlashArrays
+      description: Manage volume snapshots on Everpure FlashArrays
       name: purefa_snap
       namespace: ''
       version_added: 1.0.0
@@ -283,17 +282,17 @@ plugins:
       namespace: ''
       version_added: 1.16.0
     purefa_sso:
-      description: Configure Pure Storage FlashArray Single Sign-On
+      description: Configure Everpure FlashArray Single Sign-On
       name: purefa_sso
       namespace: ''
       version_added: 1.9.0
     purefa_subnet:
-      description: Manage network subnets in a Pure Storage FlashArray
+      description: Manage network subnets in a Everpure FlashArray
       name: purefa_subnet
       namespace: ''
       version_added: 1.0.0
     purefa_syslog:
-      description: Configure Pure Storage FlashArray syslog settings
+      description: Configure Everpure FlashArray syslog settings
       name: purefa_syslog
       namespace: ''
       version_added: 1.0.0
@@ -302,8 +301,13 @@ plugins:
       name: purefa_syslog_settings
       namespace: ''
       version_added: 1.10.0
+    purefa_tgroup:
+      description: Manage topology groups on Everpure FlashArrays
+      name: purefa_tgroup
+      namespace: ''
+      version_added: 1.43.0
     purefa_timeout:
-      description: Configure Pure Storage FlashArray GUI idle timeout
+      description: Configure Everpure FlashArray GUI idle timeout
       name: purefa_timeout
       namespace: ''
       version_added: 1.0.0
@@ -318,12 +322,12 @@ plugins:
       namespace: ''
       version_added: 1.0.0
     purefa_vg:
-      description: Manage volume groups on Pure Storage FlashArrays
+      description: Manage volume groups on Everpure FlashArrays
       name: purefa_vg
       namespace: ''
       version_added: 1.0.0
     purefa_vlan:
-      description: Manage network VLAN interfaces in a Pure Storage FlashArray
+      description: Manage network VLAN interfaces in a Everpure FlashArray
       name: purefa_vlan
       namespace: ''
       version_added: 1.0.0
@@ -333,12 +337,12 @@ plugins:
       namespace: ''
       version_added: 1.0.0
     purefa_volume:
-      description: Manage volumes on Pure Storage FlashArrays
+      description: Manage volumes on Everpure FlashArrays
       name: purefa_volume
       namespace: ''
       version_added: 1.0.0
     purefa_volume_tags:
-      description: Manage volume tags on Pure Storage FlashArrays
+      description: Manage volume tags on Everpure FlashArrays
       name: purefa_volume_tags
       namespace: ''
       version_added: 1.0.0
@@ -352,4 +356,4 @@ plugins:
   strategy: {}
   test: {}
   vars: {}
-version: 1.42.0
+version: 1.43.0

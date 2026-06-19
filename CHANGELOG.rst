@@ -4,6 +4,142 @@ Purestorage.Flasharray Release Notes
 
 .. contents:: Topics
 
+v1.43.0
+=======
+
+Minor Changes
+-------------
+
+- All Tier 5 modules refactored to use centralized api_helpers for context-aware API calls.
+- module_utils/api_helpers - Added centralized API helper functions to reduce code duplication across modules
+- module_utils/api_helpers - Added check_api_version() for cached API version checking
+- module_utils/api_helpers - Added check_response() for standardized response validation
+- module_utils/api_helpers - Added get_with_context() for context-aware API calls eliminating 500+ duplicated patterns
+- module_utils/error_handlers - Added handle_auth_error() for improved authentication error messages
+- module_utils/error_handlers - Added safe_api_call() for comprehensive error handling wrapper
+- module_utils/error_handlers - Added standardized error handling framework with FlashArray exception hierarchy
+- purefa - Add API-client token authentication as an alternative to ``api_token``, via a pre-signed ``id_token`` or a ``private_key_file`` (with ``client_id``, ``key_id``, ``issuer``, ``username``).
+- purefa_ad - Refactored to use centralized `check_response()` API helper.
+- purefa_admin - Refactored to use centralized check_response() helper for API error handling.
+- purefa_alert - Refactored to use centralized `check_response()` API helper.
+- purefa_apiclient - Refactored to use centralized `check_response()` API helper.
+- purefa_arrayname - Use get_with_context() and check_response() helpers.
+- purefa_audits - Use get_with_context() helper and fix duplicate code bug.
+- purefa_banner - Use get_with_context() and check_response() helpers.
+- purefa_cbsexpand - Refactored to use centralized check_response() helper for API error handling.
+- purefa_certs - Refactored to use centralized `check_response()` API helper.
+- purefa_connect - Refactored to use centralized `check_response()` API helper.
+- purefa_console - Use get_with_context() and check_response() helpers.
+- purefa_default_protection - Use centralized api_helpers for context-aware API calls and error handling.
+- purefa_directory - Refactored to use centralized `check_response()` API helper.
+- purefa_dirsnap - Refactored to use centralized `check_response()` API helper.
+- purefa_dns - Added Fusion support
+- purefa_dns - Use centralized api_helpers for context-aware API calls and error handling.
+- purefa_ds - Use get_with_context() and check_response() helpers.
+- purefa_dsrole - Refactored to use centralized `check_response()` API helper.
+- purefa_dsrole_old - Refactored to use centralized `check_response()` API helper.
+- purefa_endpoint - Use centralized api_helpers for error handling.
+- purefa_eradication - Refactored to use centralized api_helpers for context-aware API calls
+- purefa_eradication - Simplified error handling using check_response() helper
+- purefa_eula - Refactored to use centralized check_response() helper for API error handling.
+- purefa_export - Refactored to use centralized `check_response()` API helper.
+- purefa_file - Refactored to use centralized `check_response()` API helper.
+- purefa_fleet - Refactored to use centralized `check_response()` API helper.
+- purefa_fs - Refactored to use centralized `check_response()` API helper.
+- purefa_hardware - Refactored to use centralized check_response() helper for API error handling.
+- purefa_hg - Refactored to use centralized api_helpers for error handling
+- purefa_host - Refactored to use centralized ``api_helpers`` functions (get_with_context, check_response) reducing code by 317 lines
+- purefa_info - Add the tgroups gather_subset for topology group reporting.
+- purefa_kmip - Refactored to use centralized `check_response()` API helper.
+- purefa_maintenance - Refactored to use centralized check_response() helper for API error handling.
+- purefa_messages - Use get_with_context() helper.
+- purefa_network - Use centralized api_helpers for error handling.
+- purefa_ntp - Use centralized api_helpers for context-aware API calls and error handling.
+- purefa_offload - Use get_with_context() and check_response() helpers.
+- purefa_pg - Refactored to use centralized check_response() helper for API error handling.
+- purefa_pgsched - Use centralized api_helpers for context-aware API calls and error handling.
+- purefa_pgsnap - Added ``restore=all`` option to restore all member volumes from a protection group snapshot at once using a single API call instead of iterating through each volume individually
+- purefa_pgsnap - Refactored to use centralized api_helpers for error handling
+- purefa_phonehome - Refactored to use centralized `check_response()` API helper.
+- purefa_pod - Refactored to use centralized check_response() helper for API error handling.
+- purefa_pod_replica - Refactored to use centralized `check_response()` API helper.
+- purefa_proxy - Refactored to use centralized check_response() helper for API error handling.
+- purefa_ra - Refactored to use centralized check_response() helper for API error handling.
+- purefa_realm - Use centralized api_helpers for error handling.
+- purefa_saml - Refactored to use centralized `check_response()` API helper.
+- purefa_smis - Refactored to use centralized check_response() helper for API error handling.
+- purefa_smtp - Refactored to use centralized check_response() helper for API error handling.
+- purefa_snap - Refactored to use centralized api_helpers for error handling
+- purefa_snmp - Use centralized api_helpers for error handling.
+- purefa_snmp_agent - Refactored to use centralized check_response() helper for API error handling.
+- purefa_sso - Refactored to use centralized check_response() helper for API error handling.
+- purefa_subnet - Refactored to use centralized `check_response()` API helper.
+- purefa_syslog - Use get_with_context() and check_response() helpers.
+- purefa_syslog_settings - Use get_with_context() and check_response() helpers.
+- purefa_timeout - Use get_with_context() and check_response() helpers.
+- purefa_token - Refactored to use centralized check_response() helper for API error handling.
+- purefa_user - Use centralized api_helpers for error handling.
+- purefa_vg - Refactored to use centralized api_helpers for error handling
+- purefa_vlan - Use centralized api_helpers for error handling.
+- purefa_vnc - Refactored to use centralized check_response() helper for API error handling.
+- purefa_volume - Refactored error handling to use centralized check_response() helper (https://github.com/Pure-Storage-Ansible/FlashArray-Collection/pull/932)
+- purefa_volume_tags - Use get_with_context() and check_response() helpers.
+- purefa_workload - Added custom parameters support
+- purefa_workload - Use centralized api_helpers for error handling.
+
+Bugfixes
+--------
+
+- purefa_dns - Fixed issue with purefa_dns not updating DNS config on remote arrays correctly
+- purefa_hg - Default an empty context to the local array name to avoid an internal error on newer Purity (https://github.com/Pure-Storage-Ansible/FlashArray-Collection/issues/1005)
+- purefa_hg - Only default the context to the local array name when the array is a fleet member, so standalone arrays do not send fleet context that would fail on stricter Purity releases
+- purefa_host - Fixed issue with purefa_host not updating host config on remote arrays correctly
+- purefa_network - Fixed crash when clearing IP address with 0.0.0.0/0 without gateway
+- purefa_network - Fixed crash when setting gateway without an IP address configured
+- purefa_offload - Fixed broken required_if validation that never executed due to comparing argument_spec dictionary to string instead of parameter value
+- purefa_pg - Default an empty context to the local array name to avoid an internal error on newer Purity (https://github.com/Pure-Storage-Ansible/FlashArray-Collection/issues/1005)
+- purefa_pg - Fixed adding hostgroups to empty protection group using wrong parameter
+- purefa_pg - Only default the context to the local array name when the array is a fleet member, so standalone arrays do not send fleet context that would fail on stricter Purity releases
+- purefa_pgsched - Fixed issue where `snap_at` and `replicate_at` parameters were sent to the API even when frequency was not a multiple of days, causing API errors.
+- purefa_pgsched - Fixed replicate_at "" and snap_at "" not clearing schedule times correctly.
+- purefa_pgsnap - Default an empty context to the local array name to avoid an internal error on newer Purity (https://github.com/Pure-Storage-Ansible/FlashArray-Collection/issues/1005)
+- purefa_pgsnap - Only default the context to the local array name when the array is a fleet member, so standalone arrays do not send fleet context that would fail on stricter Purity releases
+- purefa_pgsnap - Route context-aware API calls through the shared api_helpers so context_names is only sent when a context is set
+- purefa_pod - Add idempotency checks for already promoted/demoted pods
+- purefa_pod - Fix UnboundLocalError when promoting pod without undo-demote pod
+- purefa_pod - Fix undo-demote pod handling during ActiveDR promotion
+- purefa_pod - Fixed unreachable ``recover_pod()`` branch in ``main()`` by reordering conditions to check for destroyed pods before creating new ones
+- purefa_pod - Fixed unreachable quiescing status check in ``update_pod()`` that was inside a block requiring ``promotion_status == 'demoted'``
+- purefa_pod - Removed duplicate ``clone_pod`` condition in ``main()``
+- purefa_policy - Added max_password_age to current_pwd_policy dictionary and PolicyPassword API calls
+- purefa_policy - Added missing max_password_age parameter to DOCUMENTATION, argument_spec, and password policy update logic
+- purefa_policy - Added missing min_password_age parameter to DOCUMENTATION, argument_spec, and password policy update logic
+- purefa_policy - Corrected min_password_age range to 0-7 days and max_password_age range to 0 (disabled) or 1-99999 days per SDK specifications
+- purefa_policy - Enhanced min_password_age and max_password_age to accept human-readable time periods (e.g., '1d', '90d', '2h') in addition to integer seconds
+- purefa_policy - Fixed KeyError when accessing min_password_age and max_password_age parameters that were used in code but not defined in argument_spec
+- purefa_policy - Fixed ``Versions options must be the same for all NFS export policy rules`` when adding multiple clients to an existing NFS policy by adding missing ``nfs_version`` parameter
+- purefa_policy - Fixed critical runtime error in quota policy rule deletion (line 942) where rules[rule].notifications incorrectly used object as dictionary key
+- purefa_policy - Fixed duplicate condition check (line 2784) where changed_rule was checked twice in the same if statement
+- purefa_policy - Fixed duplicate variable initialization in update_policy() function (line 1509) where changed_rule was assigned twice
+- purefa_policy - Fixed lockout_duration not being applied when updating password policy
+- purefa_policy - Fixed min_password_age and max_password_age to properly convert from human-readable time periods to milliseconds for SDK compatibility
+- purefa_policy - Fixed password policy params being set to None when updating other params
+- purefa_policy - Fixed quota_notifications normalization using wrong operator
+- purefa_smtp - Fixed ``KeyError 'user_name'`` when configuring SMTP with authentication by correcting parameter name from ``module.params["user_name"]`` to ``module.params["user"]``
+- purefa_snap - Default an empty context to the local array name to avoid an internal error on newer Purity (https://github.com/Pure-Storage-Ansible/FlashArray-Collection/issues/1005)
+- purefa_snap - Only default the context to the local array name when the array is a fleet member, so standalone arrays do not send fleet context that would fail on stricter Purity releases
+- purefa_snap - Only send context_names when a context is set, so standalone arrays do not send fleet context that would fail on stricter Purity releases
+- purefa_vg - Default an empty context to the local array name to avoid an internal error on newer Purity (https://github.com/Pure-Storage-Ansible/FlashArray-Collection/issues/1005)
+- purefa_vg - Only default the context to the local array name when the array is a fleet member, so standalone arrays do not send fleet context that would fail on stricter Purity releases
+- purefa_volume - Only default the context to the local array name when the array is a fleet member, so standalone arrays do not send fleet context that would fail on stricter Purity releases
+- purefa_volume - Route all context-aware API calls through the shared api_helpers so context_names is only sent when a context is set, and fix an inverted version check on the pod-move path
+- purefa_workload - Fail with a clear error when the array is not a member of a fleet, since the module requires a Fusion fleet environment
+
+New Modules
+-----------
+
+- purestorage.flasharray.purefa_tgroup - Manage topology groups on Everpure FlashArrays
+
 v1.42.0
 =======
 
