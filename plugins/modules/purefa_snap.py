@@ -357,7 +357,10 @@ def create_snapshot(module, array):
             module.params["suffix"] = None
         changed = True
         if not module.check_mode:
-            if LooseVersion(CONTEXT_API_VERSION) <= LooseVersion(api_version):
+            if (
+                LooseVersion(CONTEXT_API_VERSION) <= LooseVersion(api_version)
+                and module.params["context"]
+            ):
                 res = array.post_remote_volume_snapshots(
                     source_names=[module.params["name"]],
                     context_names=[module.params["context"]],
@@ -393,7 +396,10 @@ def create_snapshot(module, array):
         changed = True
         if not module.check_mode:
             if LooseVersion(THROTTLE_API) <= LooseVersion(api_version):
-                if LooseVersion(CONTEXT_API_VERSION) <= LooseVersion(api_version):
+                if (
+                    LooseVersion(CONTEXT_API_VERSION) <= LooseVersion(api_version)
+                    and module.params["context"]
+                ):
                     res = array.post_volume_snapshots(
                         allow_throttle=module.params["throttle"],
                         context_names=[module.params["context"]],
@@ -726,7 +732,9 @@ def main():
         and not module.params["context"]
     ):
         # If no context is provided set the context to the local array name
-        module.params["context"] = list(array.get_arrays().items)[0].name
+        fleet_res = array.get_fleets()
+        if fleet_res.status_code == 200 and list(fleet_res.items):
+            module.params["context"] = list(array.get_arrays().items)[0].name
     if module.params["offload"]:
         if not _check_offload(module, array) and not _check_target(module, array):
             module.fail_json(

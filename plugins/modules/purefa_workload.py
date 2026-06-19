@@ -697,12 +697,13 @@ def main():
     if module.params["volume_count"] and module.params["volume_count"] <= 0:
         module.fail_json(msg="volume_count must be a positive integer.")
     fleet_res = array.get_fleets()
-    check_response(
-        fleet_res,
-        module,
-        "Fusion is not enabled on this system or the array is not a member of a fleet",
-    )
-    fleet = list(fleet_res.items)[0].name
+    fleet_items = list(fleet_res.items) if fleet_res.status_code == 200 else []
+    if not fleet_items:
+        module.fail_json(
+            msg="purefa_workload requires a Fusion fleet environment, but this "
+            "array is not a member of a fleet."
+        )
+    fleet = fleet_items[0].name
 
     workload_destroyed = False
     workload_exists = False
