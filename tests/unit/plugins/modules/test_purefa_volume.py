@@ -40,6 +40,33 @@ sys.modules[
     "ansible_collections.purestorage.flasharray.plugins.module_utils.api_helpers"
 ] = MagicMock()
 
+
+def _ctx_delegate(client, method_name, context_version, module, **kwargs):
+    """Stand-in for the *_with_context helpers used during migration.
+
+    Mirrors the real helper: call the array method, adding context_names only
+    when the API version supports it and a context is set. This lets the
+    existing array-method-based assertions continue to work.
+    """
+    api_version = client.get_rest_version()
+    if LooseVersion(context_version) <= LooseVersion(api_version) and module.params.get(
+        "context"
+    ):
+        kwargs["context_names"] = [module.params["context"]]
+    return getattr(client, method_name)(**kwargs)
+
+
+_api_helpers_mock = sys.modules[
+    "ansible_collections.purestorage.flasharray.plugins.module_utils.api_helpers"
+]
+for _helper_name in (
+    "get_with_context",
+    "post_with_context",
+    "patch_with_context",
+    "delete_with_context",
+):
+    getattr(_api_helpers_mock, _helper_name).side_effect = _ctx_delegate
+
 from plugins.modules.purefa_volume import (
     main,
     get_volume,

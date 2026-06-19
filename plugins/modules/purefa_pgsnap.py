@@ -476,76 +476,54 @@ def create_pgsnapshot(module, array):
                     protection_group_snapshot=suffix,
                 )
         else:
-            if LooseVersion(CONTEXT_API_VERSION) <= LooseVersion(api_version):
-                remote_target = (
-                    list(
-                        array.get_protection_groups(
-                            names=[module.params["name"]],
-                            context_names=[module.params["context"]],
-                        ).items
-                    )[0].target_count
-                    > 0
-                )
-            else:
-                remote_target = (
-                    list(
-                        array.get_protection_groups(names=[module.params["name"]]).items
-                    )[0].target_count
-                    > 0
-                )
+            remote_target = (
+                list(
+                    get_with_context(
+                        array,
+                        "get_protection_groups",
+                        CONTEXT_API_VERSION,
+                        module,
+                        names=[module.params["name"]],
+                    ).items
+                )[0].target_count
+                > 0
+            )
             if remote_target:
                 if module.params["now"]:
-                    if LooseVersion(CONTEXT_API_VERSION) <= LooseVersion(api_version):
-                        res = array.post_protection_group_snapshots(
-                            source_names=[module.params["name"]],
-                            apply_retention=module.params["apply_retention"],
-                            replicate_now=True,
-                            allow_throttle=module.params["throttle"],
-                            protection_group_snapshot=suffix,
-                            context_names=[module.params["context"]],
-                        )
-                    else:
-                        res = array.post_protection_group_snapshots(
-                            source_names=[module.params["name"]],
-                            apply_retention=module.params["apply_retention"],
-                            replicate_now=True,
-                            allow_throttle=module.params["throttle"],
-                            protection_group_snapshot=suffix,
-                        )
+                    res = post_with_context(
+                        array,
+                        "post_protection_group_snapshots",
+                        CONTEXT_API_VERSION,
+                        module,
+                        source_names=[module.params["name"]],
+                        apply_retention=module.params["apply_retention"],
+                        replicate_now=True,
+                        allow_throttle=module.params["throttle"],
+                        protection_group_snapshot=suffix,
+                    )
                 else:
-                    if LooseVersion(CONTEXT_API_VERSION) <= LooseVersion(api_version):
-                        res = array.post_protection_group_snapshots(
-                            source_names=[module.params["name"]],
-                            apply_retention=module.params["apply_retention"],
-                            allow_throttle=module.params["throttle"],
-                            protection_group_snapshot=suffix,
-                            replicate=module.params["remote"],
-                            context_names=[module.params["context"]],
-                        )
-                    else:
-                        res = array.post_protection_group_snapshots(
-                            source_names=[module.params["name"]],
-                            apply_retention=module.params["apply_retention"],
-                            allow_throttle=module.params["throttle"],
-                            protection_group_snapshot=suffix,
-                            replicate=module.params["remote"],
-                        )
+                    res = post_with_context(
+                        array,
+                        "post_protection_group_snapshots",
+                        CONTEXT_API_VERSION,
+                        module,
+                        source_names=[module.params["name"]],
+                        apply_retention=module.params["apply_retention"],
+                        allow_throttle=module.params["throttle"],
+                        protection_group_snapshot=suffix,
+                        replicate=module.params["remote"],
+                    )
             else:
-                if LooseVersion(CONTEXT_API_VERSION) <= LooseVersion(api_version):
-                    res = array.post_protection_group_snapshots(
-                        source_names=[module.params["name"]],
-                        apply_retention=module.params["apply_retention"],
-                        allow_throttle=module.params["throttle"],
-                        protection_group_snapshot=suffix,
-                        context_names=[module.params["context"]],
-                    )
-                else:
-                    res = array.post_protection_group_snapshots(
-                        source_names=[module.params["name"]],
-                        apply_retention=module.params["apply_retention"],
-                        allow_throttle=module.params["throttle"],
-                        protection_group_snapshot=suffix,
-                    )
+                res = post_with_context(
+                    array,
+                    "post_protection_group_snapshots",
+                    CONTEXT_API_VERSION,
+                    module,
+                    source_names=[module.params["name"]],
+                    apply_retention=module.params["apply_retention"],
+                    allow_throttle=module.params["throttle"],
+                    protection_group_snapshot=suffix,
+                )
 
         check_response(
             res, module, f"Snapshot of pgroup {module.params['name']} failed"
@@ -630,35 +608,32 @@ def restore_pgsnapvolume(module, array):
                     add_to_protection_groups=add_to_pgs,
                 )
             else:
-                if LooseVersion(CONTEXT_API_VERSION) <= LooseVersion(api_version):
-                    if module.params["overwrite"]:
-                        res = array.post_volumes(
-                            names=[module.params["target"]],
-                            volume=VolumePost(source=Reference(name=source_volume)),
-                            overwrite=module.params["overwrite"],
-                            context_names=[module.params["context"]],
-                        )
-                    else:
-                        res = array.post_volumes(
-                            names=[module.params["target"]],
-                            volume=VolumePost(source=Reference(name=source_volume)),
-                            overwrite=module.params["overwrite"],
-                        )
+                if module.params["overwrite"]:
+                    # Overwrite path is identical across versions apart from
+                    # context; the helper adds context_names only when set.
+                    res = post_with_context(
+                        array,
+                        "post_volumes",
+                        CONTEXT_API_VERSION,
+                        module,
+                        names=[module.params["target"]],
+                        volume=VolumePost(source=Reference(name=source_volume)),
+                        overwrite=module.params["overwrite"],
+                    )
+                elif LooseVersion(CONTEXT_API_VERSION) <= LooseVersion(api_version):
+                    res = array.post_volumes(
+                        names=[module.params["target"]],
+                        volume=VolumePost(source=Reference(name=source_volume)),
+                        overwrite=module.params["overwrite"],
+                    )
                 else:
-                    if module.params["overwrite"]:
-                        res = array.post_volumes(
-                            names=[module.params["target"]],
-                            volume=VolumePost(source=Reference(name=source_volume)),
-                            overwrite=module.params["overwrite"],
-                        )
-                    else:
-                        res = array.post_volumes(
-                            names=[module.params["target"]],
-                            volume=VolumePost(source=Reference(name=source_volume)),
-                            with_default_protection=module.params[
-                                "with_default_protection"
-                            ],
-                        )
+                    res = array.post_volumes(
+                        names=[module.params["target"]],
+                        volume=VolumePost(source=Reference(name=source_volume)),
+                        with_default_protection=module.params[
+                            "with_default_protection"
+                        ],
+                    )
         else:
             res = array.post_volumes(
                 names=[module.params["target"]],
@@ -963,7 +938,9 @@ def main():
     if not module.params["context"] and LooseVersion(
         CONTEXT_API_VERSION
     ) <= LooseVersion(api_version):
-        module.params["context"] = list(array.get_arrays().items)[0].name
+        fleet_res = array.get_fleets()
+        if fleet_res.status_code == 200 and list(fleet_res.items):
+            module.params["context"] = list(array.get_arrays().items)[0].name
 
     pgroup = get_pgroup(module, array)
     if not pgroup:
