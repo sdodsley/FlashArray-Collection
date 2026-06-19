@@ -1,0 +1,7 @@
+bugfixes:
+  - purefa_hg - Only default the context to the local array name when the array is a fleet member, so standalone arrays do not send fleet context that would fail on stricter Purity releases
+  - purefa_pg - Only default the context to the local array name when the array is a fleet member, so standalone arrays do not send fleet context that would fail on stricter Purity releases
+  - purefa_pgsnap - Only default the context to the local array name when the array is a fleet member, so standalone arrays do not send fleet context that would fail on stricter Purity releases
+  - purefa_snap - Only default the context to the local array name when the array is a fleet member, so standalone arrays do not send fleet context that would fail on stricter Purity releases
+  - purefa_vg - Only default the context to the local array name when the array is a fleet member, so standalone arrays do not send fleet context that would fail on stricter Purity releases
+  - purefa_volume - Only default the context to the local array name when the array is a fleet member, so standalone arrays do not send fleet context that would fail on stricter Purity releases

@@ -1887,7 +1887,9 @@ def main():
         and not module.params["context"]
     ):
         # If no context is provided set the context to the local array name
-        module.params["context"] = list(array.get_arrays().items)[0].name
+        fleet_res = array.get_fleets()
+        if fleet_res.status_code == 200 and list(fleet_res.items):
+            module.params["context"] = list(array.get_arrays().items)[0].name
 
     if module.params["bw_qos"]:
         bw_qos = int(human_to_bytes(module.params["bw_qos"]))

@@ -963,7 +963,9 @@ def main():
     if not module.params["context"] and LooseVersion(
         CONTEXT_API_VERSION
     ) <= LooseVersion(api_version):
-        module.params["context"] = list(array.get_arrays().items)[0].name
+        fleet_res = array.get_fleets()
+        if fleet_res.status_code == 200 and list(fleet_res.items):
+            module.params["context"] = list(array.get_arrays().items)[0].name
 
     pgroup = get_pgroup(module, array)
     if not pgroup:
