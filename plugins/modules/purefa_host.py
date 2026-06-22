@@ -116,8 +116,10 @@ options:
     description:
     - Define which operating system the host is. Recommended for
       ActiveCluster integration.
+    - The C(nutanix-mgmt) and C(nutanix-cluster) personalities are only
+      supported from REST API 2.50 and higher.
     default: ''
-    choices: ['hpux', 'vms', 'aix', 'esxi', 'solaris', 'hitachi-vsp', 'oracle-vm-server', 'delete', '']
+    choices: ['hpux', 'vms', 'aix', 'esxi', 'solaris', 'hitachi-vsp', 'oracle-vm-server', 'nutanix-mgmt', 'nutanix-cluster', 'delete', '']
   preferred_array:
     type: list
     elements: str
@@ -383,6 +385,7 @@ from ansible_collections.purestorage.flasharray.plugins.module_utils.api_helpers
 VLAN_API_VERSION = "2.16"
 CONTEXT_API_VERSION = "2.38"
 REALMS_CONTEXT_VERSION = "2.47"
+NUTANIX_API_VERSION = "2.50"
 
 
 def _is_cbs(array, is_cbs=False):
@@ -1275,6 +1278,8 @@ def main():
                     "solaris",
                     "hitachi-vsp",
                     "oracle-vm-server",
+                    "nutanix-mgmt",
+                    "nutanix-cluster",
                     "delete",
                     "",
                 ],
@@ -1345,6 +1350,15 @@ def main():
     ):
         module.fail_json(
             msg="'vlan' parameter is not supported until Purity//FA 6.3.4 or higher"
+        )
+    if module.params["personality"] in [
+        "nutanix-mgmt",
+        "nutanix-cluster",
+    ] and LooseVersion(NUTANIX_API_VERSION) > LooseVersion(api_version):
+        module.fail_json(
+            msg="'{0}' personality is not supported until REST API 2.50 or higher".format(
+                module.params["personality"]
+            )
         )
     if module.params["vlan"] and module.params["vlan"] not in ["any", "untagged"]:
         try:
