@@ -96,7 +96,7 @@ class TestGetHost:
         result = get_host(mock_module, mock_array)
 
         assert result == mock_host
-        assert mock_get_with_context.call_args.kwargs["allow_errors"] is True
+        assert "allow_errors" not in mock_get_with_context.call_args.kwargs
 
     @patch("plugins.modules.purefa_host.get_with_context")
     def test_get_host_not_exists(self, mock_get_with_context):
@@ -110,6 +110,36 @@ class TestGetHost:
         result = get_host(mock_module, mock_array)
 
         assert result is None
+        assert "allow_errors" not in mock_get_with_context.call_args.kwargs
+
+    @patch("plugins.modules.purefa_host.get_with_context")
+    def test_get_host_no_allow_errors_without_context(self, mock_get_with_context):
+        """Without a context, allow_errors must NOT be sent (#1016).
+
+        allow_errors only exists on the hosts GET endpoint from REST 2.38;
+        sending it unconditionally broke pre-2.38 arrays with
+        "get_hosts() got an unexpected keyword argument 'allow_errors'".
+        """
+        mock_module = Mock()
+        mock_module.params = {"name": "test-host", "context": ""}
+        mock_array = Mock()
+        mock_get_with_context.return_value = Mock(status_code=200, items=[Mock()])
+
+        get_host(mock_module, mock_array)
+
+        assert "allow_errors" not in mock_get_with_context.call_args.kwargs
+
+    @patch("plugins.modules.purefa_host.get_with_context")
+    def test_get_host_allow_errors_with_context(self, mock_get_with_context):
+        """With a context set, allow_errors is sent so a missing name in the
+        context returns partial results instead of a 400 (#1016)."""
+        mock_module = Mock()
+        mock_module.params = {"name": "test-host", "context": "fleet-member1"}
+        mock_array = Mock()
+        mock_get_with_context.return_value = Mock(status_code=200, items=[Mock()])
+
+        get_host(mock_module, mock_array)
+
         assert mock_get_with_context.call_args.kwargs["allow_errors"] is True
 
 
@@ -136,7 +166,7 @@ class TestGetMultiHosts:
         result = get_multi_hosts(mock_module, mock_array)
 
         assert result is True
-        assert mock_get_with_context.call_args.kwargs["allow_errors"] is True
+        assert "allow_errors" not in mock_get_with_context.call_args.kwargs
 
     @patch("plugins.modules.purefa_host.get_with_context")
     def test_get_multi_hosts_not_exist(self, mock_get_with_context):
@@ -158,7 +188,7 @@ class TestGetMultiHosts:
         result = get_multi_hosts(mock_module, mock_array)
 
         assert result is False
-        assert mock_get_with_context.call_args.kwargs["allow_errors"] is True
+        assert "allow_errors" not in mock_get_with_context.call_args.kwargs
 
     @patch("plugins.modules.purefa_host.get_with_context")
     def test_get_multi_hosts_with_suffix(self, mock_get_with_context):
@@ -182,7 +212,7 @@ class TestGetMultiHosts:
         assert result is True
         # Verify the hosts list includes suffix
         call_args = mock_get_with_context.call_args
-        assert call_args.kwargs["allow_errors"] is True
+        assert "allow_errors" not in call_args.kwargs
         assert "host001_server" in call_args.kwargs["names"]
         assert "host002_server" in call_args.kwargs["names"]
 
@@ -202,7 +232,7 @@ class TestRenameExists:
         result = rename_exists(mock_module, mock_array)
 
         assert result is True
-        assert mock_get_with_context.call_args.kwargs["allow_errors"] is True
+        assert "allow_errors" not in mock_get_with_context.call_args.kwargs
 
     @patch("plugins.modules.purefa_host.get_with_context")
     def test_rename_exists_false(self, mock_get_with_context):
@@ -216,7 +246,7 @@ class TestRenameExists:
         result = rename_exists(mock_module, mock_array)
 
         assert result is False
-        assert mock_get_with_context.call_args.kwargs["allow_errors"] is True
+        assert "allow_errors" not in mock_get_with_context.call_args.kwargs
 
 
 class TestMakeHost:
@@ -1437,7 +1467,7 @@ class TestMoveHostExtended:
         with pytest.raises(SystemExit):
             move_host(mock_module, mock_array)
 
-        assert mock_get_with_context.call_args.kwargs["allow_errors"] is True
+        assert "allow_errors" not in mock_get_with_context.call_args.kwargs
         mock_module.fail_json.assert_called_once_with(
             msg="Hosts cannot be moved with existing volume connections."
         )
@@ -1808,7 +1838,7 @@ class TestUpdateHostInitiatorsExtended:
         result = _update_host_initiators(mock_module, mock_array)
 
         assert result is True
-        assert mock_get.call_args_list[0].kwargs["allow_errors"] is True
+        assert "allow_errors" not in mock_get.call_args_list[0].kwargs
 
     @patch("plugins.modules.purefa_host.check_response")
     @patch("plugins.modules.purefa_host.get_with_context")
@@ -2381,7 +2411,7 @@ class TestDeleteHostWithHostGroup:
 
         mock_module.exit_json.assert_called_once_with(changed=True)
         assert mock_get.call_count == 4
-        assert mock_get.call_args_list[0].kwargs["allow_errors"] is True
+        assert "allow_errors" not in mock_get.call_args_list[0].kwargs
 
 
 class TestSetChapSecurityValidation:
@@ -2479,7 +2509,7 @@ class TestUpdateVlanPaths:
 
         assert result is True
         assert mock_get.call_count == 2
-        assert mock_get.call_args_list[0].kwargs["allow_errors"] is True
+        assert "allow_errors" not in mock_get.call_args_list[0].kwargs
 
     @patch("plugins.modules.purefa_host.get_with_context")
     def test_update_vlan_no_change(self, mock_get):

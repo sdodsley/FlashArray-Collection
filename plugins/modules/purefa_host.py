@@ -924,13 +924,20 @@ def get_multi_hosts(module, array):
 
 
 def _get_hosts(module, array, names):
+    kwargs = {"names": names}
+    # allow_errors only exists on the hosts GET endpoint from REST 2.38, and is
+    # only required alongside context_names (a name absent from the given
+    # context otherwise returns 400). It is therefore only sent when a context
+    # is in use; without a context, older arrays would reject the unsupported
+    # argument (#1016).
+    if module.params.get("context"):
+        kwargs["allow_errors"] = True
     res = get_with_context(
         array,
         "get_hosts",
         CONTEXT_API_VERSION,
         module,
-        names=names,
-        allow_errors=True,
+        **kwargs,
     )
     return list(getattr(res, "items", []) or [])
 
