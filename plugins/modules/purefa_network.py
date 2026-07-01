@@ -226,7 +226,9 @@ def _check_subinterfaces(module, array):
         array.get_network_interfaces(names=[module.params["name"]]).items
     )[0].eth.subinterfaces
     for subinterface in subinterfaces:
-        subordinates.append(subinterface)
+        # subinterfaces are FixedReferenceNoId objects; store the name so the
+        # result is a list of sortable/comparable strings
+        subordinates.append(subinterface.name)
     return subordinates
 
 
@@ -343,19 +345,20 @@ def update_interface(module, array):
         "address": getattr(interface.eth, "address", None),
         "netmask": getattr(interface.eth, "netmask", None),
         "services": sorted(interface.services),
-        "subinterfaces": sorted(interface.eth.subinterfaces),
+        # subinterfaces are FixedReferenceNoId objects - sort by name, not object
+        "subinterfaces": sorted(sub.name for sub in interface.eth.subinterfaces),
     }
     new_state = current_state.copy()
 
     if module.params["subinterfaces"]:
         new_subinterfaces = _check_subinterfaces(module, array)
-        if new_subinterfaces != current_state["subinterfaces"]:
-            new_state["subinterfaces"] = new_subinterfaces
+        if sorted(new_subinterfaces) != current_state["subinterfaces"]:
+            new_state["subinterfaces"] = sorted(new_subinterfaces)
 
     if module.params["subordinates"]:
         subordinates = _check_subinterfaces(module, array)
         if sorted(subordinates) != sorted(module.params["subordinates"]):
-            new_state["subinterfaces"] = module.params["subordinates"]
+            new_state["subinterfaces"] = sorted(module.params["subordinates"])
 
     if module.params["enabled"] != current_state["enabled"]:
         new_state["enabled"] = module.params["enabled"]

@@ -65,6 +65,13 @@ from plugins.modules.purefa_network import (
 )
 
 
+def _subref(name):
+    """Build a FixedReferenceNoId-like mock subinterface exposing a .name (#1013)."""
+    sub = Mock()
+    sub.name = name
+    return sub
+
+
 class TestDeleteInterface:
     """Test cases for delete_interface function"""
 
@@ -135,12 +142,20 @@ class TestCheckSubinterfaces:
     """Test cases for _check_subinterfaces function"""
 
     def test_check_subinterfaces_returns_list(self):
-        """Test _check_subinterfaces returns list of subinterfaces"""
+        """Test _check_subinterfaces returns the subinterface names (#1013)
+
+        Subinterfaces come back from the API as FixedReferenceNoId objects,
+        not strings, so the function must return their .name values.
+        """
         mock_module = Mock()
         mock_module.params = {"name": "ct0.eth0"}
         mock_array = Mock()
         mock_interface = Mock()
-        mock_interface.eth.subinterfaces = ["sub1", "sub2"]
+        sub1 = Mock()
+        sub1.name = "sub1"
+        sub2 = Mock()
+        sub2.name = "sub2"
+        mock_interface.eth.subinterfaces = [sub1, sub2]
         mock_array.get_network_interfaces.return_value.items = [mock_interface]
 
         result = _check_subinterfaces(mock_module, mock_array)
@@ -214,10 +229,15 @@ class TestCheckSubinterfacesAdditional:
         mock_module.params = {"name": "eth2"}
         mock_array = Mock()
 
-        # Create mock interface with eth.subinterfaces
+        # Create mock interface with eth.subinterfaces as FixedReferenceNoId-like
+        # objects (the API returns objects with a .name, not bare strings) (#1013)
         mock_interface = Mock()
         mock_interface.eth = Mock()
-        mock_interface.eth.subinterfaces = ["eth2.100", "eth2.200"]
+        sub1 = Mock()
+        sub1.name = "eth2.100"
+        sub2 = Mock()
+        sub2.name = "eth2.200"
+        mock_interface.eth.subinterfaces = [sub1, sub2]
         mock_array.get_network_interfaces.return_value = Mock(items=[mock_interface])
 
         result = _check_subinterfaces(mock_module, mock_array)
@@ -259,6 +279,56 @@ class TestUpdateInterface:
             update_interface(mock_module, mock_array)
 
         mock_module.fail_json.assert_called_once()
+
+    def test_update_interface_eth_subinterfaces_idempotent(self):
+        """ETH interface with existing subinterfaces is an idempotent no-op (#1013)
+
+        Subinterfaces are returned by the API as FixedReferenceNoId objects.
+        Building current_state must sort them by .name (not the bare objects,
+        which are not orderable) and must not raise TypeError. When the desired
+        subinterfaces match the current ones, no change is made.
+        """
+
+        def _sub(name):
+            sub = Mock()
+            sub.name = name
+            return sub
+
+        mock_module = Mock()
+        mock_module.check_mode = True
+        mock_module.params = {
+            "name": "ct0.eth8",
+            "state": "present",
+            "enabled": True,
+            "servicelist": None,
+            "address": None,
+            "gateway": None,
+            "mtu": None,
+            "subinterfaces": ["ct0.eth1", "ct1.eth1"],
+            "subordinates": None,
+            "subnet": None,
+            "interface": "vif",
+        }
+
+        mock_interface = Mock()
+        mock_interface.name = "ct0.eth8"
+        mock_interface.enabled = True
+        mock_interface.services = ["management"]
+        mock_interface.eth.mtu = 1500
+        mock_interface.eth.gateway = None
+        mock_interface.eth.address = None
+        mock_interface.eth.netmask = None
+        # API returns subinterfaces as objects, deliberately unsorted
+        mock_interface.eth.subinterfaces = [_sub("ct1.eth1"), _sub("ct0.eth1")]
+
+        mock_array = Mock()
+        mock_array.get_network_interfaces.return_value = Mock(items=[mock_interface])
+
+        # Must not raise TypeError, and must be a no-op
+        update_interface(mock_module, mock_array)
+
+        mock_module.exit_json.assert_called_once_with(changed=False)
+        mock_array.patch_network_interfaces.assert_not_called()
 
     @patch("plugins.modules.purefa_network.check_response")
     def test_update_fc_interface_enable_success(self, mock_check_response):
@@ -1246,7 +1316,10 @@ class TestUpdateEthInterfaceWithSubinterfaces:
         mock_interface.services = []
         mock_interface.eth = Mock()
         mock_interface.eth.mtu = 1500
-        mock_interface.eth.subinterfaces = ["ct0.eth8", "ct1.eth8"]  # Same as returned
+        mock_interface.eth.subinterfaces = [
+            _subref("ct0.eth8"),
+            _subref("ct1.eth8"),
+        ]  # Same as returned
         mock_interface.eth.gateway = None
         mock_interface.eth.address = None
         mock_interface.eth.netmask = None
@@ -1294,7 +1367,7 @@ class TestUpdateEthInterfaceSubordinates:
         mock_interface.services = []
         mock_interface.eth = Mock()
         mock_interface.eth.mtu = 1500
-        mock_interface.eth.subinterfaces = ["ct0.eth0", "ct0.eth1"]
+        mock_interface.eth.subinterfaces = [_subref("ct0.eth0"), _subref("ct0.eth1")]
         mock_interface.eth.gateway = None
         mock_interface.eth.address = None
         mock_interface.eth.netmask = None
@@ -1488,7 +1561,7 @@ class TestCheckSubinterfacesSuccess:
         mock_array = Mock()
         mock_interface = Mock()
         mock_interface.eth = Mock()
-        mock_interface.eth.subinterfaces = ["ct0.eth8", "ct1.eth8"]
+        mock_interface.eth.subinterfaces = [_subref("ct0.eth8"), _subref("ct1.eth8")]
         mock_array.get_network_interfaces.return_value = Mock(items=[mock_interface])
 
         result = _check_subinterfaces(mock_module, mock_array)
@@ -2205,7 +2278,10 @@ class TestUpdateInterfaceSubinterfacesChange:
         mock_interface.services = []
         mock_interface.eth = Mock()
         mock_interface.eth.mtu = 1500
-        mock_interface.eth.subinterfaces = ["ct0.eth0", "ct1.eth0"]  # Different!
+        mock_interface.eth.subinterfaces = [
+            _subref("ct0.eth0"),
+            _subref("ct1.eth0"),
+        ]  # Different!
         mock_interface.eth.gateway = None
         mock_interface.eth.address = None
         mock_interface.eth.netmask = None
