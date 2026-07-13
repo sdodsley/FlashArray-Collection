@@ -477,7 +477,7 @@ class TestAccessPolicy:
         create_role(mock_module, mock_array)
 
         mock_post_with_context.assert_called_once()
-        _, model_kwargs = mock_post_model.call_args
+        model_kwargs = mock_post_model.call_args.kwargs
         assert "management_access_policies" in model_kwargs
         assert "role" not in model_kwargs
         mock_module.exit_json.assert_called_once_with(changed=True)
@@ -518,7 +518,7 @@ class TestAccessPolicy:
             update_role(mock_module, mock_array)
 
         mock_patch.assert_called_once()
-        _, model_kwargs = mock_ds_model.call_args
+        model_kwargs = mock_ds_model.call_args.kwargs
         assert "management_access_policies" in model_kwargs
         mock_module.exit_json.assert_called_once_with(changed=True)
 
