@@ -1,0 +1,2 @@
+minor_changes:
+  - purefa_dsrole - Add ``access_policy`` parameter to bind a directory service role to a custom management access policy instead of a built-in role
