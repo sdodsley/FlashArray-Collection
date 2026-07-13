@@ -46,6 +46,7 @@ action_groups:
    - purefa_pod
    - purefa_pod_replica
    - purefa_policy
+   - purefa_policy_management_access
    - purefa_proxy
    - purefa_ra
    - purefa_realm
