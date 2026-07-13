@@ -2450,6 +2450,135 @@ class TestMain:
             main()
             mock_create.assert_called_once()
 
+    @patch("plugins.modules.purefa_pod.LooseVersion", side_effect=LooseVersion)
+    @patch("plugins.modules.purefa_pod.HAS_PURESTORAGE", True)
+    @patch("plugins.modules.purefa_pod.get_array")
+    @patch("plugins.modules.purefa_pod.get_pod")
+    @patch("plugins.modules.purefa_pod.get_destroyed_pod")
+    @patch("plugins.modules.purefa_pod.check_arrays")
+    @patch("plugins.modules.purefa_pod.AnsibleModule")
+    def test_main_realm_composes_name(
+        self,
+        mock_ansible,
+        mock_check_arrays,
+        mock_get_destroyed_pod,
+        mock_get_pod,
+        mock_get_array,
+        mock_lv,
+    ):
+        """realm parameter composes the realm::pod name (#pod-realm)"""
+        from plugins.modules.purefa_pod import main
+
+        mock_module = Mock()
+        mock_module.params = {
+            "name": "bar",
+            "realm": "myrealm",
+            "state": "present",
+            "stretch": None,
+            "target": None,
+            "failover": None,
+            "mediator": "purestorage",
+            "context": "",
+        }
+        mock_ansible.return_value = mock_module
+        mock_array = Mock()
+        mock_array.get_rest_version.return_value = "2.39"
+        mock_get_array.return_value = mock_array
+        mock_get_pod.return_value = False
+        mock_get_destroyed_pod.return_value = False
+
+        with patch("plugins.modules.purefa_pod.create_pod") as mock_create:
+            main()
+            mock_create.assert_called_once()
+
+        assert mock_module.params["name"] == "myrealm::bar"
+
+    @patch("plugins.modules.purefa_pod.LooseVersion", side_effect=LooseVersion)
+    @patch("plugins.modules.purefa_pod.HAS_PURESTORAGE", True)
+    @patch("plugins.modules.purefa_pod.get_array")
+    @patch("plugins.modules.purefa_pod.get_pod")
+    @patch("plugins.modules.purefa_pod.get_destroyed_pod")
+    @patch("plugins.modules.purefa_pod.check_arrays")
+    @patch("plugins.modules.purefa_pod.AnsibleModule")
+    def test_main_realm_conflicts_with_name_separator(
+        self,
+        mock_ansible,
+        mock_check_arrays,
+        mock_get_destroyed_pod,
+        mock_get_pod,
+        mock_get_array,
+        mock_lv,
+    ):
+        """realm plus a '::' name is rejected (#pod-realm)"""
+        import pytest
+        from plugins.modules.purefa_pod import main
+
+        mock_module = Mock()
+        mock_module.params = {
+            "name": "already::there",
+            "realm": "myrealm",
+            "state": "present",
+            "stretch": None,
+            "target": None,
+            "failover": None,
+            "mediator": "purestorage",
+            "context": "",
+        }
+        mock_module.fail_json.side_effect = SystemExit(1)
+        mock_ansible.return_value = mock_module
+        mock_array = Mock()
+        mock_array.get_rest_version.return_value = "2.39"
+        mock_get_array.return_value = mock_array
+
+        with pytest.raises(SystemExit):
+            main()
+
+        mock_module.fail_json.assert_called_once()
+        assert "not both" in str(mock_module.fail_json.call_args)
+
+    @patch("plugins.modules.purefa_pod.LooseVersion", side_effect=LooseVersion)
+    @patch("plugins.modules.purefa_pod.HAS_PURESTORAGE", True)
+    @patch("plugins.modules.purefa_pod.get_array")
+    @patch("plugins.modules.purefa_pod.get_pod")
+    @patch("plugins.modules.purefa_pod.get_destroyed_pod")
+    @patch("plugins.modules.purefa_pod.check_arrays")
+    @patch("plugins.modules.purefa_pod.AnsibleModule")
+    def test_main_realm_requires_supported_api(
+        self,
+        mock_ansible,
+        mock_check_arrays,
+        mock_get_destroyed_pod,
+        mock_get_pod,
+        mock_get_array,
+        mock_lv,
+    ):
+        """realm on a pre-2.36 array is rejected (#pod-realm)"""
+        import pytest
+        from plugins.modules.purefa_pod import main
+
+        mock_module = Mock()
+        mock_module.params = {
+            "name": "bar",
+            "realm": "myrealm",
+            "state": "present",
+            "stretch": None,
+            "target": None,
+            "failover": None,
+            "mediator": "purestorage",
+            "context": "",
+        }
+        mock_module.fail_json.side_effect = SystemExit(1)
+        mock_ansible.return_value = mock_module
+        mock_array = Mock()
+        mock_array.get_rest_version.return_value = "2.30"
+        mock_get_array.return_value = mock_array
+
+        with pytest.raises(SystemExit):
+            main()
+
+        mock_module.fail_json.assert_called_once()
+        assert "2.36" in str(mock_module.fail_json.call_args)
+
     @patch("plugins.modules.purefa_pod.HAS_PURESTORAGE", True)
     @patch("plugins.modules.purefa_pod.get_array")
     @patch("plugins.modules.purefa_pod.get_pod")

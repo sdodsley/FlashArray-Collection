@@ -27,8 +27,21 @@ options:
   name:
     description:
     - The name of the pod.
+    - To place a pod inside a realm either set the I(realm) parameter, or
+      provide the fully-qualified C(realm::pod) name here (for example
+      C(myrealm::mypod)). If I(realm) is set, do not also use the C(::)
+      form in this parameter.
     type: str
     required: true
+  realm:
+    description:
+    - Name of the realm the pod belongs to.
+    - When set, the pod is created (or managed) as C(realm::pod). This is a
+      convenience for the C(realm::pod) naming convention and is mutually
+      exclusive with providing C(::) directly in I(name).
+    - Requires Purity//FA 6.6.11, or higher (REST 2.36).
+    type: str
+    version_added: '1.44.0'
   stretch:
     description:
     - The name of the array to stretch to/unstretch from. Must be synchromously replicated.
@@ -159,6 +172,14 @@ EXAMPLES = r"""
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
     state: present
 
+- name: Create new pod bar inside realm myrealm
+  purestorage.flasharray.purefa_pod:
+    name: bar
+    realm: myrealm
+    fa_url: 10.10.10.2
+    api_token: e31060a7-21fc-e277-6240-25983c6c4592
+    state: present
+
 - name: Create new pod named foo with default protection PG safe, and with PG retention lock disabled
   purestorage.flasharray.purefa_pod:
     name: foo
@@ -255,6 +276,7 @@ DEFAULT_API_VERSION = "2.16"
 POD_QUOTA_VERSION = "2.23"
 THROTTLE_VERSION = "2.31"
 MEMBERS_VERSION = "2.36"
+REALM_VERSION = "2.36"
 CONTEXT_VERSION = "2.38"
 
 
@@ -1050,6 +1072,7 @@ def main():
     argument_spec.update(
         dict(
             name=dict(type="str", required=True),
+            realm=dict(type="str"),
             stretch=dict(type="str"),
             target=dict(type="str"),
             mediator=dict(type="str", default="purestorage"),
@@ -1086,6 +1109,18 @@ def main():
 
     state = module.params["state"]
     array = get_array(module)
+
+    if module.params.get("realm"):
+        if LooseVersion(REALM_VERSION) > LooseVersion(array.get_rest_version()):
+            module.fail_json(
+                msg="realm parameter requires Purity//FA 6.6.11, or higher (REST 2.36)."
+            )
+        if "::" in module.params["name"]:
+            module.fail_json(
+                msg="Use either the 'realm' parameter or the 'realm::pod' "
+                "form in 'name', not both."
+            )
+        module.params["name"] = module.params["realm"] + "::" + module.params["name"]
 
     pod = get_pod(module, array)
     destroyed = ""
