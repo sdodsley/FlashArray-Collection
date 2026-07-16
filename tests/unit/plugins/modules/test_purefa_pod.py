@@ -479,6 +479,55 @@ class TestUpdatePod:
 
         mock_module.exit_json.assert_called_once_with(changed=True)
 
+    @patch("plugins.modules.purefa_pod.LooseVersion", side_effect=LooseVersion)
+    @patch("plugins.modules.purefa_pod.patch_with_context")
+    @patch("plugins.modules.purefa_pod.post_with_context")
+    @patch("plugins.modules.purefa_pod.get_with_context")
+    def test_update_pod_check_mode_default_protection(
+        self, mock_get, mock_post, mock_patch, mock_lv
+    ):
+        """update_pod must not write default protection in check mode.
+
+        The default_protection_pg path previously created a protection group
+        and patched container default protections even under --check.
+        """
+        mock_module = Mock()
+        mock_module.check_mode = True
+        mock_module.params = {
+            "name": "test-pod",
+            "context": "",
+            "failover": None,
+            "mediator": "purestorage",
+            "stretch": None,
+            "quota": None,
+            "ignore_usage": False,
+            "promote": None,
+            "undo": None,
+            "default_protection_pg": "myprotect",
+            "with_default_protection": True,
+            "retention_lock": True,
+        }
+        mock_array = Mock()
+        mock_array.get_rest_version.return_value = "2.39"
+
+        current_config = Mock()
+        current_config.failover_preferences = []
+        current_config.mediator = "purestorage"
+        current_config.quota_limit = None
+        # 1st get: get_pods -> current_config; 2nd get: container default
+        # protections with none set, so pgname differs from the desired PG
+        mock_get.side_effect = [
+            Mock(status_code=200, items=[current_config]),
+            Mock(status_code=200, items=[Mock(default_protections=[])]),
+        ]
+
+        update_pod(mock_module, mock_array)
+
+        # No writes may happen in check mode
+        mock_post.assert_not_called()
+        mock_patch.assert_not_called()
+        mock_module.exit_json.assert_called_once_with(changed=True)
+
 
 class TestStretchPod:
     """Test cases for stretch_pod function"""

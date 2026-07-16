@@ -865,76 +865,78 @@ def update_pod(module, array):
             pgname = []
         if pgname != module.params["default_protection_pg"]:
             changed = True
-            res = get_with_context(
+            if not module.check_mode:
+                res = get_with_context(
+                    array,
+                    "get_protection_groups",
+                    CONTEXT_VERSION,
+                    module,
+                    names=[module.params["default_protection_pg"]],
+                )
+                if res.status_code != 200:
+                    pg_res = post_with_context(
+                        array,
+                        "post_protection_groups",
+                        CONTEXT_VERSION,
+                        module,
+                        names=[module.params["default_protection_pg"]],
+                    )
+                    check_response(
+                        pg_res,
+                        module,
+                        f"Failed to create default protection group {module.params['name']}",
+                    )
+                if (
+                    module.params["retention_lock"]
+                    and module.params["default_protection_pg"] != []
+                ):
+                    res = patch_with_context(
+                        array,
+                        "patch_protection_groups",
+                        CONTEXT_VERSION,
+                        module,
+                        names=[module.params["default_protection_pg"]],
+                        protection_group=ProtectionGroup(retention_lock="ratcheted"),
+                    )
+                    check_response(
+                        res,
+                        module,
+                        f"Failed to set retention lock for protection group {module.params['default_protection_pg']}",
+                    )
+                if safemode_pg:
+                    patch_with_context(
+                        array,
+                        "patch_container_default_protections",
+                        CONTEXT_VERSION,
+                        module,
+                        names=[module.params["name"]],
+                        container_default_protection=(
+                            ContainerDefaultProtection(default_protections=[])
+                        ),
+                    )
+        if not module.check_mode:
+            res = patch_with_context(
                 array,
-                "get_protection_groups",
+                "patch_container_default_protections",
                 CONTEXT_VERSION,
                 module,
-                names=[module.params["default_protection_pg"]],
+                names=[module.params["name"]],
+                container_default_protection=(
+                    ContainerDefaultProtection(
+                        default_protections=[
+                            DefaultProtectionReference(
+                                name=module.params["default_protection_pg"],
+                                type="protection_group",
+                            )
+                        ]
+                    )
+                ),
             )
-            if res.status_code != 200:
-                pg_res = post_with_context(
-                    array,
-                    "post_protection_groups",
-                    CONTEXT_VERSION,
-                    module,
-                    names=[module.params["default_protection_pg"]],
-                )
-                check_response(
-                    pg_res,
-                    module,
-                    f"Failed to create default protection group {module.params['name']}",
-                )
-            if (
-                module.params["retention_lock"]
-                and module.params["default_protection_pg"] != []
-            ):
-                res = patch_with_context(
-                    array,
-                    "patch_protection_groups",
-                    CONTEXT_VERSION,
-                    module,
-                    names=[module.params["default_protection_pg"]],
-                    protection_group=ProtectionGroup(retention_lock="ratcheted"),
-                )
-                check_response(
-                    res,
-                    module,
-                    f"Failed to set retention lock for protection group {module.params['default_protection_pg']}",
-                )
-            if safemode_pg:
-                patch_with_context(
-                    array,
-                    "patch_container_default_protections",
-                    CONTEXT_VERSION,
-                    module,
-                    names=[module.params["name"]],
-                    container_default_protection=(
-                        ContainerDefaultProtection(default_protections=[])
-                    ),
-                )
-        res = patch_with_context(
-            array,
-            "patch_container_default_protections",
-            CONTEXT_VERSION,
-            module,
-            names=[module.params["name"]],
-            container_default_protection=(
-                ContainerDefaultProtection(
-                    default_protections=[
-                        DefaultProtectionReference(
-                            name=module.params["default_protection_pg"],
-                            type="protection_group",
-                        )
-                    ]
-                )
-            ),
-        )
-        check_response(
-            res,
-            module,
-            f"Failed to update default protection for pod {module.params['name']}",
-        )
+            check_response(
+                res,
+                module,
+                f"Failed to update default protection for pod {module.params['name']}",
+            )
     module.exit_json(changed=changed)
 
 
