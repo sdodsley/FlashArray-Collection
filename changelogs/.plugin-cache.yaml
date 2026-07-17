@@ -231,6 +231,11 @@ plugins:
       name: purefa_policy
       namespace: ''
       version_added: 1.5.0
+    purefa_policy_management_access:
+      description: Manage management-access (RBAC) policies on Everpure FlashArrays
+      name: purefa_policy_management_access
+      namespace: ''
+      version_added: 1.44.0
     purefa_proxy:
       description: Configure FlashArray phonehome HTTPs proxy settings
       name: purefa_proxy
@@ -356,4 +361,4 @@ plugins:
   strategy: {}
   test: {}
   vars: {}
-version: 1.43.0
+version: 1.44.0

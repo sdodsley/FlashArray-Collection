@@ -4,6 +4,34 @@ Purestorage.Flasharray Release Notes
 
 .. contents:: Topics
 
+v1.44.0
+=======
+
+Major Changes
+-------------
+
+- This collection has been renamed from purestorage.flasharray to everpure.flasharray. The purestorage.flasharray namespace is now a redirect-only deprecation stub.
+
+Minor Changes
+-------------
+
+- purefa_dsrole - Add ``access_policy`` parameter to bind a directory service role to a custom management access policy instead of a built-in role
+- purefa_host - Add ``nutanix-mgmt`` and ``nutanix-cluster`` host personalities, supported from REST API 2.50 and higher.
+- purefa_pod - Add ``realm`` parameter to place a pod inside a realm without having to hand-craft the ``realm::pod`` name
+
+Bugfixes
+--------
+
+- purefa_host - Fix get_hosts TypeError on pre-2.38 arrays by only sending allow_errors when a context is set (https://github.com/Pure-Storage-Ansible/FlashArray-Collection/issues/1016)
+- purefa_network - Fix TypeError updating an interface with existing subinterfaces (LACP/VIF) (https://github.com/Pure-Storage-Ansible/FlashArray-Collection/issues/1013)
+- purefa_pod - Do not create or modify default protection when running in check mode
+- purefa_realm - Do not create the realm when running in check mode
+
+New Modules
+-----------
+
+- everpure.flasharray.purefa_policy_management_access - Manage management-access (RBAC) policies on Everpure FlashArrays
+
 v1.43.0
 =======
 
@@ -138,7 +166,7 @@ Bugfixes
 New Modules
 -----------
 
-- purestorage.flasharray.purefa_tgroup - Manage topology groups on Everpure FlashArrays
+- everpure.flasharray.purefa_tgroup - Manage topology groups on Everpure FlashArrays
 
 v1.42.0
 =======
@@ -405,8 +433,8 @@ Known Issues
 New Modules
 -----------
 
-- purestorage.flasharray.purefa_fleet - Manage Fusion Fleet
-- purestorage.flasharray.purefa_realm - Manage realms on Pure Storage FlashArrays
+- everpure.flasharray.purefa_fleet - Manage Fusion Fleet
+- everpure.flasharray.purefa_realm - Manage realms on Pure Storage FlashArrays
 
 v1.32.0
 =======
@@ -488,7 +516,7 @@ Bugfixes
 New Modules
 -----------
 
-- purestorage.flasharray.purefa_dsrole_old - Configure FlashArray Directory Service Roles (pre-6.6.3)
+- everpure.flasharray.purefa_dsrole_old - Configure FlashArray Directory Service Roles (pre-6.6.3)
 
 v1.30.2
 =======
@@ -566,8 +594,8 @@ Bugfixes
 New Modules
 -----------
 
-- purestorage.flasharray.purefa_audits - List FlashArray Audit Events
-- purestorage.flasharray.purefa_sessions - List FlashArray Sessions
+- everpure.flasharray.purefa_audits - List FlashArray Audit Events
+- everpure.flasharray.purefa_sessions - List FlashArray Sessions
 
 v1.28.1
 =======
@@ -684,7 +712,7 @@ Bugfixes
 New Modules
 -----------
 
-- purestorage.flasharray.purefa_hardware - Manage FlashArray Hardware Identification
+- everpure.flasharray.purefa_hardware - Manage FlashArray Hardware Identification
 
 v1.23.0
 =======
@@ -746,7 +774,7 @@ Bugfixes
 New Modules
 -----------
 
-- purestorage.flasharray.purefa_file - Manage FlashArray File Copies
+- everpure.flasharray.purefa_file - Manage FlashArray File Copies
 
 v1.21.0
 =======
@@ -800,7 +828,7 @@ v1.19.0
 New Modules
 -----------
 
-- purestorage.flasharray.purefa_logging - Manage Pure Storage FlashArray Audit and Session logs
+- everpure.flasharray.purefa_logging - Manage Pure Storage FlashArray Audit and Session logs
 
 v1.18.0
 =======
@@ -899,7 +927,7 @@ Bugfixes
 New Modules
 -----------
 
-- purestorage.flasharray.purefa_snmp_agent - Configure the FlashArray SNMP Agent
+- everpure.flasharray.purefa_snmp_agent - Configure the FlashArray SNMP Agent
 
 v1.15.0
 =======
@@ -954,8 +982,8 @@ Bugfixes
 New Modules
 -----------
 
-- purestorage.flasharray.purefa_default_protection - Manage SafeMode default protection for a Pure Storage FlashArray
-- purestorage.flasharray.purefa_messages - List FlashArray Alert Messages
+- everpure.flasharray.purefa_default_protection - Manage SafeMode default protection for a Pure Storage FlashArray
+- everpure.flasharray.purefa_messages - List FlashArray Alert Messages
 
 v1.13.0
 =======
@@ -1034,8 +1062,8 @@ Known Issues
 New Modules
 -----------
 
-- purestorage.flasharray.purefa_admin - Configure Pure Storage FlashArray Global Admin settings
-- purestorage.flasharray.purefa_saml - Manage FlashArray SAML2 service and identity providers
+- everpure.flasharray.purefa_admin - Configure Pure Storage FlashArray Global Admin settings
+- everpure.flasharray.purefa_saml - Manage FlashArray SAML2 service and identity providers
 
 v1.11.0
 =======
@@ -1071,7 +1099,7 @@ Minor Changes
 New Modules
 -----------
 
-- purestorage.flasharray.purefa_kmip - Manage FlashArray KMIP server objects
+- everpure.flasharray.purefa_kmip - Manage FlashArray KMIP server objects
 
 v1.9.0
 ======
@@ -1103,10 +1131,10 @@ Bugfixes
 New Modules
 -----------
 
-- purestorage.flasharray.purefa_ad - Manage FlashArray Active Directory Account
-- purestorage.flasharray.purefa_dirsnap - Manage FlashArray File System Directory Snapshots
-- purestorage.flasharray.purefa_eradication - Configure Pure Storage FlashArray Eradication Timer
-- purestorage.flasharray.purefa_sso - Configure Pure Storage FlashArray Single Sign-On
+- everpure.flasharray.purefa_ad - Manage FlashArray Active Directory Account
+- everpure.flasharray.purefa_dirsnap - Manage FlashArray File System Directory Snapshots
+- everpure.flasharray.purefa_eradication - Configure Pure Storage FlashArray Eradication Timer
+- everpure.flasharray.purefa_sso - Configure Pure Storage FlashArray Single Sign-On
 
 v1.8.0
 ======
@@ -1129,7 +1157,7 @@ Bugfixes
 New Modules
 -----------
 
-- purestorage.flasharray.purefa_certs - Manage FlashArray SSL Certificates
+- everpure.flasharray.purefa_certs - Manage FlashArray SSL Certificates
 
 v1.7.0
 ======
@@ -1153,7 +1181,7 @@ Bugfixes
 New Modules
 -----------
 
-- purestorage.flasharray.purefa_maintenance - Configure Pure Storage FlashArray Maintence Windows
+- everpure.flasharray.purefa_maintenance - Configure Pure Storage FlashArray Maintence Windows
 
 v1.6.2
 ======
@@ -1232,11 +1260,11 @@ Bugfixes
 New Modules
 -----------
 
-- purestorage.flasharray.purefa_apiclient - Manage FlashArray API Clients
-- purestorage.flasharray.purefa_directory - Manage FlashArray File System Directories
-- purestorage.flasharray.purefa_export - Manage FlashArray File System Exports
-- purestorage.flasharray.purefa_fs - Manage FlashArray File Systems
-- purestorage.flasharray.purefa_policy - Manage FlashArray File System Policies
+- everpure.flasharray.purefa_apiclient - Manage FlashArray API Clients
+- everpure.flasharray.purefa_directory - Manage FlashArray File System Directories
+- everpure.flasharray.purefa_export - Manage FlashArray File System Exports
+- everpure.flasharray.purefa_fs - Manage FlashArray File Systems
+- everpure.flasharray.purefa_policy - Manage FlashArray File System Policies
 
 v1.4.0
 ======
