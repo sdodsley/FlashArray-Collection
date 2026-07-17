@@ -1,7 +1,7 @@
 #!/usr/bin/python
 # -*- coding: utf-8 -*-
 
-# (c) 2020, Simon Dodsley (simon@purestorage.com)
+# (c) 2020, Simon Dodsley (simon@everpuredata.com)
 # GNU General Public License v3.0+ (see COPYING or https://www.gnu.org/licenses/gpl-3.0.txt)
 
 from __future__ import absolute_import, division, print_function
@@ -23,7 +23,7 @@ version_added: '1.0.0'
 short_description:  Manage network VLAN interfaces in a Everpure FlashArray
 description:
     - This module manages the VLAN network interfaces on a Everpure FlashArray.
-author: Everpure Ansible Team (@sdodsley) <pure-ansible-team@purestorage.com>
+author: Everpure Ansible Team (@sdodsley) <pure-ansible-team@everpuredata.com>
 options:
   name:
     description:
@@ -56,12 +56,12 @@ options:
     required: true
     type: str
 extends_documentation_fragment:
-    - purestorage.flasharray.purestorage.fa
+    - everpure.flasharray.everpure.fa
 """
 
 EXAMPLES = """
 - name: Configure and enable VLAN interface ct0.eth8 for subnet test
-  purestorage.flasharray.purefa_vlan:
+  everpure.flasharray.purefa_vlan:
     name: ct0.eth8
     subnet: test
     address: 10.21.200.18
@@ -70,7 +70,7 @@ EXAMPLES = """
     api_token: c6033033-fe69-2515-a9e8-966bb7fe4b40
 
 - name: Disable VLAN interface for subnet test on ct1.eth2
-  purestorage.flasharray.purefa_vlan:
+  everpure.flasharray.purefa_vlan:
     name: ct1.eth2
     subnet: test
     enabled: false
@@ -78,7 +78,7 @@ EXAMPLES = """
     api_token: c6033033-fe69-2515-a9e8-966bb7fe4b40
 
 - name: Delete VLAN interface for subnet test on ct0.eth4
-  purestorage.flasharray.purefa_vlan:
+  everpure.flasharray.purefa_vlan:
     name: ct0.eth4
     subnet: test
     state: absent
@@ -102,11 +102,11 @@ except ImportError:
     HAS_PURESTORAGE = False
 
 from ansible.module_utils.basic import AnsibleModule
-from ansible_collections.purestorage.flasharray.plugins.module_utils.purefa import (
+from ansible_collections.everpure.flasharray.plugins.module_utils.purefa import (
     get_array,
     purefa_argument_spec,
 )
-from ansible_collections.purestorage.flasharray.plugins.module_utils.api_helpers import (
+from ansible_collections.everpure.flasharray.plugins.module_utils.api_helpers import (
     check_response,
 )
 

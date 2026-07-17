@@ -1,7 +1,7 @@
 #!/usr/bin/python
 # -*- coding: utf-8 -*-
 
-# (c) 2021, Simon Dodsley (simon@purestorage.com)
+# (c) 2021, Simon Dodsley (simon@everpuredata.com)
 # GNU General Public License v3.0+ (see COPYING or https://www.gnu.org/licenses/gpl-3.0.txt)
 
 from __future__ import absolute_import, division, print_function
@@ -26,7 +26,7 @@ description:
   and SUFFIX is the suffix.
 - The client visible snapshot name is CLIENT_NAME.SUFFIX.
 author:
-- Everpure Ansible Team (@sdodsley) <pure-ansible-team@purestorage.com>
+- Everpure Ansible Team (@sdodsley) <pure-ansible-team@everpuredata.com>
 options:
   name:
     description:
@@ -92,12 +92,12 @@ options:
     default: ""
     version_added: '1.39.0'
 extends_documentation_fragment:
-- purestorage.flasharray.purestorage.fa
+- everpure.flasharray.everpure.fa
 """
 
 EXAMPLES = r"""
 - name: Create a snapshot directory foo in filesysten bar for client test with suffix test
-  purestorage.flasharray.purefa_dirsnap:
+  everpure.flasharray.purefa_dirsnap:
     name: foo
     filesystem: bar
     client: test
@@ -106,7 +106,7 @@ EXAMPLES = r"""
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
 
 - name: Update retention time for a snapshot foo:bar.client.test
-  purestorage.flasharray.purefa_dirsnap:
+  everpure.flasharray.purefa_dirsnap:
     name: foo
     filesystem: bar
     client: client
@@ -116,7 +116,7 @@ EXAMPLES = r"""
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
 
 - name: Delete snapshot foo:bar.client.test
-  purestorage.flasharray.purefa_dirsnap:
+  everpure.flasharray.purefa_dirsnap:
     name: foo
     filesystem: bar
     client: client
@@ -126,7 +126,7 @@ EXAMPLES = r"""
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
 
 - name: Recover deleted snapshot foo:bar.client.test
-  purestorage.flasharray.purefa_dirsnap:
+  everpure.flasharray.purefa_dirsnap:
     name: foo
     filesystem: bar
     client: client
@@ -135,7 +135,7 @@ EXAMPLES = r"""
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
 
 - name: Delete and eradicate snapshot foo:bar.client.test
-  purestorage.flasharray.purefa_dirsnap:
+  everpure.flasharray.purefa_dirsnap:
     name: foo
     filesystem: bar
     client: client
@@ -146,7 +146,7 @@ EXAMPLES = r"""
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
 
 - name: Eradicate deleted snapshot foo:bar.client.test
-  purestorage.flasharray.purefa_dirsnap:
+  everpure.flasharray.purefa_dirsnap:
     name: foo
     filesystem: bar
     client: client
@@ -157,7 +157,7 @@ EXAMPLES = r"""
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
 
 - name: Rename snapshot
-  purestorage.flasharray.purefa_dirsnap:
+  everpure.flasharray.purefa_dirsnap:
     name: foo
     filesystem: bar
     client: client
@@ -180,14 +180,14 @@ except ImportError:
 
 import re
 from ansible.module_utils.basic import AnsibleModule
-from ansible_collections.purestorage.flasharray.plugins.module_utils.purefa import (
+from ansible_collections.everpure.flasharray.plugins.module_utils.purefa import (
     get_array,
     purefa_argument_spec,
 )
-from ansible_collections.purestorage.flasharray.plugins.module_utils.version import (
+from ansible_collections.everpure.flasharray.plugins.module_utils.version import (
     LooseVersion,
 )
-from ansible_collections.purestorage.flasharray.plugins.module_utils.api_helpers import (
+from ansible_collections.everpure.flasharray.plugins.module_utils.api_helpers import (
     check_response,
     delete_with_context,
     get_with_context,

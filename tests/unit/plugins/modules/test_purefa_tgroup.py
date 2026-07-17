@@ -1,5 +1,5 @@
 # Copyright: (c) 2026, Pure Storage Ansible Team
-# <pure-ansible-team@purestorage.com>
+# <pure-ansible-team@everpuredata.com>
 # GNU General Public License v3.0+ (see COPYING.GPLv3 or
 # https://www.gnu.org/licenses/gpl-3.0.txt)
 
@@ -23,22 +23,22 @@ sys.modules["ansible.module_utils.basic"] = MagicMock()
 sys.modules["pypureclient"] = MagicMock()
 sys.modules["pypureclient.flasharray"] = MagicMock()
 sys.modules["ansible_collections"] = MagicMock()
-sys.modules["ansible_collections.purestorage"] = MagicMock()
-sys.modules["ansible_collections.purestorage.flasharray"] = MagicMock()
-sys.modules["ansible_collections.purestorage.flasharray.plugins"] = MagicMock()
-sys.modules["ansible_collections.purestorage.flasharray.plugins.module_utils"] = (
+sys.modules["ansible_collections.everpure"] = MagicMock()
+sys.modules["ansible_collections.everpure.flasharray"] = MagicMock()
+sys.modules["ansible_collections.everpure.flasharray.plugins"] = MagicMock()
+sys.modules["ansible_collections.everpure.flasharray.plugins.module_utils"] = (
     MagicMock()
 )
-sys.modules[
-    "ansible_collections.purestorage.flasharray.plugins.module_utils.purefa"
-] = MagicMock()
+sys.modules["ansible_collections.everpure.flasharray.plugins.module_utils.purefa"] = (
+    MagicMock()
+)
 mock_version_module = MagicMock()
 mock_version_module.LooseVersion = LooseVersion
+sys.modules["ansible_collections.everpure.flasharray.plugins.module_utils.version"] = (
+    mock_version_module
+)
 sys.modules[
-    "ansible_collections.purestorage.flasharray.plugins.module_utils.version"
-] = mock_version_module
-sys.modules[
-    "ansible_collections.purestorage.flasharray.plugins.module_utils.api_helpers"
+    "ansible_collections.everpure.flasharray.plugins.module_utils.api_helpers"
 ] = MagicMock()
 
 from plugins.modules.purefa_tgroup import (

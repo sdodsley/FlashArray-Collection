@@ -1,4 +1,4 @@
-.. _ansible_collections.purestorage.flasharray.docsite.realm_multitenancy_guide:
+.. _ansible_collections.everpure.flasharray.docsite.realm_multitenancy_guide:
 
 *******************************************
 Realm multi-tenancy end-to-end walk-through
@@ -29,11 +29,11 @@ Requirements
 
 - Purity//FA 6.6.11 or later (REST 2.36) for realms and management-access
   policies.
-- ``purestorage.flasharray`` 1.44.0 or later for the ``realm`` parameter of
+- ``everpure.flasharray`` 1.44.0 or later for the ``realm`` parameter of
   ``purefa_pod``, the ``access_policy`` parameter of ``purefa_dsrole`` and the
   ``purefa_policy_management_access`` module.
 
-.. _ansible_collections.purestorage.flasharray.docsite.realm_login_path:
+.. _ansible_collections.everpure.flasharray.docsite.realm_login_path:
 
 .. note::
 
@@ -62,21 +62,21 @@ Using the native modules
       ad_group_base: "OU=PureGroups,OU=Tenants"
     tasks:
       - name: 1. Create the realm with a quota
-        purestorage.flasharray.purefa_realm:
+        everpure.flasharray.purefa_realm:
           name: "{{ realm_name }}"
           quota: 5T
           fa_url: "{{ fa_url }}"
           api_token: "{{ api_token }}"
 
       - name: 2. Create a pod inside the realm
-        purestorage.flasharray.purefa_pod:
+        everpure.flasharray.purefa_pod:
           name: "{{ pod_name }}"
           realm: "{{ realm_name }}"
           fa_url: "{{ fa_url }}"
           api_token: "{{ api_token }}"
 
       - name: 3. Create a management-access policy scoped to the realm
-        purestorage.flasharray.purefa_policy_management_access:
+        everpure.flasharray.purefa_policy_management_access:
           name: "{{ policy_name }}"
           aggregation_strategy: least-common-permissions
           rules:
@@ -87,7 +87,7 @@ Using the native modules
           api_token: "{{ api_token }}"
 
       - name: 4. Map an AD group to the policy via a directory-service role
-        purestorage.flasharray.purefa_dsrole:
+        everpure.flasharray.purefa_dsrole:
           name: "{{ role_name }}"
           access_policy: "{{ policy_name }}"
           group: "{{ ad_group }}"
@@ -175,7 +175,7 @@ confirm the chain was built correctly:
 .. code-block:: yaml+jinja
 
   - name: Collect FlashArray configuration
-    purestorage.flasharray.purefa_info:
+    everpure.flasharray.purefa_info:
       gather_subset:
         - config
       fa_url: "{{ fa_url }}"

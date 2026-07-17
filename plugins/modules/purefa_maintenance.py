@@ -1,7 +1,7 @@
 #!/usr/bin/python
 # -*- coding: utf-8 -*-
 
-# (c) 2021, Simon Dodsley (simon@purestorage.com)
+# (c) 2021, Simon Dodsley (simon@everpuredata.com)
 # GNU General Public License v3.0+ (see COPYING or https://www.gnu.org/licenses/gpl-3.0.txt)
 
 from __future__ import absolute_import, division, print_function
@@ -22,7 +22,7 @@ short_description: Configure Everpure FlashArray Maintenance Windows
 description:
 - Configuration for Everpure FlashArray Maintenance Windows.
 author:
-- Everpure Ansible Team (@sdodsley) <pure-ansible-team@purestorage.com>
+- Everpure Ansible Team (@sdodsley) <pure-ansible-team@everpuredata.com>
 options:
   state:
     description:
@@ -38,24 +38,24 @@ options:
     - Range allowed is 1 hour (3600 seconds) to 48 hours (172800 seconds)
     - Default setting is 1 hour (3600 seconds)
 extends_documentation_fragment:
-- purestorage.flasharray.purestorage.fa
+- everpure.flasharray.everpure.fa
 """
 
 EXAMPLES = r"""
 - name: Delete existing maintenance window
-  purestorage.flasharray.purefa_maintenance:
+  everpure.flasharray.purefa_maintenance:
     state: absent
     fa_url: 10.10.10.2
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
 
 - name: Set maintnence window to default of 1 hour
-  purestorage.flasharray.purefa_maintenance:
+  everpure.flasharray.purefa_maintenance:
     state: present
     fa_url: 10.10.10.2
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
 
 - name: Update existing maintnence window
-  purestorage.flasharray.purefa_maintenance:
+  everpure.flasharray.purefa_maintenance:
     state: present
     timeout: 86400
     fa_url: 10.10.10.2
@@ -72,11 +72,11 @@ except ImportError:
     HAS_PURESTORAGE = False
 
 from ansible.module_utils.basic import AnsibleModule
-from ansible_collections.purestorage.flasharray.plugins.module_utils.purefa import (
+from ansible_collections.everpure.flasharray.plugins.module_utils.purefa import (
     get_array,
     purefa_argument_spec,
 )
-from ansible_collections.purestorage.flasharray.plugins.module_utils.api_helpers import (
+from ansible_collections.everpure.flasharray.plugins.module_utils.api_helpers import (
     check_response,
 )
 

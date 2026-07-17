@@ -32,14 +32,14 @@ The Everpure FlashArray collection consists of the latest versions of the FlashA
 Before using this collection, you need to install it with the Ansible Galaxy command-line tool:
 
 ```
-ansible-galaxy collection install purestorage.flasharray
+ansible-galaxy collection install everpure.flasharray
 ```
 
 You can also include it in a `requirements.yml` file and install it with `ansible-galaxy collection install -r requirements.yml`, using the format:
 
 ```
 collections:
-  - name: purestorage.flasharray
+  - name: everpure.flasharray
 ```
 
 Note that if you install the collection from Ansible Galaxy, it will not be upgraded automatically when you upgrade the Ansible package. 
@@ -47,13 +47,13 @@ Note that if you install the collection from Ansible Galaxy, it will not be upgr
 To upgrade the collection to the latest available version, run the following command:
 
 ```
-ansible-galaxy collection install purestorage.flasharray --upgrade
+ansible-galaxy collection install everpure.flasharray --upgrade
 ```
 
 You can also install a specific version of the collection, for example, if you need to downgrade when something is broken in the latest version (please report an issue in this repository). Use the following syntax to install version 1.0.0:
 
 ```
-ansible-galaxy collection install purestorage.flasharray:==1.0.0
+ansible-galaxy collection install everpure.flasharray:==1.0.0
 ```
 
 See [using Ansible collections](https://docs.ansible.com/ansible/devel/user_guide/collections_using.html) for more details.
@@ -175,4 +175,4 @@ All modules are idempotent with the exception of modules that change or set pass
 
 ## Author
 
-This collection was created in 2019 by [Simon Dodsley](https://github.com/sdodsley) for, and on behalf of, the [Everpure Ansible Team](pure-ansible-team@purestorage.com)
+This collection was created in 2019 by [Simon Dodsley](https://github.com/sdodsley) for, and on behalf of, the [Everpure Ansible Team](pure-ansible-team@everpuredata.com)

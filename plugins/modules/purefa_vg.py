@@ -1,7 +1,7 @@
 #!/usr/bin/python
 # -*- coding: utf-8 -*-
 
-# Copyright: (c) 2017, Simon Dodsley (simon@purestorage.com)
+# Copyright: (c) 2017, Simon Dodsley (simon@everpuredata.com)
 # GNU General Public License v3.0+ (see COPYING or https://www.gnu.org/licenses/gpl-3.0.txt)
 
 from __future__ import absolute_import, division, print_function
@@ -22,7 +22,7 @@ short_description: Manage volume groups on Everpure FlashArrays
 description:
 - Create, delete or modify volume groups on Everpure FlashArrays.
 author:
-- Everpure Ansible Team (@sdodsley) <pure-ansible-team@purestorage.com>
+- Everpure Ansible Team (@sdodsley) <pure-ansible-team@everpuredata.com>
 options:
   name:
     description:
@@ -113,12 +113,12 @@ options:
     default: ""
     version_added: '1.33.0'
 extends_documentation_fragment:
-- purestorage.flasharray.purestorage.fa
+- everpure.flasharray.everpure.fa
 """
 
 EXAMPLES = r"""
 - name: Create new volume group
-  purestorage.flasharray.purefa_vg:
+  everpure.flasharray.purefa_vg:
     name: foo
     bw_qos: 50M
     iops_qos: 100
@@ -126,7 +126,7 @@ EXAMPLES = r"""
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
 
 - name: Create 10 volume groups of pattern foo#bar with QoS
-  purestorage.flasharray.purefa_vg:
+  everpure.flasharray.purefa_vg:
     name: foo
     suffix: bar
     count: 10
@@ -138,7 +138,7 @@ EXAMPLES = r"""
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
 
 - name: Update volume group QoS limits
-  purestorage.flasharray.purefa_vg:
+  everpure.flasharray.purefa_vg:
     name: foo
     bw_qos: 0
     iops_qos: 5555
@@ -146,7 +146,7 @@ EXAMPLES = r"""
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
 
 - name: Update volume group DMM Priority Adjustment (Purity//FA 6.1.2+)
-  purestorage.flasharray.purefa_vg:
+  everpure.flasharray.purefa_vg:
     name: foo
     priority_operator: '-'
     priority_value: 10
@@ -154,20 +154,20 @@ EXAMPLES = r"""
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
 
 - name: Destroy volume group
-  purestorage.flasharray.purefa_vg:
+  everpure.flasharray.purefa_vg:
     name: foo
     fa_url: 10.10.10.2
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
     state: absent
 
 - name: Recover deleted volume group - no changes are made to the volume group on recovery
-  purestorage.flasharray.purefa_vg:
+  everpure.flasharray.purefa_vg:
     name: foo
     fa_url: 10.10.10.2
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
 
 - name: Destroy and Eradicate volume group
-  purestorage.flasharray.purefa_vg:
+  everpure.flasharray.purefa_vg:
     name: foo
     eradicate: true
     fa_url: 10.10.10.2
@@ -175,7 +175,7 @@ EXAMPLES = r"""
     state: absent
 
 - name: Rename volume group foo to bar
-  purestorage.flasharray.purefa_vg:
+  everpure.flasharray.purefa_vg:
     name: foo
     rename: bar
     fa_url: 10.10.10.2
@@ -197,18 +197,18 @@ except ImportError:
     HAS_PURESTORAGE = False
 
 from ansible.module_utils.basic import AnsibleModule
-from ansible_collections.purestorage.flasharray.plugins.module_utils.purefa import (
+from ansible_collections.everpure.flasharray.plugins.module_utils.purefa import (
     get_array,
     purefa_argument_spec,
 )
-from ansible_collections.purestorage.flasharray.plugins.module_utils.common import (
+from ansible_collections.everpure.flasharray.plugins.module_utils.common import (
     human_to_bytes,
     human_to_real,
 )
-from ansible_collections.purestorage.flasharray.plugins.module_utils.version import (
+from ansible_collections.everpure.flasharray.plugins.module_utils.version import (
     LooseVersion,
 )
-from ansible_collections.purestorage.flasharray.plugins.module_utils.api_helpers import (
+from ansible_collections.everpure.flasharray.plugins.module_utils.api_helpers import (
     check_response,
     get_with_context,
     post_with_context,
