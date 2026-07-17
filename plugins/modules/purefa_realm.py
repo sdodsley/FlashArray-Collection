@@ -201,13 +201,19 @@ def make_realm(module, array):
             module.fail_json(
                 msg="Quota must be a value greater than or equal to 1048576 bytes"
             )
-        res = array.post_realms(
-            names=[module.params["name"]], realm=RealmPost(quota_limit=quota)
-        )
-        check_response(res, module, f"Creation of realm {module.params['name']} failed")
+        if not module.check_mode:
+            res = array.post_realms(
+                names=[module.params["name"]], realm=RealmPost(quota_limit=quota)
+            )
+            check_response(
+                res, module, f"Creation of realm {module.params['name']} failed"
+            )
     else:
-        res = array.post_realms(names=[module.params["name"]])
-        check_response(res, module, f"Creation of realm {module.params['name']} failed")
+        if not module.check_mode:
+            res = array.post_realms(names=[module.params["name"]])
+            check_response(
+                res, module, f"Creation of realm {module.params['name']} failed"
+            )
     if module.params["bw_qos"] and not module.params["iops_qos"]:
         if int(human_to_bytes(module.params["bw_qos"])) in range(1048576, 549755813888):
             changed = True

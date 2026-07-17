@@ -1,0 +1,2 @@
+minor_changes:
+  - purefa_pod - Add ``realm`` parameter to place a pod inside a realm without having to hand-craft the ``realm::pod`` name

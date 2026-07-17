@@ -116,7 +116,7 @@ class TestMakeRealm:
     """Test cases for make_realm function"""
 
     def test_make_realm_check_mode(self):
-        """Test make_realm in check mode"""
+        """Test make_realm in check mode makes no API calls (#realm check-mode)"""
         mock_module = Mock()
         mock_module.check_mode = True
         mock_module.params = {
@@ -129,6 +129,28 @@ class TestMakeRealm:
 
         make_realm(mock_module, mock_array)
 
+        # In check mode the realm must NOT be created
+        mock_array.post_realms.assert_not_called()
+        mock_module.exit_json.assert_called_once_with(changed=True)
+
+    @patch("plugins.modules.purefa_realm.human_to_bytes")
+    def test_make_realm_check_mode_with_quota(self, mock_human_to_bytes):
+        """Test make_realm with quota in check mode makes no API calls"""
+        mock_human_to_bytes.return_value = 5497558138880  # 5T, multiple of 512
+        mock_module = Mock()
+        mock_module.check_mode = True
+        mock_module.params = {
+            "name": "new-realm",
+            "bw_qos": None,
+            "iops_qos": None,
+            "quota": "5T",
+        }
+        mock_array = Mock()
+
+        make_realm(mock_module, mock_array)
+
+        mock_array.post_realms.assert_not_called()
+        mock_array.patch_realms.assert_not_called()
         mock_module.exit_json.assert_called_once_with(changed=True)
 
 
