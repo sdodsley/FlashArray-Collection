@@ -1,0 +1,4 @@
+minor_changes:
+  - purefa_info - Add ``logged_in_ports`` to each host in the ``hosts`` subset, mapping every host WWN/IQN/NQN to the array target ports it is currently logged into
+bugfixes:
+  - purefa_info - Fix TypeError gathering the ``hosts`` subset for hosts that have preferred arrays set, as ``preferred_arrays`` is a list of references not a dict

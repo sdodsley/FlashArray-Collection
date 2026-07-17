@@ -1890,6 +1890,22 @@ def generate_host_dict(array, performance):
     hosts_balance = list(array.get_hosts_performance_balance().items)
     if performance:
         hosts_performance = list(array.get_hosts_performance().items)
+    # Build a live login map (initiator identifier -> set of array target port
+    # names) so each host WWN/IQN/NQN can report exactly where it is logged in.
+    login_map = {}
+    for login in list(array.get_ports_initiators().items):
+        target_name = getattr(login.target, "name", None)
+        if not target_name:
+            continue
+        initiator = login.initiator
+        init_wwn = getattr(initiator, "wwn", None)
+        for key in (
+            init_wwn.replace(":", "").upper() if init_wwn else None,
+            getattr(initiator, "iqn", None),
+            getattr(initiator, "nqn", None),
+        ):
+            if key:
+                login_map.setdefault(key, set()).add(target_name)
     for host in hosts:
         hostname = host.name
         host_info[hostname] = {
@@ -1901,6 +1917,7 @@ def generate_host_dict(array, performance):
             "host_user": getattr(host.chap, "host_user", None),
             "target_user": getattr(host.chap, "target_user", None),
             "target_port": [],
+            "logged_in_ports": {},
             "volumes": [],
             "tags": [],
             "performance": [],
@@ -1910,6 +1927,17 @@ def generate_host_dict(array, performance):
             "time_remaining": getattr(host, "time_remaining", None),
             "vlan": getattr(host, "vlan", None),
         }
+        # Report which array target ports each host initiator is logged into.
+        # An empty list means the identifier is not logged into any port, so
+        # the WWN/IQN/NQN can be safely removed.
+        logged_in = {}
+        for wwn in getattr(host, "wwns", None) or []:
+            logged_in[wwn] = sorted(login_map.get(wwn.replace(":", "").upper(), []))
+        for iqn in getattr(host, "iqns", None) or []:
+            logged_in[iqn] = sorted(login_map.get(iqn, []))
+        for nqn in getattr(host, "nqns", None) or []:
+            logged_in[nqn] = sorted(login_map.get(nqn, []))
+        host_info[hostname]["logged_in_ports"] = logged_in
         host_connections = list(array.get_connections(host_names=[hostname]).items)
         for connection in host_connections:
             connection_dict = {
@@ -1920,9 +1948,8 @@ def generate_host_dict(array, performance):
             }
             host_info[hostname]["volumes"].append(connection_dict)
         for pref_array in host.preferred_arrays:
-            host_info[hostname]["preferred_array"].append(
-                host.preferred_arrays[pref_array].name
-            )
+            # preferred_arrays is a list of Reference objects, not a dict
+            host_info[hostname]["preferred_array"].append(pref_array.name)
 
         if host.is_local:
             host_info[host.name]["port_connectivity"] = host.port_connectivity.details

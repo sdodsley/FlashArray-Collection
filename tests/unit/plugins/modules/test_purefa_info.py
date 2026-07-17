@@ -839,11 +839,100 @@ class TestGenerateHostDict:
         mock_array.get_hosts_performance_balance.return_value = Mock(items=[])
         mock_array.get_connections.return_value = Mock(items=[])
         mock_array.get_hosts_tags.return_value = Mock(items=[])
+        mock_array.get_ports_initiators.return_value = Mock(items=[])
 
         result = generate_host_dict(mock_array, performance=False)
 
         assert "test_host" in result
         assert result["test_host"]["personality"] == "linux"
+        assert result["test_host"]["logged_in_ports"] == {
+            "iqn.2021-01.com.example:host1": []
+        }
+
+    def test_generate_host_dict_preferred_arrays(self):
+        """preferred_arrays is a list of Reference objects, not a dict"""
+        mock_array = Mock()
+        mock_array.get_rest_version.return_value = "2.38"
+
+        pref1 = Mock()
+        pref1.name = "arrayA"
+        pref2 = Mock()
+        pref2.name = "arrayB"
+
+        mock_host = Mock()
+        mock_host.name = "sync_host"
+        mock_host.host_group = None
+        mock_host.nqns = None
+        mock_host.iqns = None
+        mock_host.wwns = None
+        mock_host.personality = None
+        mock_host.chap = Mock(host_user=None, target_user=None)
+        mock_host.preferred_arrays = [pref1, pref2]
+        mock_host.is_local = True
+        mock_host.port_connectivity = Mock(details={})
+        mock_host.destroyed = False
+        mock_host.time_remaining = None
+        mock_host.vlan = None
+
+        mock_array.get_hosts.return_value = Mock(items=[mock_host])
+        mock_array.get_hosts_performance_balance.return_value = Mock(items=[])
+        mock_array.get_connections.return_value = Mock(items=[])
+        mock_array.get_hosts_tags.return_value = Mock(items=[])
+        mock_array.get_ports_initiators.return_value = Mock(items=[])
+
+        result = generate_host_dict(mock_array, performance=False)
+
+        assert result["sync_host"]["preferred_array"] == ["arrayA", "arrayB"]
+
+    def test_generate_host_dict_logged_in_ports(self):
+        """Test logged_in_ports maps each WWN to the target ports it uses"""
+
+        def _login(init_wwn, target_name):
+            login = Mock()
+            login.target = Mock()
+            login.target.name = target_name
+            login.initiator = Mock()
+            login.initiator.wwn = init_wwn
+            login.initiator.iqn = None
+            login.initiator.nqn = None
+            return login
+
+        mock_array = Mock()
+        mock_array.get_rest_version.return_value = "2.38"
+
+        mock_host = Mock()
+        mock_host.name = "fc_host"
+        mock_host.host_group = None
+        mock_host.nqns = None
+        mock_host.iqns = None
+        mock_host.wwns = ["52:4A:93:00:00:00:00:01", "52:4A:93:00:00:00:00:02"]
+        mock_host.personality = None
+        mock_host.chap = Mock(host_user=None, target_user=None)
+        mock_host.preferred_arrays = {}
+        mock_host.is_local = True
+        mock_host.port_connectivity = Mock(details={})
+        mock_host.destroyed = False
+        mock_host.time_remaining = None
+        mock_host.vlan = None
+
+        mock_array.get_hosts.return_value = Mock(items=[mock_host])
+        mock_array.get_hosts_performance_balance.return_value = Mock(items=[])
+        mock_array.get_connections.return_value = Mock(items=[])
+        mock_array.get_hosts_tags.return_value = Mock(items=[])
+        # First WWN logged into two ports (lower-case/colon variant to prove
+        # normalisation); second WWN not logged in anywhere.
+        mock_array.get_ports_initiators.return_value = Mock(
+            items=[
+                _login("52:4a:93:00:00:00:00:01", "CT1.FC1"),
+                _login("52:4a:93:00:00:00:00:01", "CT0.FC1"),
+            ]
+        )
+
+        result = generate_host_dict(mock_array, performance=False)
+
+        logged = result["fc_host"]["logged_in_ports"]
+        assert logged["52:4A:93:00:00:00:00:01"] == ["CT0.FC1", "CT1.FC1"]
+        assert logged["52:4A:93:00:00:00:00:02"] == []
 
 
 class TestGeneratePgroupsDict:
