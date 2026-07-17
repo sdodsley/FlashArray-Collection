@@ -1,7 +1,7 @@
 #!/usr/bin/python
 # -*- coding: utf-8 -*-
 
-# (c) 2020, Simon Dodsley (simon@purestorage.com)
+# (c) 2020, Simon Dodsley (simon@everpuredata.com)
 # GNU General Public License v3.0+ (see COPYING or https://www.gnu.org/licenses/gpl-3.0.txt)
 
 from __future__ import absolute_import, division, print_function
@@ -23,10 +23,10 @@ short_description:  Manage network interfaces in a Everpure FlashArray
 version_added: '1.0.0'
 description:
     - This module manages the physical and virtual network interfaces on a Everpure FlashArray.
-    - To manage VLAN interfaces use the I(purestorage.flasharray.purefa_vlan) module.
-    - To manage network subnets use the I(purestorage.flasharray.purefa_subnet) module.
+    - To manage VLAN interfaces use the I(everpure.flasharray.purefa_vlan) module.
+    - To manage network subnets use the I(everpure.flasharray.purefa_subnet) module.
     - To remove an IP address from a non-management port use 0.0.0.0/0
-author: Everpure Ansible Team (@sdodsley) <pure-ansible-team@purestorage.com>
+author: Everpure Ansible Team (@sdodsley) <pure-ansible-team@everpuredata.com>
 options:
   name:
     description:
@@ -100,12 +100,12 @@ options:
     default: true
     version_added: '1.22.0'
 extends_documentation_fragment:
-    - purestorage.flasharray.purestorage.fa
+    - everpure.flasharray.everpure.fa
 """
 
 EXAMPLES = """
 - name: Configure and enable network interface ct0.eth8
-  purestorage.flasharray.purefa_network:
+  everpure.flasharray.purefa_network:
     name: ct0.eth8
     gateway: 10.21.200.1
     address: "10.21.200.18/24"
@@ -115,21 +115,21 @@ EXAMPLES = """
     api_token: c6033033-fe69-2515-a9e8-966bb7fe4b40
 
 - name: Disable physical interface ct1.eth2
-  purestorage.flasharray.purefa_network:
+  everpure.flasharray.purefa_network:
     name: ct1.eth2
     state: absent
     fa_url: 10.10.10.2
     api_token: c6033033-fe69-2515-a9e8-966bb7fe4b40
 
 - name: Enable virtual network interface vir0
-  purestorage.flasharray.purefa_network:
+  everpure.flasharray.purefa_network:
     name: vir0
     state: present
     fa_url: 10.10.10.2
     api_token: c6033033-fe69-2515-a9e8-966bb7fe4b40
 
 - name: Remove an IP address from iSCSI interface ct0.eth4
-  purestorage.flasharray.purefa_network:
+  everpure.flasharray.purefa_network:
     name: ct0.eth4
     address: 0.0.0.0/0
     gateway: 0.0.0.0
@@ -137,7 +137,7 @@ EXAMPLES = """
     api_token: c6033033-fe69-2515-a9e8-966bb7fe4b40
 
 - name: Change service list for FC interface ct0.fc1
-  purestorage.flasharray.purefa_network:
+  everpure.flasharray.purefa_network:
     name: ct0.fc1
     servicelist:
       - replication
@@ -170,11 +170,11 @@ except ImportError:
     HAS_PYPURECLIENT = False
 
 from ansible.module_utils.basic import AnsibleModule
-from ansible_collections.purestorage.flasharray.plugins.module_utils.purefa import (
+from ansible_collections.everpure.flasharray.plugins.module_utils.purefa import (
     get_array,
     purefa_argument_spec,
 )
-from ansible_collections.purestorage.flasharray.plugins.module_utils.api_helpers import (
+from ansible_collections.everpure.flasharray.plugins.module_utils.api_helpers import (
     check_response,
 )
 

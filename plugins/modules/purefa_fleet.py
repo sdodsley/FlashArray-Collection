@@ -1,7 +1,7 @@
 #!/usr/bin/python
 # -*- coding: utf-8 -*-
 
-# (c) 2024, Simon Dodsley (simon@purestorage.com)
+# (c) 2024, Simon Dodsley (simon@everpuredata.com)
 # GNU General Public License v3.0+ (see COPYING or https://www.gnu.org/licenses/gpl-3.0.txt)
 
 from __future__ import absolute_import, division, print_function
@@ -22,7 +22,7 @@ short_description: Manage Fusion Fleet
 description:
 - Create/Modify/Delete Fusion fleet and members
 author:
-- Everpure Ansible Team (@sdodsley) <pure-ansible-team@purestorage.com>
+- Everpure Ansible Team (@sdodsley) <pure-ansible-team@everpuredata.com>
 options:
   name:
     description:
@@ -52,19 +52,19 @@ options:
     - new name for fleet
     type: str
 extends_documentation_fragment:
-- purestorage.flasharray.purestorage.fa
+- everpure.flasharray.everpure.fa
 """
 
 EXAMPLES = r"""
 - name: Create a new fleet
-  purestorage.flasharray.purefa_fleet:
+  everpure.flasharray.purefa_fleet:
     name: foo
     state: create
     fa_url: 10.10.10.2
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
 
 - name: Add a member to fleet foo
-  purestorage.flasharray.purefa_fleet:
+  everpure.flasharray.purefa_fleet:
     name: foo
     member_url: array2
     member_api: c6033033-fe69-2515-a9e8-966bb7fe4b40
@@ -72,7 +72,7 @@ EXAMPLES = r"""
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
 
 - name: Delete a member from fleet foo
-  purestorage.flasharray.purefa_fleet:
+  everpure.flasharray.purefa_fleet:
     name: foo
     member_url: array2
     member_api: c6033033-fe69-2515-a9e8-966bb7fe4b40
@@ -81,7 +81,7 @@ EXAMPLES = r"""
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
 
 - name: Delete fleet foo
-  purestorage.flasharray.purefa_fleet:
+  everpure.flasharray.purefa_fleet:
     name: foo
     state: absent
     fa_url: 10.10.10.2
@@ -117,14 +117,14 @@ except ImportError:
     HAS_PURESTORAGE = False
 
 from ansible.module_utils.basic import AnsibleModule
-from ansible_collections.purestorage.flasharray.plugins.module_utils.purefa import (
+from ansible_collections.everpure.flasharray.plugins.module_utils.purefa import (
     get_array,
     purefa_argument_spec,
 )
-from ansible_collections.purestorage.flasharray.plugins.module_utils.version import (
+from ansible_collections.everpure.flasharray.plugins.module_utils.version import (
     LooseVersion,
 )
-from ansible_collections.purestorage.flasharray.plugins.module_utils.api_helpers import (
+from ansible_collections.everpure.flasharray.plugins.module_utils.api_helpers import (
     check_response,
 )
 import platform

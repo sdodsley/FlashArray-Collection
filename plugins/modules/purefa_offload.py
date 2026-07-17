@@ -1,7 +1,7 @@
 #!/usr/bin/python
 # -*- coding: utf-8 -*-
 
-# (c) 2019, Simon Dodsley (simon@purestorage.com)
+# (c) 2019, Simon Dodsley (simon@everpuredata.com)
 # GNU General Public License v3.0+ (see COPYING or https://www.gnu.org/licenses/gpl-3.0.txt)
 
 from __future__ import absolute_import, division, print_function
@@ -23,7 +23,7 @@ description:
 - Create, modify and delete NFS, S3, Azure or GCP offload targets.
 - You must have a correctly configured offload app installed and a correctly configured offload network for offload to work.
 author:
-- Everpure Ansible Team (@sdodsley) <pure-ansible-team@purestorage.com>
+- Everpure Ansible Team (@sdodsley) <pure-ansible-team@everpuredata.com>
 options:
   state:
     description:
@@ -121,12 +121,12 @@ options:
     default: ""
     version_added: '1.39.0'
 extends_documentation_fragment:
-- purestorage.flasharray.purestorage.fa
+- everpure.flasharray.everpure.fa
 """
 
 EXAMPLES = r"""
 - name: Create NFS offload target
-  purestorage.flasharray.purefa_offload:
+  everpure.flasharray.purefa_offload:
     name: nfs-offload
     protocol: nfs
     address: 10.21.200.4
@@ -135,7 +135,7 @@ EXAMPLES = r"""
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
 
 - name: Create S3 offload target
-  purestorage.flasharray.purefa_offload:
+  everpure.flasharray.purefa_offload:
     name: s3-offload
     protocol: s3
     access_key: "3794fb12c6204e19195f"
@@ -146,7 +146,7 @@ EXAMPLES = r"""
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
 
 - name: Create Azure offload target
-  purestorage.flasharray.purefa_offload:
+  everpure.flasharray.purefa_offload:
     name: azure-offload
     protocol: azure
     secret: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
@@ -156,7 +156,7 @@ EXAMPLES = r"""
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
 
 - name: Delete offload target
-  purestorage.flasharray.purefa_offload:
+  everpure.flasharray.purefa_offload:
     name: nfs-offload
     protocol: nfs
     state: absent
@@ -183,14 +183,14 @@ except ImportError:
 import re
 
 from ansible.module_utils.basic import AnsibleModule
-from ansible_collections.purestorage.flasharray.plugins.module_utils.purefa import (
+from ansible_collections.everpure.flasharray.plugins.module_utils.purefa import (
     get_array,
     purefa_argument_spec,
 )
-from ansible_collections.purestorage.flasharray.plugins.module_utils.version import (
+from ansible_collections.everpure.flasharray.plugins.module_utils.version import (
     LooseVersion,
 )
-from ansible_collections.purestorage.flasharray.plugins.module_utils.api_helpers import (
+from ansible_collections.everpure.flasharray.plugins.module_utils.api_helpers import (
     get_with_context,
     check_response,
 )

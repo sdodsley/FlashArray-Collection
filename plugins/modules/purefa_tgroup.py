@@ -1,7 +1,7 @@
 #!/usr/bin/python
 # -*- coding: utf-8 -*-
 
-# (c) 2026, Simon Dodsley (simon@purestorage.com)
+# (c) 2026, Simon Dodsley (simon@everpuredata.com)
 # GNU General Public License v3.0+ (see COPYING or https://www.gnu.org/licenses/gpl-3.0.txt)
 
 from __future__ import absolute_import, division, print_function
@@ -23,7 +23,7 @@ description:
 - Create, delete or modify topology groups on Everpure FlashArrays.
 - Supports topology group rename, parent moves, and direct member management.
 author:
-- Everpure Ansible Team (@sdodsley) <pure-ansible-team@purestorage.com>
+- Everpure Ansible Team (@sdodsley) <pure-ansible-team@everpuredata.com>
 options:
   name:
     description:
@@ -63,32 +63,32 @@ options:
     type: str
     default: ""
 extends_documentation_fragment:
-- purestorage.flasharray.purestorage.fa
+- everpure.flasharray.everpure.fa
 """
 
 EXAMPLES = r"""
 - name: Create a topology group
-  purestorage.flasharray.purefa_tgroup:
+  everpure.flasharray.purefa_tgroup:
     name: app-stack
     fa_url: 10.10.10.2
     api_token: 1234-5678-9012-3456
 
 - name: Create a child topology group under an existing parent
-  purestorage.flasharray.purefa_tgroup:
+  everpure.flasharray.purefa_tgroup:
     name: app-stack-dev
     parent: app-stack
     fa_url: 10.10.10.2
     api_token: 1234-5678-9012-3456
 
 - name: Rename a topology group
-  purestorage.flasharray.purefa_tgroup:
+  everpure.flasharray.purefa_tgroup:
     name: app-stack-dev
     rename: app-stack-qa
     fa_url: 10.10.10.2
     api_token: 1234-5678-9012-3456
 
 - name: Add array and child topology group members
-  purestorage.flasharray.purefa_tgroup:
+  everpure.flasharray.purefa_tgroup:
     name: app-stack
     array:
       - array-a
@@ -99,7 +99,7 @@ EXAMPLES = r"""
     api_token: 1234-5678-9012-3456
 
 - name: Remove specific members from a topology group
-  purestorage.flasharray.purefa_tgroup:
+  everpure.flasharray.purefa_tgroup:
     name: app-stack
     array:
       - array-b
@@ -110,7 +110,7 @@ EXAMPLES = r"""
     api_token: 1234-5678-9012-3456
 
 - name: Delete a topology group
-  purestorage.flasharray.purefa_tgroup:
+  everpure.flasharray.purefa_tgroup:
     name: app-stack-dev
     state: absent
     fa_url: 10.10.10.2
@@ -133,7 +133,7 @@ except ImportError:
     HAS_PURESTORAGE = False
 
 from ansible.module_utils.basic import AnsibleModule
-from ansible_collections.purestorage.flasharray.plugins.module_utils.api_helpers import (
+from ansible_collections.everpure.flasharray.plugins.module_utils.api_helpers import (
     check_api_version,
     check_response,
     delete_with_context,
@@ -141,7 +141,7 @@ from ansible_collections.purestorage.flasharray.plugins.module_utils.api_helpers
     patch_with_context,
     post_with_context,
 )
-from ansible_collections.purestorage.flasharray.plugins.module_utils.purefa import (
+from ansible_collections.everpure.flasharray.plugins.module_utils.purefa import (
     get_array,
     purefa_argument_spec,
 )

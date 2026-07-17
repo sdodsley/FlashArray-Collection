@@ -14,7 +14,7 @@ from __future__ import absolute_import, division, print_function
 
 __metaclass__ = type
 
-from ansible_collections.purestorage.flasharray.plugins.module_utils.version import (
+from ansible_collections.everpure.flasharray.plugins.module_utils.version import (
     LooseVersion,
 )
 

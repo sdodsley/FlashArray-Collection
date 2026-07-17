@@ -1,7 +1,7 @@
 #!/usr/bin/python
 # -*- coding: utf-8 -*-
 
-# 2018, Simon Dodsley (simon@purestorage.com)
+# 2018, Simon Dodsley (simon@everpuredata.com)
 # GNU General Public License v3.0+ (see COPYING or https://www.gnu.org/licenses/gpl-3.0.txt)
 
 from __future__ import absolute_import, division, print_function
@@ -22,7 +22,7 @@ short_description: Configure Everpure FlashArray alert email settings
 description:
 - Configure alert email configuration for Everpure FlashArrays.
 author:
-- Everpure Ansible Team (@sdodsley) <pure-ansible-team@purestorage.com>
+- Everpure Ansible Team (@sdodsley) <pure-ansible-team@everpuredata.com>
 options:
   state:
     type: str
@@ -41,19 +41,19 @@ options:
     description:
     - Set specified email address to be enabled or disabled
 extends_documentation_fragment:
-- purestorage.flasharray.purestorage.fa
+- everpure.flasharray.everpure.fa
 """
 
 EXAMPLES = r"""
 - name: Add new email recipient and enable, or enable existing email
-  purestorage.flasharray.purefa_alert:
+  everpure.flasharray.purefa_alert:
     address: "user@domain.com"
     enabled: true
     state: present
     fa_url: 10.10.10.2
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
 - name: Delete existing email recipient
-  purestorage.flasharray.purefa_alert:
+  everpure.flasharray.purefa_alert:
     state: absent
     address: "user@domain.com"
     fa_url: 10.10.10.2
@@ -65,11 +65,11 @@ RETURN = r"""
 
 import re
 from ansible.module_utils.basic import AnsibleModule
-from ansible_collections.purestorage.flasharray.plugins.module_utils.purefa import (
+from ansible_collections.everpure.flasharray.plugins.module_utils.purefa import (
     get_array,
     purefa_argument_spec,
 )
-from ansible_collections.purestorage.flasharray.plugins.module_utils.api_helpers import (
+from ansible_collections.everpure.flasharray.plugins.module_utils.api_helpers import (
     check_response,
 )
 
@@ -146,7 +146,7 @@ def update_alert(module, array, enabled):
 def delete_alert(module, array):
     """Delete Alert Email"""
     changed = True
-    if module.params["address"] == "flasharray-alerts@purestorage.com":
+    if module.params["address"] == "flasharray-alerts@everpuredata.com":
         module.fail_json(
             msg="Built-in address {0} cannot be deleted.".format(
                 module.params["address"]

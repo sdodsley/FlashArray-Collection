@@ -1,7 +1,7 @@
 #!/usr/bin/python
 # -*- coding: utf-8 -*-
 
-# (c) 2021, Simon Dodsley (simon@purestorage.com)
+# (c) 2021, Simon Dodsley (simon@everpuredata.com)
 # GNU General Public License v3.0+ (see COPYING or https://www.gnu.org/licenses/gpl-3.0.txt)
 
 from __future__ import absolute_import, division, print_function
@@ -20,15 +20,15 @@ module: purefa_sso
 version_added: '1.9.0'
 deprecated:
     removed_in: '2.0.0'
-    why: Superseded by M(purestorage.flasharray.purefa_admin)
-    alternative: Use M(purestorage.flasharray.purefa_admin) instead.
+    why: Superseded by M(everpure.flasharray.purefa_admin)
+    alternative: Use M(everpure.flasharray.purefa_admin) instead.
 short_description: Configure Everpure FlashArray Single Sign-On
 description:
 - Enable or disable Single Sign-On (SSO) to give LDAP users the ability
   to navigate seamlessly from Pure1 Manage to the current array through a
   single login.
 author:
-- Everpure Ansible Team (@sdodsley) <pure-ansible-team@purestorage.com>
+- Everpure Ansible Team (@sdodsley) <pure-ansible-team@everpuredata.com>
 options:
   state:
     description:
@@ -37,18 +37,18 @@ options:
     type: str
     choices: [ present, absent ]
 extends_documentation_fragment:
-- purestorage.flasharray.purestorage.fa
+- everpure.flasharray.everpure.fa
 """
 
 EXAMPLES = r"""
 - name: Enable SSO
-  purestorage.flasharray.purefa_sso:
+  everpure.flasharray.purefa_sso:
     state: present
     fa_url: 10.10.10.2
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
 
 - name: Disable SSO
-  purestorage.flasharray.purefa_sso:
+  everpure.flasharray.purefa_sso:
     state: absent
     fa_url: 10.10.10.2
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
@@ -65,14 +65,14 @@ except ImportError:
 
 
 from ansible.module_utils.basic import AnsibleModule
-from ansible_collections.purestorage.flasharray.plugins.module_utils.purefa import (
+from ansible_collections.everpure.flasharray.plugins.module_utils.purefa import (
     get_array,
     purefa_argument_spec,
 )
-from ansible_collections.purestorage.flasharray.plugins.module_utils.version import (
+from ansible_collections.everpure.flasharray.plugins.module_utils.version import (
     LooseVersion,
 )
-from ansible_collections.purestorage.flasharray.plugins.module_utils.api_helpers import (
+from ansible_collections.everpure.flasharray.plugins.module_utils.api_helpers import (
     check_response,
 )
 

@@ -1,0 +1,3 @@
+major_changes:
+  - This collection has been renamed from purestorage.flasharray to everpure.flasharray.
+    The purestorage.flasharray namespace is now a redirect-only deprecation stub.

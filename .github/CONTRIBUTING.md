@@ -4,7 +4,7 @@ Hi! Nice to see you here!
 
 ## QUESTIONS ?
 
-The GitHub issue tracker is not the best place for questions for various reasons, but the [mailing list](mailto:pure-ansible-team@purestorage.com) is a very helpful places for those things.
+The GitHub issue tracker is not the best place for questions for various reasons, but the [mailing list](mailto:pure-ansible-team@everpuredata.com) is a very helpful places for those things.
 
 ## CONTRIBUTING ?
 

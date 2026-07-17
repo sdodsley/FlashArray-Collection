@@ -6,7 +6,7 @@
 # still belong to the author of the module, and may assign their own license
 # to the complete work.
 #
-# Copyright (c), Simon Dodsley <simon@purestorage.com>,2017
+# Copyright (c), Simon Dodsley <simon@everpuredata.com>,2017
 # All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without modification,

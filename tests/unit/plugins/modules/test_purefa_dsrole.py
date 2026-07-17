@@ -1,4 +1,4 @@
-# Copyright: (c) 2026, Pure Storage Ansible Team <pure-ansible-team@purestorage.com>
+# Copyright: (c) 2026, Pure Storage Ansible Team <pure-ansible-team@everpuredata.com>
 # GNU General Public License v3.0+ (see COPYING.GPLv3 or https://www.gnu.org/licenses/gpl-3.0.txt)
 
 """Unit tests for purefa_dsrole module."""
@@ -20,23 +20,23 @@ sys.modules["ansible.module_utils.basic"] = MagicMock()
 sys.modules["pypureclient"] = MagicMock()
 sys.modules["pypureclient.flasharray"] = MagicMock()
 sys.modules["ansible_collections"] = MagicMock()
-sys.modules["ansible_collections.purestorage"] = MagicMock()
-sys.modules["ansible_collections.purestorage.flasharray"] = MagicMock()
-sys.modules["ansible_collections.purestorage.flasharray.plugins"] = MagicMock()
-sys.modules["ansible_collections.purestorage.flasharray.plugins.module_utils"] = (
+sys.modules["ansible_collections.everpure"] = MagicMock()
+sys.modules["ansible_collections.everpure.flasharray"] = MagicMock()
+sys.modules["ansible_collections.everpure.flasharray.plugins"] = MagicMock()
+sys.modules["ansible_collections.everpure.flasharray.plugins.module_utils"] = (
+    MagicMock()
+)
+sys.modules["ansible_collections.everpure.flasharray.plugins.module_utils.purefa"] = (
+    MagicMock()
+)
+sys.modules["ansible_collections.everpure.flasharray.plugins.module_utils.common"] = (
     MagicMock()
 )
 sys.modules[
-    "ansible_collections.purestorage.flasharray.plugins.module_utils.purefa"
+    "ansible_collections.everpure.flasharray.plugins.module_utils.api_helpers"
 ] = MagicMock()
 sys.modules[
-    "ansible_collections.purestorage.flasharray.plugins.module_utils.common"
-] = MagicMock()
-sys.modules[
-    "ansible_collections.purestorage.flasharray.plugins.module_utils.api_helpers"
-] = MagicMock()
-sys.modules[
-    "ansible_collections.purestorage.flasharray.plugins.module_utils.error_handlers"
+    "ansible_collections.everpure.flasharray.plugins.module_utils.error_handlers"
 ] = MagicMock()
 
 # Create a mock version module with real LooseVersion
@@ -44,9 +44,9 @@ mock_version_module = MagicMock()
 from packaging.version import Version as LooseVersion
 
 mock_version_module.LooseVersion = LooseVersion
-sys.modules[
-    "ansible_collections.purestorage.flasharray.plugins.module_utils.version"
-] = mock_version_module
+sys.modules["ansible_collections.everpure.flasharray.plugins.module_utils.version"] = (
+    mock_version_module
+)
 
 from plugins.modules.purefa_dsrole import (
     delete_role,
@@ -448,3 +448,109 @@ class TestUpdateRoleSystemDefined:
         # patch_with_context is called, verify it was called
         mock_patch_with_context.assert_called_once()
         mock_module.exit_json.assert_called_once_with(changed=True)
+
+
+class TestAccessPolicy:
+    """Tests for binding a role to a custom management access policy"""
+
+    @patch("plugins.modules.purefa_dsrole.check_response")
+    @patch("plugins.modules.purefa_dsrole.post_with_context")
+    @patch("plugins.modules.purefa_dsrole.DirectoryServiceRolePost")
+    def test_create_role_with_access_policy(
+        self, mock_post_model, mock_post_with_context, mock_check_response
+    ):
+        """create_role uses management_access_policies (not role) for access_policy"""
+        mock_module = Mock()
+        mock_module.params = {
+            "name": "realm-admins",
+            "context": "",
+            "group": "realmadmins",
+            "group_base": "OU=PureGroups,OU=RealmAdmins",
+            "role": None,
+            "access_policy": "my-realm-policy",
+        }
+        mock_module.check_mode = False
+        mock_array = Mock()
+        mock_array.get_rest_version.return_value = "2.39"
+        mock_post_with_context.return_value = Mock(status_code=200)
+
+        create_role(mock_module, mock_array)
+
+        mock_post_with_context.assert_called_once()
+        model_kwargs = mock_post_model.call_args.kwargs
+        assert "management_access_policies" in model_kwargs
+        assert "role" not in model_kwargs
+        mock_module.exit_json.assert_called_once_with(changed=True)
+
+    @patch("plugins.modules.purefa_dsrole.check_response")
+    @patch("plugins.modules.purefa_dsrole.patch_with_context")
+    @patch("plugins.modules.purefa_dsrole.get_with_context")
+    @patch("plugins.modules.purefa_dsrole.DirectoryServiceRole")
+    def test_update_role_access_policy_change(
+        self, mock_ds_model, mock_get, mock_patch, mock_check_response
+    ):
+        """update_role patches management_access_policies when the policy changes"""
+        import pytest
+
+        mock_module = Mock()
+        mock_module.params = {
+            "name": "realm-admins",
+            "context": "",
+            "state": "present",
+            "group": "realmadmins",
+            "group_base": "OU=PureGroups,OU=RealmAdmins",
+            "role": None,
+            "access_policy": "my-realm-policy",
+        }
+        mock_module.check_mode = False
+        mock_module.exit_json.side_effect = SystemExit(0)
+        mock_array = Mock()
+        existing = Mock()
+        existing.group = "realmadmins"
+        existing.group_base = "OU=PureGroups,OU=RealmAdmins"
+        old_policy = Mock()
+        old_policy.name = "old-policy"
+        existing.management_access_policies = [old_policy]
+        mock_get.return_value = Mock(items=[existing])
+        mock_patch.return_value = Mock(status_code=200)
+
+        with pytest.raises(SystemExit):
+            update_role(mock_module, mock_array)
+
+        mock_patch.assert_called_once()
+        model_kwargs = mock_ds_model.call_args.kwargs
+        assert "management_access_policies" in model_kwargs
+        mock_module.exit_json.assert_called_once_with(changed=True)
+
+    @patch("plugins.modules.purefa_dsrole.patch_with_context")
+    @patch("plugins.modules.purefa_dsrole.get_with_context")
+    def test_update_role_access_policy_no_change(self, mock_get, mock_patch):
+        """update_role is idempotent when the policy already matches"""
+        import pytest
+
+        mock_module = Mock()
+        mock_module.params = {
+            "name": "realm-admins",
+            "context": "",
+            "state": "present",
+            "group": "realmadmins",
+            "group_base": "OU=PureGroups,OU=RealmAdmins",
+            "role": None,
+            "access_policy": "my-realm-policy",
+        }
+        mock_module.check_mode = False
+        mock_module.exit_json.side_effect = SystemExit(0)
+        mock_array = Mock()
+        existing = Mock()
+        existing.group = "realmadmins"
+        existing.group_base = "OU=PureGroups,OU=RealmAdmins"
+        current_policy = Mock()
+        current_policy.name = "my-realm-policy"
+        existing.management_access_policies = [current_policy]
+        mock_get.return_value = Mock(items=[existing])
+
+        with pytest.raises(SystemExit):
+            update_role(mock_module, mock_array)
+
+        mock_patch.assert_not_called()
+        mock_module.exit_json.assert_called_once_with(changed=False)

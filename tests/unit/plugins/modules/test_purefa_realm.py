@@ -1,4 +1,4 @@
-# Copyright: (c) 2026, Pure Storage Ansible Team <pure-ansible-team@purestorage.com>
+# Copyright: (c) 2026, Pure Storage Ansible Team <pure-ansible-team@everpuredata.com>
 # GNU General Public License v3.0+ (see COPYING.GPLv3 or https://www.gnu.org/licenses/gpl-3.0.txt)
 
 """Unit tests for purefa_realm module."""
@@ -20,26 +20,26 @@ sys.modules["ansible.module_utils.basic"] = MagicMock()
 sys.modules["pypureclient"] = MagicMock()
 sys.modules["pypureclient.flasharray"] = MagicMock()
 sys.modules["ansible_collections"] = MagicMock()
-sys.modules["ansible_collections.purestorage"] = MagicMock()
-sys.modules["ansible_collections.purestorage.flasharray"] = MagicMock()
-sys.modules["ansible_collections.purestorage.flasharray.plugins"] = MagicMock()
-sys.modules["ansible_collections.purestorage.flasharray.plugins.module_utils"] = (
+sys.modules["ansible_collections.everpure"] = MagicMock()
+sys.modules["ansible_collections.everpure.flasharray"] = MagicMock()
+sys.modules["ansible_collections.everpure.flasharray.plugins"] = MagicMock()
+sys.modules["ansible_collections.everpure.flasharray.plugins.module_utils"] = (
+    MagicMock()
+)
+sys.modules["ansible_collections.everpure.flasharray.plugins.module_utils.purefa"] = (
+    MagicMock()
+)
+sys.modules["ansible_collections.everpure.flasharray.plugins.module_utils.version"] = (
+    MagicMock()
+)
+sys.modules["ansible_collections.everpure.flasharray.plugins.module_utils.common"] = (
     MagicMock()
 )
 sys.modules[
-    "ansible_collections.purestorage.flasharray.plugins.module_utils.purefa"
+    "ansible_collections.everpure.flasharray.plugins.module_utils.api_helpers"
 ] = MagicMock()
 sys.modules[
-    "ansible_collections.purestorage.flasharray.plugins.module_utils.version"
-] = MagicMock()
-sys.modules[
-    "ansible_collections.purestorage.flasharray.plugins.module_utils.common"
-] = MagicMock()
-sys.modules[
-    "ansible_collections.purestorage.flasharray.plugins.module_utils.api_helpers"
-] = MagicMock()
-sys.modules[
-    "ansible_collections.purestorage.flasharray.plugins.module_utils.error_handlers"
+    "ansible_collections.everpure.flasharray.plugins.module_utils.error_handlers"
 ] = MagicMock()
 
 from unittest.mock import patch
@@ -116,7 +116,7 @@ class TestMakeRealm:
     """Test cases for make_realm function"""
 
     def test_make_realm_check_mode(self):
-        """Test make_realm in check mode"""
+        """Test make_realm in check mode makes no API calls (#realm check-mode)"""
         mock_module = Mock()
         mock_module.check_mode = True
         mock_module.params = {
@@ -129,6 +129,28 @@ class TestMakeRealm:
 
         make_realm(mock_module, mock_array)
 
+        # In check mode the realm must NOT be created
+        mock_array.post_realms.assert_not_called()
+        mock_module.exit_json.assert_called_once_with(changed=True)
+
+    @patch("plugins.modules.purefa_realm.human_to_bytes")
+    def test_make_realm_check_mode_with_quota(self, mock_human_to_bytes):
+        """Test make_realm with quota in check mode makes no API calls"""
+        mock_human_to_bytes.return_value = 5497558138880  # 5T, multiple of 512
+        mock_module = Mock()
+        mock_module.check_mode = True
+        mock_module.params = {
+            "name": "new-realm",
+            "bw_qos": None,
+            "iops_qos": None,
+            "quota": "5T",
+        }
+        mock_array = Mock()
+
+        make_realm(mock_module, mock_array)
+
+        mock_array.post_realms.assert_not_called()
+        mock_array.patch_realms.assert_not_called()
         mock_module.exit_json.assert_called_once_with(changed=True)
 
 

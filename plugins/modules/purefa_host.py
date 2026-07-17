@@ -1,7 +1,7 @@
 #!/usr/bin/python
 # -*- coding: utf-8 -*-
 
-# Copyright: (c) 2017, Simon Dodsley (simon@purestorage.com)
+# Copyright: (c) 2017, Simon Dodsley (simon@everpuredata.com)
 # GNU General Public License v3.0+ (see COPYING or https://www.gnu.org/licenses/gpl-3.0.txt)
 
 from __future__ import absolute_import, division, print_function
@@ -22,7 +22,7 @@ short_description: Manage hosts on Everpure FlashArrays
 description:
 - Create, delete or modify hosts on Everpure FlashArrays.
 author:
-- Everpure Ansible Team (@sdodsley) <pure-ansible-team@purestorage.com>
+- Everpure Ansible Team (@sdodsley) <pure-ansible-team@everpuredata.com>
 notes:
 - If specifying C(lun) option ensure host support requested value
 options:
@@ -192,25 +192,25 @@ options:
     default: none
     version_added: '1.35.0'
 extends_documentation_fragment:
-- purestorage.flasharray.purestorage.fa
+- everpure.flasharray.everpure.fa
 """
 
 EXAMPLES = r"""
 - name: Create new AIX host
-  purestorage.flasharray.purefa_host:
+  everpure.flasharray.purefa_host:
     name: foo
     personality: aix
     fa_url: 10.10.10.2
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
 
 - name: Create host bar in existing realm foo
-  purestorage.flasharray.purefa_host:
+  everpure.flasharray.purefa_host:
     name: foo::bar
     fa_url: 10.10.10.2
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
 
 - name: Create 10 hosts with index starting at 10 but padded with 3 digits
-  purestorage.flasharray.purefa_host:
+  everpure.flasharray.purefa_host:
     name: foo
     personality: vms
     suffix: bar
@@ -222,21 +222,21 @@ EXAMPLES = r"""
     state: present
 
 - name: Rename host foo to bar
-  purestorage.flasharray.purefa_host:
+  everpure.flasharray.purefa_host:
     name: foo
     rename: bar
     fa_url: 10.10.10.2
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
 
 - name: Delete host
-  purestorage.flasharray.purefa_host:
+  everpure.flasharray.purefa_host:
     name: foo
     fa_url: 10.10.10.2
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
     state: absent
 
 - name: Make host bar with wwn ports
-  purestorage.flasharray.purefa_host:
+  everpure.flasharray.purefa_host:
     name: bar
     wwns:
     - 00:00:00:00:00:00:00:00
@@ -245,7 +245,7 @@ EXAMPLES = r"""
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
 
 - name: Make host bar with iSCSI ports
-  purestorage.flasharray.purefa_host:
+  everpure.flasharray.purefa_host:
     name: bar
     iqn:
     - iqn.1994-05.com.redhat:7d366003913
@@ -253,7 +253,7 @@ EXAMPLES = r"""
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
 
 - name: Make host bar with NVMe ports
-  purestorage.flasharray.purefa_host:
+  everpure.flasharray.purefa_host:
     name: bar
     nqn:
     - nqn.2014-08.com.vendor:nvme:nvm-subsystem-sn-d78432
@@ -261,7 +261,7 @@ EXAMPLES = r"""
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
 
 - name: Make mixed protocol host
-  purestorage.flasharray.purefa_host:
+  everpure.flasharray.purefa_host:
     name: bar
     iqn:
     - iqn.1994-05.com.redhat:7d366003914
@@ -272,7 +272,7 @@ EXAMPLES = r"""
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
 
 - name: Map host foo to volume bar as LUN ID 12
-  purestorage.flasharray.purefa_host:
+  everpure.flasharray.purefa_host:
     name: foo
     volume: bar
     lun: 12
@@ -280,7 +280,7 @@ EXAMPLES = r"""
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
 
 - name: Disconnect volume bar from host foo
-  purestorage.flasharray.purefa_host:
+  everpure.flasharray.purefa_host:
     name: foo
     volume: bar
     state: absent
@@ -288,7 +288,7 @@ EXAMPLES = r"""
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
 
 - name: Add preferred arrays to host foo
-  purestorage.flasharray.purefa_host:
+  everpure.flasharray.purefa_host:
     name: foo
     preferred_array:
     - array1
@@ -297,21 +297,21 @@ EXAMPLES = r"""
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
 
 - name: Delete preferred arrays from host foo
-  purestorage.flasharray.purefa_host:
+  everpure.flasharray.purefa_host:
     name: foo
     preferred_array: delete
     fa_url: 10.10.10.2
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
 
 - name: Delete existing WWNs from host foo (does not delete host object)
-  purestorage.flasharray.purefa_host:
+  everpure.flasharray.purefa_host:
     name: foo
     wwns: ""
     fa_url: 10.10.10.2
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
 
 - name: Set CHAP target and host username/password pairs
-  purestorage.flasharray.purefa_host:
+  everpure.flasharray.purefa_host:
     name: foo
     target_user: user1
     target_password: passwrodpassword
@@ -321,7 +321,7 @@ EXAMPLES = r"""
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
 
 - name: Delete CHAP target and host username/password pairs
-  purestorage.flasharray.purefa_host:
+  everpure.flasharray.purefa_host:
     name: foo
     target_user: user
     target_password: clear
@@ -331,21 +331,21 @@ EXAMPLES = r"""
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
 
 - name: Move host foo from the array to realm bar
-  purestorage.flasharray.purefa_host:
+  everpure.flasharray.purefa_host:
     name: foo
     move: bar
     fa_url: 10.10.10.2
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
 
 - name: Move host foo from realm bar back to array
-  purestorage.flasharray.purefa_host:
+  everpure.flasharray.purefa_host:
     name: bar::foo
     move: local
     fa_url: 10.10.10.2
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
 
 - name: Rename host foo in realm test to bar
-  purestorage.flasharray.purefa_host:
+  everpure.flasharray.purefa_host:
     name: test::foo
     rename: test::bar
     fa_url: 10.10.10.2
@@ -369,14 +369,14 @@ except ImportError:
 
 import re
 from ansible.module_utils.basic import AnsibleModule
-from ansible_collections.purestorage.flasharray.plugins.module_utils.purefa import (
+from ansible_collections.everpure.flasharray.plugins.module_utils.purefa import (
     get_array,
     purefa_argument_spec,
 )
-from ansible_collections.purestorage.flasharray.plugins.module_utils.version import (
+from ansible_collections.everpure.flasharray.plugins.module_utils.version import (
     LooseVersion,
 )
-from ansible_collections.purestorage.flasharray.plugins.module_utils.api_helpers import (
+from ansible_collections.everpure.flasharray.plugins.module_utils.api_helpers import (
     get_with_context,
     check_response,
     get_cached_api_version,
@@ -924,13 +924,20 @@ def get_multi_hosts(module, array):
 
 
 def _get_hosts(module, array, names):
+    kwargs = {"names": names}
+    # allow_errors only exists on the hosts GET endpoint from REST 2.38, and is
+    # only required alongside context_names (a name absent from the given
+    # context otherwise returns 400). It is therefore only sent when a context
+    # is in use; without a context, older arrays would reject the unsupported
+    # argument (#1016).
+    if module.params.get("context"):
+        kwargs["allow_errors"] = True
     res = get_with_context(
         array,
         "get_hosts",
         CONTEXT_API_VERSION,
         module,
-        names=names,
-        allow_errors=True,
+        **kwargs,
     )
     return list(getattr(res, "items", []) or [])
 
@@ -1250,7 +1257,7 @@ def main():
             protocol=dict(
                 type="str",
                 choices=["fc", "iscsi", "nvme", "mixed"],
-                removed_from_collection="purestorage.flasharray",
+                removed_from_collection="everpure.flasharray",
                 removed_in_version="2.0.0",
             ),
             nqn=dict(type="list", elements="str"),

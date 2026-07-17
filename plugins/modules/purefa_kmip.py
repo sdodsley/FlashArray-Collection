@@ -1,7 +1,7 @@
 #!/usr/bin/python
 # -*- coding: utf-8 -*-
 
-# (c) 2021, Simon Dodsley (simon@purestorage.com)
+# (c) 2021, Simon Dodsley (simon@everpuredata.com)
 # GNU General Public License v3.0+ (see COPYING or https://www.gnu.org/licenses/gpl-3.0.txt)
 
 from __future__ import absolute_import, division, print_function
@@ -22,7 +22,7 @@ short_description: Manage FlashArray KMIP server objects
 description:
 - Manage FlashArray KMIP Server objects
 author:
-- Everpure Ansible Team (@sdodsley) <pure-ansible-team@purestorage.com>
+- Everpure Ansible Team (@sdodsley) <pure-ansible-team@everpuredata.com>
 options:
   name:
     description:
@@ -33,7 +33,7 @@ options:
     description:
     - Name of existing certificate used to verify FlashArray
       authenticity to the KMIP server.
-    - Use the I(purestorage.flasharray.purefa_certs) module to create certificates.
+    - Use the I(everpure.flasharray.purefa_certs) module to create certificates.
     type: str
   state:
     description:
@@ -53,12 +53,12 @@ options:
     description:
     - A list of URIs for the configured KMIP servers.
 extends_documentation_fragment:
-- purestorage.flasharray.purestorage.fa
+- everpure.flasharray.everpure.fa
 """
 
 EXAMPLES = r"""
 - name: Create KMIP object
-  purestorage.flasharray.purefa_kmip:
+  everpure.flasharray.purefa_kmip:
     name: foo
     certificate: bar
     ca_certificate: "{{lookup('file', 'example.crt') }}"
@@ -69,14 +69,14 @@ EXAMPLES = r"""
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
 
 - name: Delete KMIP object
-  purestorage.flasharray.purefa_kmip:
+  everpure.flasharray.purefa_kmip:
     name: foo
     state: absent
     fa_url: 10.10.10.2
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
 
 - name: Update KMIP object
-  purestorage.flasharray.purefa_kmip:
+  everpure.flasharray.purefa_kmip:
     name: foo
     ca_certificate: "{{lookup('file', 'example2.crt') }}"
     uris:
@@ -96,11 +96,11 @@ except ImportError:
     HAS_PURESTORAGE = False
 
 from ansible.module_utils.basic import AnsibleModule
-from ansible_collections.purestorage.flasharray.plugins.module_utils.purefa import (
+from ansible_collections.everpure.flasharray.plugins.module_utils.purefa import (
     get_array,
     purefa_argument_spec,
 )
-from ansible_collections.purestorage.flasharray.plugins.module_utils.api_helpers import (
+from ansible_collections.everpure.flasharray.plugins.module_utils.api_helpers import (
     check_response,
 )
 

@@ -1,7 +1,7 @@
 #!/usr/bin/python
 # -*- coding: utf-8 -*-
 
-# (c) 2019, Simon Dodsley (simon@purestorage.com)
+# (c) 2019, Simon Dodsley (simon@everpuredata.com)
 # GNU General Public License v3.0+ (see COPYING or https://www.gnu.org/licenses/gpl-3.0.txt)
 
 from __future__ import absolute_import, division, print_function
@@ -22,13 +22,26 @@ version_added: '1.0.0'
 description:
 - Manage AC pods in a Everpure FlashArray.
 author:
-- Everpure Ansible Team (@sdodsley) <pure-ansible-team@purestorage.com>
+- Everpure Ansible Team (@sdodsley) <pure-ansible-team@everpuredata.com>
 options:
   name:
     description:
     - The name of the pod.
+    - To place a pod inside a realm either set the I(realm) parameter, or
+      provide the fully-qualified C(realm::pod) name here (for example
+      C(myrealm::mypod)). If I(realm) is set, do not also use the C(::)
+      form in this parameter.
     type: str
     required: true
+  realm:
+    description:
+    - Name of the realm the pod belongs to.
+    - When set, the pod is created (or managed) as C(realm::pod). This is a
+      convenience for the C(realm::pod) naming convention and is mutually
+      exclusive with providing C(::) directly in I(name).
+    - Requires Purity//FA 6.6.11, or higher (REST 2.36).
+    type: str
+    version_added: '1.44.0'
   stretch:
     description:
     - The name of the array to stretch to/unstretch from. Must be synchromously replicated.
@@ -147,20 +160,28 @@ options:
     default: True
     version_added: '1.37.0'
 extends_documentation_fragment:
-- purestorage.flasharray.purestorage.fa
+- everpure.flasharray.everpure.fa
 """
 
 EXAMPLES = r"""
 - name: Create new pod named foo without SafeMode default protection
-  purestorage.flasharray.purefa_pod:
+  everpure.flasharray.purefa_pod:
     name: foo
     with_default_protection: false
     fa_url: 10.10.10.2
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
     state: present
 
+- name: Create new pod bar inside realm myrealm
+  everpure.flasharray.purefa_pod:
+    name: bar
+    realm: myrealm
+    fa_url: 10.10.10.2
+    api_token: e31060a7-21fc-e277-6240-25983c6c4592
+    state: present
+
 - name: Create new pod named foo with default protection PG safe, and with PG retention lock disabled
-  purestorage.flasharray.purefa_pod:
+  everpure.flasharray.purefa_pod:
     name: foo
     default_protection_pg: safe
     retention_lock: false
@@ -169,7 +190,7 @@ EXAMPLES = r"""
     state: present
 
 - name: Delete and eradicate pod named foo
-  purestorage.flasharray.purefa_pod:
+  everpure.flasharray.purefa_pod:
     name: foo
     eradicate: true
     fa_url: 10.10.10.2
@@ -177,7 +198,7 @@ EXAMPLES = r"""
     state: absent
 
 - name: Set failover array for pod named foo
-  purestorage.flasharray.purefa_pod:
+  everpure.flasharray.purefa_pod:
     name: foo
     failover:
     - array1
@@ -185,21 +206,21 @@ EXAMPLES = r"""
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
 
 - name: Set mediator for pod named foo
-  purestorage.flasharray.purefa_pod:
+  everpure.flasharray.purefa_pod:
     name: foo
     mediator: bar
     fa_url: 10.10.10.2
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
 
 - name: Stretch a pod named foo to array2
-  purestorage.flasharray.purefa_pod:
+  everpure.flasharray.purefa_pod:
     name: foo
     stretch: array2
     fa_url: 10.10.10.2
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
 
 - name: Unstretch a pod named foo from array2
-  purestorage.flasharray.purefa_pod:
+  everpure.flasharray.purefa_pod:
     name: foo
     stretch: array2
     state: absent
@@ -207,7 +228,7 @@ EXAMPLES = r"""
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
 
 - name: Create clone of pod foo named bar
-  purestorage.flasharray.purefa_pod:
+  everpure.flasharray.purefa_pod:
     name: foo
     target: bar
     fa_url: 10.10.10.2
@@ -232,17 +253,17 @@ except ImportError:
     HAS_PURESTORAGE = False
 
 from ansible.module_utils.basic import AnsibleModule
-from ansible_collections.purestorage.flasharray.plugins.module_utils.purefa import (
+from ansible_collections.everpure.flasharray.plugins.module_utils.purefa import (
     get_array,
     purefa_argument_spec,
 )
-from ansible_collections.purestorage.flasharray.plugins.module_utils.common import (
+from ansible_collections.everpure.flasharray.plugins.module_utils.common import (
     human_to_bytes,
 )
-from ansible_collections.purestorage.flasharray.plugins.module_utils.version import (
+from ansible_collections.everpure.flasharray.plugins.module_utils.version import (
     LooseVersion,
 )
-from ansible_collections.purestorage.flasharray.plugins.module_utils.api_helpers import (
+from ansible_collections.everpure.flasharray.plugins.module_utils.api_helpers import (
     check_response,
     delete_with_context,
     get_with_context,
@@ -255,6 +276,7 @@ DEFAULT_API_VERSION = "2.16"
 POD_QUOTA_VERSION = "2.23"
 THROTTLE_VERSION = "2.31"
 MEMBERS_VERSION = "2.36"
+REALM_VERSION = "2.36"
 CONTEXT_VERSION = "2.38"
 
 
@@ -843,76 +865,78 @@ def update_pod(module, array):
             pgname = []
         if pgname != module.params["default_protection_pg"]:
             changed = True
-            res = get_with_context(
+            if not module.check_mode:
+                res = get_with_context(
+                    array,
+                    "get_protection_groups",
+                    CONTEXT_VERSION,
+                    module,
+                    names=[module.params["default_protection_pg"]],
+                )
+                if res.status_code != 200:
+                    pg_res = post_with_context(
+                        array,
+                        "post_protection_groups",
+                        CONTEXT_VERSION,
+                        module,
+                        names=[module.params["default_protection_pg"]],
+                    )
+                    check_response(
+                        pg_res,
+                        module,
+                        f"Failed to create default protection group {module.params['name']}",
+                    )
+                if (
+                    module.params["retention_lock"]
+                    and module.params["default_protection_pg"] != []
+                ):
+                    res = patch_with_context(
+                        array,
+                        "patch_protection_groups",
+                        CONTEXT_VERSION,
+                        module,
+                        names=[module.params["default_protection_pg"]],
+                        protection_group=ProtectionGroup(retention_lock="ratcheted"),
+                    )
+                    check_response(
+                        res,
+                        module,
+                        f"Failed to set retention lock for protection group {module.params['default_protection_pg']}",
+                    )
+                if safemode_pg:
+                    patch_with_context(
+                        array,
+                        "patch_container_default_protections",
+                        CONTEXT_VERSION,
+                        module,
+                        names=[module.params["name"]],
+                        container_default_protection=(
+                            ContainerDefaultProtection(default_protections=[])
+                        ),
+                    )
+        if not module.check_mode:
+            res = patch_with_context(
                 array,
-                "get_protection_groups",
+                "patch_container_default_protections",
                 CONTEXT_VERSION,
                 module,
-                names=[module.params["default_protection_pg"]],
+                names=[module.params["name"]],
+                container_default_protection=(
+                    ContainerDefaultProtection(
+                        default_protections=[
+                            DefaultProtectionReference(
+                                name=module.params["default_protection_pg"],
+                                type="protection_group",
+                            )
+                        ]
+                    )
+                ),
             )
-            if res.status_code != 200:
-                pg_res = post_with_context(
-                    array,
-                    "post_protection_groups",
-                    CONTEXT_VERSION,
-                    module,
-                    names=[module.params["default_protection_pg"]],
-                )
-                check_response(
-                    pg_res,
-                    module,
-                    f"Failed to create default protection group {module.params['name']}",
-                )
-            if (
-                module.params["retention_lock"]
-                and module.params["default_protection_pg"] != []
-            ):
-                res = patch_with_context(
-                    array,
-                    "patch_protection_groups",
-                    CONTEXT_VERSION,
-                    module,
-                    names=[module.params["default_protection_pg"]],
-                    protection_group=ProtectionGroup(retention_lock="ratcheted"),
-                )
-                check_response(
-                    res,
-                    module,
-                    f"Failed to set retention lock for protection group {module.params['default_protection_pg']}",
-                )
-            if safemode_pg:
-                patch_with_context(
-                    array,
-                    "patch_container_default_protections",
-                    CONTEXT_VERSION,
-                    module,
-                    names=[module.params["name"]],
-                    container_default_protection=(
-                        ContainerDefaultProtection(default_protections=[])
-                    ),
-                )
-        res = patch_with_context(
-            array,
-            "patch_container_default_protections",
-            CONTEXT_VERSION,
-            module,
-            names=[module.params["name"]],
-            container_default_protection=(
-                ContainerDefaultProtection(
-                    default_protections=[
-                        DefaultProtectionReference(
-                            name=module.params["default_protection_pg"],
-                            type="protection_group",
-                        )
-                    ]
-                )
-            ),
-        )
-        check_response(
-            res,
-            module,
-            f"Failed to update default protection for pod {module.params['name']}",
-        )
+            check_response(
+                res,
+                module,
+                f"Failed to update default protection for pod {module.params['name']}",
+            )
     module.exit_json(changed=changed)
 
 
@@ -1050,6 +1074,7 @@ def main():
     argument_spec.update(
         dict(
             name=dict(type="str", required=True),
+            realm=dict(type="str"),
             stretch=dict(type="str"),
             target=dict(type="str"),
             mediator=dict(type="str", default="purestorage"),
@@ -1086,6 +1111,18 @@ def main():
 
     state = module.params["state"]
     array = get_array(module)
+
+    if module.params.get("realm"):
+        if LooseVersion(REALM_VERSION) > LooseVersion(array.get_rest_version()):
+            module.fail_json(
+                msg="realm parameter requires Purity//FA 6.6.11, or higher (REST 2.36)."
+            )
+        if "::" in module.params["name"]:
+            module.fail_json(
+                msg="Use either the 'realm' parameter or the 'realm::pod' "
+                "form in 'name', not both."
+            )
+        module.params["name"] = module.params["realm"] + "::" + module.params["name"]
 
     pod = get_pod(module, array)
     destroyed = ""

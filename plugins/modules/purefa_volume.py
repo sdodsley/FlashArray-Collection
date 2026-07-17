@@ -1,7 +1,7 @@
 #!/usr/bin/python
 # -*- coding: utf-8 -*-
 
-# (c) 2018, Simon Dodsley (simon@purestorage.com)
+# (c) 2018, Simon Dodsley (simon@everpuredata.com)
 # GNU General Public License v3.0+ (see COPYING or https://www.gnu.org/licenses/gpl-3.0.txt)
 
 from __future__ import absolute_import, division, print_function
@@ -22,7 +22,7 @@ short_description:  Manage volumes on Everpure FlashArrays
 description:
 - Create, delete or extend the capacity of a volume on Everpure FlashArray.
 author:
-- Everpure Ansible Team (@sdodsley) <pure-ansible-team@purestorage.com>
+- Everpure Ansible Team (@sdodsley) <pure-ansible-team@everpuredata.com>
 options:
   name:
     description:
@@ -166,12 +166,12 @@ options:
     default: ""
     version_added: '1.33.0'
 extends_documentation_fragment:
-- purestorage.flasharray.purestorage.fa
+- everpure.flasharray.everpure.fa
 """
 
 EXAMPLES = r"""
 - name: Create new volume named foo with a QoS limit
-  purestorage.flasharray.purefa_volume:
+  everpure.flasharray.purefa_volume:
     name: foo
     size: 1T
     bw_qos: 58M
@@ -181,7 +181,7 @@ EXAMPLES = r"""
     state: present
 
 - name: Create new volume named foo with a DMM priority (Purity//FA 6.1.2+)
-  purestorage.flasharray.purefa_volume:
+  everpure.flasharray.purefa_volume:
     name: foo
     size: 1T
     priority_operator: +
@@ -191,7 +191,7 @@ EXAMPLES = r"""
     state: present
 
 - name: Create new volume named foo in protection group pg1 (this cannot be used with context)
-  purestorage.flasharray.purefa_volume:
+  everpure.flasharray.purefa_volume:
     name: foo
     pgroup: pg1
     size: 1T
@@ -200,7 +200,7 @@ EXAMPLES = r"""
     state: present
 
 - name: Create 10 volumes with index starting at 10 but padded with 3 digits
-  purestorage.flasharray.purefa_volume:
+  everpure.flasharray.purefa_volume:
     name: foo
     size: 1T
     suffix: bar
@@ -212,7 +212,7 @@ EXAMPLES = r"""
     state: present
 
 - name: Extend the size of an existing volume named foo
-  purestorage.flasharray.purefa_volume:
+  everpure.flasharray.purefa_volume:
     name: foo
     size: 2T
     fa_url: 10.10.10.2
@@ -220,7 +220,7 @@ EXAMPLES = r"""
     state: present
 
 - name: Delete and eradicate volume named foo
-  purestorage.flasharray.purefa_volume:
+  everpure.flasharray.purefa_volume:
     name: foo
     eradicate: true
     fa_url: 10.10.10.2
@@ -228,7 +228,7 @@ EXAMPLES = r"""
     state: absent
 
 - name: Create clone of volume bar named foo
-  purestorage.flasharray.purefa_volume:
+  everpure.flasharray.purefa_volume:
     name: foo
     target: bar
     fa_url: 10.10.10.2
@@ -236,7 +236,7 @@ EXAMPLES = r"""
     state: present
 
 - name: Overwrite volume bar with volume foo
-  purestorage.flasharray.purefa_volume:
+  everpure.flasharray.purefa_volume:
     name: foo
     target: bar
     overwrite: true
@@ -245,7 +245,7 @@ EXAMPLES = r"""
     state: present
 
 - name: Clear volume QoS from volume foo
-  purestorage.flasharray.purefa_volume:
+  everpure.flasharray.purefa_volume:
     name: foo
     bw_qos: 0
     iops_qos: 0
@@ -254,21 +254,21 @@ EXAMPLES = r"""
     state: present
 
 - name: Move local volume foo from local array to pod bar
-  purestorage.flasharray.purefa_volume:
+  everpure.flasharray.purefa_volume:
     name: foo
     move: bar
     fa_url: 10.10.10.2
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
 
 - name: Move volume foo in pod bar to local array
-  purestorage.flasharray.purefa_volume:
+  everpure.flasharray.purefa_volume:
     name: bar::foo
     move: local
     fa_url: 10.10.10.2
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
 
 - name: Move volume foo in pod bar to vgroup fin
-  purestorage.flasharray.purefa_volume:
+  everpure.flasharray.purefa_volume:
     name: bar::foo
     move: fin
     fa_url: 10.10.10.2
@@ -337,18 +337,18 @@ except ImportError:
 import re
 import time
 from ansible.module_utils.basic import AnsibleModule
-from ansible_collections.purestorage.flasharray.plugins.module_utils.purefa import (
+from ansible_collections.everpure.flasharray.plugins.module_utils.purefa import (
     get_array,
     purefa_argument_spec,
 )
-from ansible_collections.purestorage.flasharray.plugins.module_utils.common import (
+from ansible_collections.everpure.flasharray.plugins.module_utils.common import (
     human_to_bytes,
     human_to_real,
 )
-from ansible_collections.purestorage.flasharray.plugins.module_utils.version import (
+from ansible_collections.everpure.flasharray.plugins.module_utils.version import (
     LooseVersion,
 )
-from ansible_collections.purestorage.flasharray.plugins.module_utils.api_helpers import (
+from ansible_collections.everpure.flasharray.plugins.module_utils.api_helpers import (
     check_response,
     get_with_context,
     post_with_context,

@@ -1,7 +1,7 @@
 #!/usr/bin/python
 # -*- coding: utf-8 -*-
 
-# (c) 2025, Simon Dodsley (simon@purestorage.com)
+# (c) 2025, Simon Dodsley (simon@everpuredata.com)
 # GNU General Public License v3.0+ (see COPYING or https://www.gnu.org/licenses/gpl-3.0.txt)
 
 from __future__ import absolute_import, division, print_function
@@ -22,7 +22,7 @@ short_description: Manage Fusion Fleet Workloads
 description:
 - Apply/Rename/Delete Fusion fleet workloads
 author:
-- Everpure Ansible Team (@sdodsley) <pure-ansible-team@purestorage.com>
+- Everpure Ansible Team (@sdodsley) <pure-ansible-team@everpuredata.com>
 options:
   context:
     description:
@@ -134,12 +134,12 @@ options:
       to a workload
     type: str
 extends_documentation_fragment:
-- purestorage.flasharray.purestorage.fa
+- everpure.flasharray.everpure.fa
 """
 
 EXAMPLES = r"""
 - name: Create a workload using an existing preset on a specific placement target and connect to host myhost
-  purestorage.flasharray.purefa_workload:
+  everpure.flasharray.purefa_workload:
     name: foo
     preset: bar
     host: myhost
@@ -148,7 +148,7 @@ EXAMPLES = r"""
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
 
 - name: Create a workload using an existing preset using the recommended target and connect to host myhost
-  purestorage.flasharray.purefa_workload:
+  everpure.flasharray.purefa_workload:
     name: foo
     preset: bar
     host: myhost
@@ -157,7 +157,7 @@ EXAMPLES = r"""
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
 
 - name: Create a workload using preset parameters
-  purestorage.flasharray.purefa_workload:
+  everpure.flasharray.purefa_workload:
     name: foo
     preset: bar
     context: arr1
@@ -170,7 +170,7 @@ EXAMPLES = r"""
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
 
 - name: Add volumes to workload foo based on volume configuration fin and connect to host myhost
-  purestorage.flasharray.purefa_workload:
+  everpure.flasharray.purefa_workload:
     name: foo
     preset: bar
     volume_configuration: fin
@@ -181,7 +181,7 @@ EXAMPLES = r"""
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
 
 - name: Rename an existing workload
-  purestorage.flasharray.purefa_workload:
+  everpure.flasharray.purefa_workload:
     name: foo
     rename: bar
     state: rename
@@ -189,7 +189,7 @@ EXAMPLES = r"""
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
 
 - name: Disconnect an existing workload from host
-  purestorage.flasharray.purefa_workload:
+  everpure.flasharray.purefa_workload:
     name: foo
     host: myhost
     state: absent
@@ -197,14 +197,14 @@ EXAMPLES = r"""
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
 
 - name: Delete an existing workload
-  purestorage.flasharray.purefa_workload:
+  everpure.flasharray.purefa_workload:
     name: foo
     state: absent
     fa_url: 10.10.10.2
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
 
 - name: Eradicate an existing workload
-  purestorage.flasharray.purefa_workload:
+  everpure.flasharray.purefa_workload:
     name: foo
     state: absent
     eradicate: true
@@ -212,14 +212,14 @@ EXAMPLES = r"""
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
 
 - name: Recover a deleted workload
-  purestorage.flasharray.purefa_workload:
+  everpure.flasharray.purefa_workload:
     name: foo
     state: present
     fa_url: 10.10.10.2
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
 
 - name: Reconnect an existing workload to a host
-  purestorage.flasharray.purefa_workload:
+  everpure.flasharray.purefa_workload:
     name: foo
     host: myhost
     fa_url: 10.10.10.2
@@ -247,14 +247,14 @@ except ImportError:
 
 import time
 from ansible.module_utils.basic import AnsibleModule
-from ansible_collections.purestorage.flasharray.plugins.module_utils.purefa import (
+from ansible_collections.everpure.flasharray.plugins.module_utils.purefa import (
     get_array,
     purefa_argument_spec,
 )
-from ansible_collections.purestorage.flasharray.plugins.module_utils.version import (
+from ansible_collections.everpure.flasharray.plugins.module_utils.version import (
     LooseVersion,
 )
-from ansible_collections.purestorage.flasharray.plugins.module_utils.api_helpers import (
+from ansible_collections.everpure.flasharray.plugins.module_utils.api_helpers import (
     check_response,
 )
 

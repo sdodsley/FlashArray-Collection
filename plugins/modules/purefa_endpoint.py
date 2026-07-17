@@ -1,7 +1,7 @@
 #!/usr/bin/python
 # -*- coding: utf-8 -*-
 
-# (c) 2018, Simon Dodsley (simon@purestorage.com)
+# (c) 2018, Simon Dodsley (simon@everpuredata.com)
 # GNU General Public License v3.0+ (see COPYING or https://www.gnu.org/licenses/gpl-3.0.txt)
 
 from __future__ import absolute_import, division, print_function
@@ -22,7 +22,7 @@ version_added: '1.0.0'
 description:
 - Create, delete or eradicate the an endpoint on a Everpure FlashArray.
 author:
-- Everpure Ansible Team (@sdodsley) <pure-ansible-team@purestorage.com>
+- Everpure Ansible Team (@sdodsley) <pure-ansible-team@everpuredata.com>
 options:
   name:
     description:
@@ -70,19 +70,19 @@ options:
     default: 1
     version_added: '1.39.0'
 extends_documentation_fragment:
-- purestorage.flasharray.purestorage.fa
+- everpure.flasharray.everpure.fa
 """
 
 EXAMPLES = r"""
 - name: Create new endpoint named foo
-  purestorage.flasharray.purefa_endpoint:
+  everpure.flasharray.purefa_endpoint:
     name: test-endpoint
     fa_url: 10.10.10.2
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
     state: present
 
 - name: Delete and eradicate endpoint named foo
-  purestorage.flasharray.purefa_endpoint:
+  everpure.flasharray.purefa_endpoint:
     name: foo
     eradicate: true
     fa_url: 10.10.10.2
@@ -90,7 +90,7 @@ EXAMPLES = r"""
     state: absent
 
 - name: Rename endpoint foo to bar
-  purestorage.flasharray.purefa_endpoint:
+  everpure.flasharray.purefa_endpoint:
     name: foo
     rename: bar
     fa_url: 10.10.10.2
@@ -132,11 +132,11 @@ except ImportError:
 
 import time
 from ansible.module_utils.basic import AnsibleModule
-from ansible_collections.purestorage.flasharray.plugins.module_utils.purefa import (
+from ansible_collections.everpure.flasharray.plugins.module_utils.purefa import (
     get_array,
     purefa_argument_spec,
 )
-from ansible_collections.purestorage.flasharray.plugins.module_utils.api_helpers import (
+from ansible_collections.everpure.flasharray.plugins.module_utils.api_helpers import (
     check_response,
     delete_with_context,
     get_with_context,

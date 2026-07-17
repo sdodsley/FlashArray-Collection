@@ -1,7 +1,7 @@
 #!/usr/bin/python
 # -*- coding: utf-8 -*-
 
-# Copyright: (c) 2024, Simon Dodsley (simon@purestorage.com)
+# Copyright: (c) 2024, Simon Dodsley (simon@everpuredata.com)
 # GNU General Public License v3.0+ (see COPYING or https://www.gnu.org/licenses/gpl-3.0.txt)
 
 from __future__ import absolute_import, division, print_function
@@ -22,7 +22,7 @@ short_description: Manage realms on Everpure FlashArrays
 description:
 - Create, delete or modify realms on Everpure FlashArrays.
 author:
-- Everpure Ansible Team (@sdodsley) <pure-ansible-team@purestorage.com>
+- Everpure Ansible Team (@sdodsley) <pure-ansible-team@everpuredata.com>
 options:
   name:
     description:
@@ -83,12 +83,12 @@ options:
     type: bool
     default: False
 extends_documentation_fragment:
-- purestorage.flasharray.purestorage.fa
+- everpure.flasharray.everpure.fa
 """
 
 EXAMPLES = r"""
 - name: Create new realm
-  purestorage.flasharray.purefa_realm:
+  everpure.flasharray.purefa_realm:
     name: foo
     bw_qos: 50M
     iops_qos: 100
@@ -96,7 +96,7 @@ EXAMPLES = r"""
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
 
 - name: Update realm QoS limits
-  purestorage.flasharray.purefa_realm:
+  everpure.flasharray.purefa_realm:
     name: foo
     bw_qos: 0
     iops_qos: 5555
@@ -104,20 +104,20 @@ EXAMPLES = r"""
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
 
 - name: Destroy realm
-  purestorage.flasharray.purefa_realm:
+  everpure.flasharray.purefa_realm:
     name: foo
     fa_url: 10.10.10.2
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
     state: absent
 
 - name: Recover deleted realm
-  purestorage.flasharray.purefa_realm:
+  everpure.flasharray.purefa_realm:
     name: foo
     fa_url: 10.10.10.2
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
 
 - name: Destroy and Eradicate realm
-  purestorage.flasharray.purefa_realm:
+  everpure.flasharray.purefa_realm:
     name: foo
     eradicate: true
     fa_url: 10.10.10.2
@@ -125,7 +125,7 @@ EXAMPLES = r"""
     state: absent
 
 - name: Rename realm foo to bar
-  purestorage.flasharray.purefa_realm:
+  everpure.flasharray.purefa_realm:
     name: foo
     rename: bar
     fa_url: 10.10.10.2
@@ -142,18 +142,18 @@ except ImportError:
     HAS_PURESTORAGE = False
 
 from ansible.module_utils.basic import AnsibleModule
-from ansible_collections.purestorage.flasharray.plugins.module_utils.purefa import (
+from ansible_collections.everpure.flasharray.plugins.module_utils.purefa import (
     get_array,
     purefa_argument_spec,
 )
-from ansible_collections.purestorage.flasharray.plugins.module_utils.common import (
+from ansible_collections.everpure.flasharray.plugins.module_utils.common import (
     human_to_bytes,
     human_to_real,
 )
-from ansible_collections.purestorage.flasharray.plugins.module_utils.version import (
+from ansible_collections.everpure.flasharray.plugins.module_utils.version import (
     LooseVersion,
 )
-from ansible_collections.purestorage.flasharray.plugins.module_utils.api_helpers import (
+from ansible_collections.everpure.flasharray.plugins.module_utils.api_helpers import (
     check_response,
 )
 
@@ -201,13 +201,19 @@ def make_realm(module, array):
             module.fail_json(
                 msg="Quota must be a value greater than or equal to 1048576 bytes"
             )
-        res = array.post_realms(
-            names=[module.params["name"]], realm=RealmPost(quota_limit=quota)
-        )
-        check_response(res, module, f"Creation of realm {module.params['name']} failed")
+        if not module.check_mode:
+            res = array.post_realms(
+                names=[module.params["name"]], realm=RealmPost(quota_limit=quota)
+            )
+            check_response(
+                res, module, f"Creation of realm {module.params['name']} failed"
+            )
     else:
-        res = array.post_realms(names=[module.params["name"]])
-        check_response(res, module, f"Creation of realm {module.params['name']} failed")
+        if not module.check_mode:
+            res = array.post_realms(names=[module.params["name"]])
+            check_response(
+                res, module, f"Creation of realm {module.params['name']} failed"
+            )
     if module.params["bw_qos"] and not module.params["iops_qos"]:
         if int(human_to_bytes(module.params["bw_qos"])) in range(1048576, 549755813888):
             changed = True
