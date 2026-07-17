@@ -1,7 +1,7 @@
 #!/usr/bin/python
 # -*- coding: utf-8 -*-
 
-# (c) 2017, Simon Dodsley (simon@purestorage.com)
+# (c) 2017, Simon Dodsley (simon@everpuredata.com)
 # GNU General Public License v3.0+ (see COPYING or https://www.gnu.org/licenses/gpl-3.0.txt)
 
 from __future__ import absolute_import, division, print_function
@@ -24,7 +24,7 @@ description:
 - Recovery of replicated snapshots on the replica target array is enabled.
 - Support for ActiveCluster and Volume Group protection groups is supported.
 author:
-- Everpure Ansible Team (@sdodsley) <pure-ansible-team@purestorage.com>
+- Everpure Ansible Team (@sdodsley) <pure-ansible-team@everpuredata.com>
 options:
   name:
     description:
@@ -125,12 +125,12 @@ options:
     default: ""
     version_added: '1.33.0'
 extends_documentation_fragment:
-- purestorage.flasharray.purestorage.fa
+- everpure.flasharray.everpure.fa
 """
 
 EXAMPLES = r"""
 - name: Create protection group snapshot foo.ansible
-  purestorage.flasharray.purefa_pgsnap:
+  everpure.flasharray.purefa_pgsnap:
     name: foo
     suffix: ansible
     fa_url: 10.10.10.2
@@ -138,7 +138,7 @@ EXAMPLES = r"""
     state: present
 
 - name: Delete and eradicate protection group snapshot named foo.snap
-  purestorage.flasharray.purefa_pgsnap:
+  everpure.flasharray.purefa_pgsnap:
     name: foo
     suffix: snap
     eradicate: true
@@ -147,7 +147,7 @@ EXAMPLES = r"""
     state: absent
 
 - name: Restore volume data from local protection group snapshot named foo.snap to volume data2
-  purestorage.flasharray.purefa_pgsnap:
+  everpure.flasharray.purefa_pgsnap:
     name: foo
     suffix: snap
     restore: data
@@ -159,7 +159,7 @@ EXAMPLES = r"""
     state: copy
 
 - name: Restore remote protection group snapshot arrayA:pgname.snap.data to local copy
-  purestorage.flasharray.purefa_pgsnap:
+  everpure.flasharray.purefa_pgsnap:
     name: arrayA:pgname
     suffix: snap
     restore: data
@@ -168,7 +168,7 @@ EXAMPLES = r"""
     state: copy
 
 - name: Restore AC pod  protection group snapshot pod1::pgname.snap.data to pod1::data2
-  purestorage.flasharray.purefa_pgsnap:
+  everpure.flasharray.purefa_pgsnap:
     name: pod1::pgname
     suffix: snap
     restore: data
@@ -178,7 +178,7 @@ EXAMPLES = r"""
     state: copy
 
 - name: Create snapshot of existing pgroup foo with suffix and force immediate copy to remote targets
-  purestorage.flasharray.purefa_pgsnap:
+  everpure.flasharray.purefa_pgsnap:
     name: pgname
     suffix: force
     now: true
@@ -188,7 +188,7 @@ EXAMPLES = r"""
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
 
 - name: Delete and eradicate snapshot named foo.snap on offload target bar from arrayA
-  purestorage.flasharray.purefa_pgsnap:
+  everpure.flasharray.purefa_pgsnap:
     name: "arrayA:foo"
     suffix: snap
     offload: bar
@@ -198,7 +198,7 @@ EXAMPLES = r"""
     state: absent
 
 - name: Rename protection group snapshot foo.fred to foo.dave
-  purestorage.flasharray.purefa_pgsnap:
+  everpure.flasharray.purefa_pgsnap:
     name: foo
     suffix: fred
     target: dave
@@ -207,7 +207,7 @@ EXAMPLES = r"""
     state: rename
 
 - name: Restore all volumes from protection group snapshot foo.snap (overwrite existing)
-  purestorage.flasharray.purefa_pgsnap:
+  everpure.flasharray.purefa_pgsnap:
     name: foo
     suffix: snap
     restore: all
@@ -217,7 +217,7 @@ EXAMPLES = r"""
     state: copy
 
 - name: Clone all volumes from protection group snapshot foo.snap to new protection group foo_clone
-  purestorage.flasharray.purefa_pgsnap:
+  everpure.flasharray.purefa_pgsnap:
     name: foo
     suffix: snap
     restore: all
@@ -249,14 +249,14 @@ except ImportError:
 
 import re
 from ansible.module_utils.basic import AnsibleModule
-from ansible_collections.purestorage.flasharray.plugins.module_utils.purefa import (
+from ansible_collections.everpure.flasharray.plugins.module_utils.purefa import (
     get_array,
     purefa_argument_spec,
 )
-from ansible_collections.purestorage.flasharray.plugins.module_utils.version import (
+from ansible_collections.everpure.flasharray.plugins.module_utils.version import (
     LooseVersion,
 )
-from ansible_collections.purestorage.flasharray.plugins.module_utils.api_helpers import (
+from ansible_collections.everpure.flasharray.plugins.module_utils.api_helpers import (
     check_response,
     get_with_context,
     post_with_context,

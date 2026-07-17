@@ -1,7 +1,7 @@
 #!/usr/bin/python
 # -*- coding: utf-8 -*-
 
-# (c) 2018, Simon Dodsley (simon@purestorage.com)
+# (c) 2018, Simon Dodsley (simon@everpuredata.com)
 # GNU General Public License v3.0+ (see COPYING or https://www.gnu.org/licenses/gpl-3.0.txt)
 
 from __future__ import absolute_import, division, print_function
@@ -22,7 +22,7 @@ short_description: Create, modify or delete FlashArray local user account
 description:
 - Create, modify or delete local users on a Everpure FlashArray.
 author:
-- Everpure Ansible Team (@sdodsley) <pure-ansible-team@purestorage.com>
+- Everpure Ansible Team (@sdodsley) <pure-ansible-team@everpuredata.com>
 options:
   state:
     description:
@@ -76,12 +76,12 @@ options:
     default: false
     version_added: "1.37.0"
 extends_documentation_fragment:
-- purestorage.flasharray.purestorage.fa
+- everpure.flasharray.everpure.fa
 """
 
 EXAMPLES = r"""
 - name: Create new user ansible with API token
-  purestorage.flasharray.purefa_user:
+  everpure.flasharray.purefa_user:
     name: ansible
     password: apassword
     role: storage_admin
@@ -95,7 +95,7 @@ EXAMPLES = r"""
     msg: "API Token: {{ result['user_info']['user_api'] }}"
 
 - name: Overwrite/add SSH public key for existing user
-  purestorage.flasharray.purefa_user:
+  everpure.flasharray.purefa_user:
     name: ansible
     role: array_admin
     public_key: "{{lookup('file', 'id_rsa.pub') }}"
@@ -103,7 +103,7 @@ EXAMPLES = r"""
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
 
 - name: Remove existing SSH public key from user
-  purestorage.flasharray.purefa_user:
+  everpure.flasharray.purefa_user:
     name: ansible
     role: array_admin
     public_key: ""
@@ -111,14 +111,14 @@ EXAMPLES = r"""
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
 
 - name: Change role type for existing user
-  purestorage.flasharray.purefa_user:
+  everpure.flasharray.purefa_user:
     name: ansible
     role: array_admin
     fa_url: 10.10.10.2
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
 
 - name: Change password type for existing user (NOT IDEMPOTENT)
-  purestorage.flasharray.purefa_user:
+  everpure.flasharray.purefa_user:
     name: ansible
     password: anewpassword
     old_password: apassword
@@ -126,7 +126,7 @@ EXAMPLES = r"""
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
 
 - name: Create an API token (TTL of 2 days) and assign a public key to an AD user
-  purestorage.flasharray.purefa_user:
+  everpure.flasharray.purefa_user:
     name: ansible-ad
     ad_user: true
     public_key: "{{lookup('file', 'id_rsa.pub') }}"
@@ -136,7 +136,7 @@ EXAMPLES = r"""
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
 
 - name: Change API token and token timeout for existing user
-  purestorage.flasharray.purefa_user:
+  everpure.flasharray.purefa_user:
     name: ansible
     api: true
     role: array_admin
@@ -161,14 +161,14 @@ except ImportError:
 
 import re
 from ansible.module_utils.basic import AnsibleModule
-from ansible_collections.purestorage.flasharray.plugins.module_utils.purefa import (
+from ansible_collections.everpure.flasharray.plugins.module_utils.purefa import (
     get_array,
     purefa_argument_spec,
 )
-from ansible_collections.purestorage.flasharray.plugins.module_utils.common import (
+from ansible_collections.everpure.flasharray.plugins.module_utils.common import (
     convert_time_to_millisecs,
 )
-from ansible_collections.purestorage.flasharray.plugins.module_utils.api_helpers import (
+from ansible_collections.everpure.flasharray.plugins.module_utils.api_helpers import (
     check_response,
 )
 

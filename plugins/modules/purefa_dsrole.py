@@ -1,7 +1,7 @@
 #!/usr/bin/python
 # -*- coding: utf-8 -*-
 
-# (c) 2019, Simon Dodsley (simon@purestorage.com)
+# (c) 2019, Simon Dodsley (simon@everpuredata.com)
 # GNU General Public License v3.0+ (see COPYING or https://www.gnu.org/licenses/gpl-3.0.txt)
 
 from __future__ import absolute_import, division, print_function
@@ -22,7 +22,7 @@ short_description: Configure FlashArray Directory Service Roles
 description:
 - Set or erase directory services role configurations.
 author:
-- Everpure Ansible Team (@sdodsley) <pure-ansible-team@purestorage.com>
+- Everpure Ansible Team (@sdodsley) <pure-ansible-team@everpuredata.com>
 options:
   name:
     description:
@@ -79,19 +79,19 @@ options:
     default: ""
     version_added: '1.39.0'
 extends_documentation_fragment:
-- purestorage.flasharray.purestorage.fa
+- everpure.flasharray.everpure.fa
 """
 
 EXAMPLES = r"""
 - name: Delete existing array_admin directory service role
-  purestorage.flasharray.purefa_dsrole:
+  everpure.flasharray.purefa_dsrole:
     role: array_admin
     state: absent
     fa_url: 10.10.10.2
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
 
 - name: Create observability directory service role with readonly policy
-  purestorage.flasharray.purefa_dsrole:
+  everpure.flasharray.purefa_dsrole:
     name: observability
     role: readonly
     group_base: "OU=PureGroups,OU=ReadOnly"
@@ -100,7 +100,7 @@ EXAMPLES = r"""
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
 
 - name: Update system-defined array_admin directory service role
-  purestorage.flasharray.purefa_dsrole:
+  everpure.flasharray.purefa_dsrole:
     role: array_admin
     group_base: "OU=PureGroups,OU=SANManagers"
     group: pureadmins
@@ -108,14 +108,14 @@ EXAMPLES = r"""
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
 
 - name: Update directory service role policy
-  purestorage.flasharray.purefa_dsrole:
+  everpure.flasharray.purefa_dsrole:
     name: observability
     role: ops_admin
     fa_url: 10.10.10.2
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
 
 - name: Create directory service role bound to a custom management access policy
-  purestorage.flasharray.purefa_dsrole:
+  everpure.flasharray.purefa_dsrole:
     name: realm-admins
     access_policy: my-realm-policy
     group_base: "OU=PureGroups,OU=RealmAdmins"
@@ -146,14 +146,14 @@ except ImportError:
 
 
 from ansible.module_utils.basic import AnsibleModule
-from ansible_collections.purestorage.flasharray.plugins.module_utils.purefa import (
+from ansible_collections.everpure.flasharray.plugins.module_utils.purefa import (
     get_array,
     purefa_argument_spec,
 )
-from ansible_collections.purestorage.flasharray.plugins.module_utils.version import (
+from ansible_collections.everpure.flasharray.plugins.module_utils.version import (
     LooseVersion,
 )
-from ansible_collections.purestorage.flasharray.plugins.module_utils.api_helpers import (
+from ansible_collections.everpure.flasharray.plugins.module_utils.api_helpers import (
     check_response,
     delete_with_context,
     get_with_context,

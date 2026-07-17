@@ -1,7 +1,7 @@
 #!/usr/bin/python
 # -*- coding: utf-8 -*-
 
-# (c) 2020, Simon Dodsley (simon@purestorage.com)
+# (c) 2020, Simon Dodsley (simon@everpuredata.com)
 # GNU General Public License v3.0+ (see COPYING or https://www.gnu.org/licenses/gpl-3.0.txt)
 
 from __future__ import absolute_import, division, print_function
@@ -22,7 +22,7 @@ short_description: Manage FlashArray File System Policies
 description:
 - Manage FlashArray file system policies for NFS, SMB and snapshot
 author:
-- Everpure Ansible Team (@sdodsley) <pure-ansible-team@purestorage.com>
+- Everpure Ansible Team (@sdodsley) <pure-ansible-team@everpuredata.com>
 options:
   name:
     description:
@@ -285,12 +285,12 @@ options:
     default: false
     version_added: 1.40.0
 extends_documentation_fragment:
-- purestorage.flasharray.purestorage.fa
+- everpure.flasharray.everpure.fa
 """
 
 EXAMPLES = r"""
 - name: Create an NFS policy with initial rule
-  purestorage.flasharray.purefa_policy:
+  everpure.flasharray.purefa_policy:
     name: export1
     policy: nfs
     nfs_access: root-squash
@@ -300,21 +300,21 @@ EXAMPLES = r"""
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
 
 - name: Create an empty NFS policy with no rules
-  purestorage.flasharray.purefa_policy:
+  everpure.flasharray.purefa_policy:
     name: export1
     policy: nfs
     fa_url: 10.10.10.2
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
 
 - name: Create an empty snapshot policy with no rules
-  purestorage.flasharray.purefa_policy:
+  everpure.flasharray.purefa_policy:
     name: snap1
     policy: snapshot
     fa_url: 10.10.10.2
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
 
 - name: Create an empty snapshot policy with single directory member
-  purestorage.flasharray.purefa_policy:
+  everpure.flasharray.purefa_policy:
     name: snap1
     policy: snapshot
     directory: "foo:bar"
@@ -322,7 +322,7 @@ EXAMPLES = r"""
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
 
 - name: Disable a policy
-  purestorage.flasharray.purefa_policy:
+  everpure.flasharray.purefa_policy:
     name: export1
     policy: nfs
     enabled: false
@@ -330,7 +330,7 @@ EXAMPLES = r"""
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
 
 - name: Add rule to existing NFS export policy
-  purestorage.flasharray.purefa_policy:
+  everpure.flasharray.purefa_policy:
     name: export1
     policy: nfs
     nfs_access: root-squash
@@ -340,7 +340,7 @@ EXAMPLES = r"""
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
 
 - name: Add rule to existing SMB export policy
-  purestorage.flasharray.purefa_policy:
+  everpure.flasharray.purefa_policy:
     name: export1
     policy: smb
     smb_encrypt: true
@@ -350,7 +350,7 @@ EXAMPLES = r"""
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
 
 - name: Add non-suffix rule to existing snapshot export policy
-  purestorage.flasharray.purefa_policy:
+  everpure.flasharray.purefa_policy:
     name: snap1
     policy: snapshot
     snap_client_name: foo
@@ -360,7 +360,7 @@ EXAMPLES = r"""
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
 
 - name: Add suffix rule to existing snapshot export policy
-  purestorage.flasharray.purefa_policy:
+  everpure.flasharray.purefa_policy:
     name: snap1
     policy: snapshot
     snap_client_name: foo
@@ -371,7 +371,7 @@ EXAMPLES = r"""
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
 
 - name: Delete policy rule for a client
-  purestorage.flasharray.purefa_policy:
+  everpure.flasharray.purefa_policy:
     name: export1
     policy: nfs
     client: client2
@@ -380,7 +380,7 @@ EXAMPLES = r"""
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
 
 - name: Delete policy
-  purestorage.flasharray.purefa_policy:
+  everpure.flasharray.purefa_policy:
     name: export1
     policy: nfs
     state: absent
@@ -388,7 +388,7 @@ EXAMPLES = r"""
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
 
 - name: Create directory quota policy for directory bar
-  purestorage.flasharray.purefa_policy:
+  everpure.flasharray.purefa_policy:
     name: foo
     directory:
      - "foo:root"
@@ -399,7 +399,7 @@ EXAMPLES = r"""
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
 
 - name: Delete directory quota policy foo
-  purestorage.flasharray.purefa_policy:
+  everpure.flasharray.purefa_policy:
     name: foo
     policy: quota
     state: absent
@@ -407,14 +407,14 @@ EXAMPLES = r"""
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
 
 - name: Create empty directory quota policy foo
-  purestorage.flasharray.purefa_policy:
+  everpure.flasharray.purefa_policy:
     name: foo
     policy: quota
     fa_url: 10.10.10.2
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
 
 - name: Detach directory "foo:bar" from quota policy quota1
-  purestorage.flasharray.purefa_policy:
+  everpure.flasharray.purefa_policy:
     name: quota1
     directory:
      - "foo:bar"
@@ -424,7 +424,7 @@ EXAMPLES = r"""
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
 
 - name: Remove quota rule from quota policy foo
-  purestorage.flasharray.purefa_policy:
+  everpure.flasharray.purefa_policy:
     name: foo
     policy: quota
     quota_limit: 10G
@@ -433,7 +433,7 @@ EXAMPLES = r"""
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
 
 - name: Update password policy management
-  purestorage.flasharray.purefa_policy:
+  everpure.flasharray.purefa_policy:
     name: management
     policy: password
     max_login_attempts: 5
@@ -445,7 +445,7 @@ EXAMPLES = r"""
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
 
 - name: Update password policy with password age requirements
-  purestorage.flasharray.purefa_policy:
+  everpure.flasharray.purefa_policy:
     name: management
     policy: password
     min_password_age: 1d
@@ -455,7 +455,7 @@ EXAMPLES = r"""
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
 
 - name: Disable password expiration
-  purestorage.flasharray.purefa_policy:
+  everpure.flasharray.purefa_policy:
     name: management
     policy: password
     max_password_age: 0
@@ -495,19 +495,19 @@ except ImportError:
     HAS_PURESTORAGE = False
 
 from ansible.module_utils.basic import AnsibleModule
-from ansible_collections.purestorage.flasharray.plugins.module_utils.purefa import (
+from ansible_collections.everpure.flasharray.plugins.module_utils.purefa import (
     get_array,
     purefa_argument_spec,
 )
-from ansible_collections.purestorage.flasharray.plugins.module_utils.version import (
+from ansible_collections.everpure.flasharray.plugins.module_utils.version import (
     LooseVersion,
 )
-from ansible_collections.purestorage.flasharray.plugins.module_utils.common import (
+from ansible_collections.everpure.flasharray.plugins.module_utils.common import (
     human_to_bytes,
     convert_to_millisecs,
     convert_time_to_millisecs,
 )
-from ansible_collections.purestorage.flasharray.plugins.module_utils.api_helpers import (
+from ansible_collections.everpure.flasharray.plugins.module_utils.api_helpers import (
     get_with_context,
     post_with_context,
     patch_with_context,

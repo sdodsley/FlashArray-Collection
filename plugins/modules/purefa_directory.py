@@ -1,7 +1,7 @@
 #!/usr/bin/python
 # -*- coding: utf-8 -*-
 
-# (c) 2020, Simon Dodsley (simon@purestorage.com)
+# (c) 2020, Simon Dodsley (simon@everpuredata.com)
 # GNU General Public License v3.0+ (see COPYING or https://www.gnu.org/licenses/gpl-3.0.txt)
 
 from __future__ import absolute_import, division, print_function
@@ -22,7 +22,7 @@ short_description: Manage FlashArray File System Directories
 description:
 - Create/Delete FlashArray File Systems
 author:
-- Everpure Ansible Team (@sdodsley) <pure-ansible-team@purestorage.com>
+- Everpure Ansible Team (@sdodsley) <pure-ansible-team@everpuredata.com>
 options:
   name:
     description:
@@ -58,12 +58,12 @@ options:
     default: ""
     version_added: '1.39.0'
 extends_documentation_fragment:
-- purestorage.flasharray.purestorage.fa
+- everpure.flasharray.everpure.fa
 """
 
 EXAMPLES = r"""
 - name: Create directory foo in filesysten bar with path zeta
-  purestorage.flasharray.purefa_directory:
+  everpure.flasharray.purefa_directory:
     name: foo
     filesystem: bar
     path: zeta
@@ -71,7 +71,7 @@ EXAMPLES = r"""
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
 
 - name: Rename directory foo to fin in filesystem bar
-  purestorage.flasharray.purefa_directory:
+  everpure.flasharray.purefa_directory:
     name: foo
     rename: fin
     filesystem: bar
@@ -79,7 +79,7 @@ EXAMPLES = r"""
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
 
 - name: Delete directory foo in filesystem bar
-  purestorage.flasharray.purefa_directory:
+  everpure.flasharray.purefa_directory:
     name: foo
     filesystem: bar
     state: absent
@@ -97,11 +97,11 @@ except ImportError:
     HAS_PURESTORAGE = False
 
 from ansible.module_utils.basic import AnsibleModule
-from ansible_collections.purestorage.flasharray.plugins.module_utils.purefa import (
+from ansible_collections.everpure.flasharray.plugins.module_utils.purefa import (
     get_array,
     purefa_argument_spec,
 )
-from ansible_collections.purestorage.flasharray.plugins.module_utils.api_helpers import (
+from ansible_collections.everpure.flasharray.plugins.module_utils.api_helpers import (
     get_with_context,
     post_with_context,
     patch_with_context,

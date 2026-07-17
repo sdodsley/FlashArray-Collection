@@ -1,7 +1,7 @@
 #!/usr/bin/python
 # -*- coding: utf-8 -*-
 
-# (c) 2019, Simon Dodsley (simon@purestorage.com)
+# (c) 2019, Simon Dodsley (simon@everpuredata.com)
 # GNU General Public License v3.0+ (see COPYING or https://www.gnu.org/licenses/gpl-3.0.txt)
 
 from __future__ import absolute_import, division, print_function
@@ -19,7 +19,7 @@ DOCUMENTATION = r"""
 module: purefa_proxy
 version_added: '1.0.0'
 author:
-  - Everpure ansible Team (@sdodsley) <pure-ansible-team@purestorage.com>
+  - Everpure ansible Team (@sdodsley) <pure-ansible-team@everpuredata.com>
 short_description: Configure FlashArray phonehome HTTPs proxy settings
 description:
 - Set or erase configuration for the HTTPS phonehome proxy settings.
@@ -46,19 +46,19 @@ options:
     - The proxy TCP/IP port number.
     type: int
 extends_documentation_fragment:
-- purestorage.flasharray.purestorage.fa
+- everpure.flasharray.everpure.fa
 """
 
 EXAMPLES = r"""
 - name: Delete existing proxy settings
-  purestorage.flasharray.purefa_proxy:
+  everpure.flasharray.purefa_proxy:
     state: absent
     fa_url: 10.10.10.2
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
 
 - name: Set proxy settings
-  purestorage.flasharray.purefa_proxy:
-    host: purestorage.com
+  everpure.flasharray.purefa_proxy:
+    host: everpuredata.com
     port: 8080
     fa_url: 10.10.10.2
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
@@ -69,11 +69,11 @@ RETURN = r"""
 
 
 from ansible.module_utils.basic import AnsibleModule
-from ansible_collections.purestorage.flasharray.plugins.module_utils.purefa import (
+from ansible_collections.everpure.flasharray.plugins.module_utils.purefa import (
     get_array,
     purefa_argument_spec,
 )
-from ansible_collections.purestorage.flasharray.plugins.module_utils.api_helpers import (
+from ansible_collections.everpure.flasharray.plugins.module_utils.api_helpers import (
     check_response,
 )
 

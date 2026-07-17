@@ -1,7 +1,7 @@
 #!/usr/bin/python
 # -*- coding: utf-8 -*-
 
-# (c) 2020, Simon Dodsley (simon@purestorage.com)
+# (c) 2020, Simon Dodsley (simon@everpuredata.com)
 # GNU General Public License v3.0+ (see COPYING or https://www.gnu.org/licenses/gpl-3.0.txt)
 
 from __future__ import absolute_import, division, print_function
@@ -23,7 +23,7 @@ short_description:  Manage ActiveDR pod replica links between Everpure FlashArra
 version_added: '1.0.0'
 description:
     - This module manages ActiveDR pod replica links between Everpure FlashArrays.
-author: Everpure Ansible Team (@sdodsley) <pure-ansible-team@purestorage.com>
+author: Everpure Ansible Team (@sdodsley) <pure-ansible-team@everpuredata.com>
 options:
   name:
     description:
@@ -62,12 +62,12 @@ options:
     default: ""
     version_added: '1.33.0'
 extends_documentation_fragment:
-    - purestorage.flasharray.purestorage.fa
+    - everpure.flasharray.everpure.fa
 """
 
 EXAMPLES = """
 - name: Create new pod replica link from foo to bar on arrayB
-  purestorage.flasharray.purefa_pod_replica:
+  everpure.flasharray.purefa_pod_replica:
     name: foo
     target_array: arrayB
     target_pod: bar
@@ -76,14 +76,14 @@ EXAMPLES = """
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
 
 - name: Pause an pod replica link
-  purestorage.flasharray.purefa_pod_replica:
+  everpure.flasharray.purefa_pod_replica:
     name: foo
     pause: true
     fa_url: 10.10.10.2
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
 
 - name: Delete pod replica link
-  purestorage.flasharray.purefa_pod_replica:
+  everpure.flasharray.purefa_pod_replica:
     name: foo
     state: absent
     fa_url: 10.10.10.2
@@ -100,11 +100,11 @@ except ImportError:
     HAS_PURESTORAGE = False
 
 from ansible.module_utils.basic import AnsibleModule
-from ansible_collections.purestorage.flasharray.plugins.module_utils.purefa import (
+from ansible_collections.everpure.flasharray.plugins.module_utils.purefa import (
     get_array,
     purefa_argument_spec,
 )
-from ansible_collections.purestorage.flasharray.plugins.module_utils.api_helpers import (
+from ansible_collections.everpure.flasharray.plugins.module_utils.api_helpers import (
     get_with_context,
     patch_with_context,
     post_with_context,
