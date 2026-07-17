@@ -1,7 +1,7 @@
 #!/usr/bin/python
 # -*- coding: utf-8 -*-
 
-# (c) 2026, Simon Dodsley (simon@purestorage.com)
+# (c) 2026, Simon Dodsley (simon@everpuredata.com)
 # GNU General Public License v3.0+ (see COPYING or https://www.gnu.org/licenses/gpl-3.0.txt)
 
 from __future__ import absolute_import, division, print_function
@@ -38,7 +38,7 @@ description:
 - During the drive wipe the array REST API service is unavailable for a period
   of time (typically around 30 minutes). This is expected behaviour.
 author:
-- Everpure Ansible Team (@sdodsley) <pure-ansible-team@purestorage.com>
+- Everpure Ansible Team (@sdodsley) <pure-ansible-team@everpuredata.com>
 options:
   state:
     description:
@@ -110,7 +110,7 @@ extends_documentation_fragment:
 
 EXAMPLES = r"""
 - name: Check current ZTE status and retrieve sanitization certificate
-  purestorage.flasharray.purefa_zte:
+  everpure.flasharray.purefa_zte:
     state: status
     fa_url: 10.10.10.2
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
@@ -123,14 +123,14 @@ EXAMPLES = r"""
   when: zte.zte.sanitization_certificate | length > 0
 
 - name: Start ZTE (Phase 1 - wipe drives)
-  purestorage.flasharray.purefa_zte:
+  everpure.flasharray.purefa_zte:
     state: start
     eradicate: true
     fa_url: 10.10.10.2
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
 
 - name: Start ZTE on a darksite array
-  purestorage.flasharray.purefa_zte:
+  everpure.flasharray.purefa_zte:
     state: start
     eradicate: true
     skip_phonehome_check: true
@@ -138,7 +138,7 @@ EXAMPLES = r"""
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
 
 - name: Finalize ZTE without reinstalling the image (Option 1)
-  purestorage.flasharray.purefa_zte:
+  everpure.flasharray.purefa_zte:
     state: finalize
     eradicate: true
     reinstall_image: false
@@ -146,7 +146,7 @@ EXAMPLES = r"""
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
 
 - name: Finalize ZTE and reinstall image on a phoning-home array (Option 2)
-  purestorage.flasharray.purefa_zte:
+  everpure.flasharray.purefa_zte:
     state: finalize
     eradicate: true
     reinstall_image: true
@@ -155,7 +155,7 @@ EXAMPLES = r"""
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
 
 - name: Finalize ZTE and reinstall image on a darksite array (Option 2)
-  purestorage.flasharray.purefa_zte:
+  everpure.flasharray.purefa_zte:
     state: finalize
     eradicate: true
     reinstall_image: true
@@ -165,7 +165,7 @@ EXAMPLES = r"""
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
 
 - name: Cancel a failed ZTE process
-  purestorage.flasharray.purefa_zte:
+  everpure.flasharray.purefa_zte:
     state: cancel
     fa_url: 10.10.10.2
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
@@ -210,14 +210,14 @@ except ImportError:
     HAS_PURESTORAGE = False
 
 from ansible.module_utils.basic import AnsibleModule
-from ansible_collections.purestorage.flasharray.plugins.module_utils.purefa import (
+from ansible_collections.everpure.flasharray.plugins.module_utils.purefa import (
     get_array,
     purefa_argument_spec,
 )
-from ansible_collections.purestorage.flasharray.plugins.module_utils.version import (
+from ansible_collections.everpure.flasharray.plugins.module_utils.version import (
     LooseVersion,
 )
-from ansible_collections.purestorage.flasharray.plugins.module_utils.api_helpers import (
+from ansible_collections.everpure.flasharray.plugins.module_utils.api_helpers import (
     check_response,
 )
 
