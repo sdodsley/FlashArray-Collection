@@ -1450,6 +1450,39 @@ releases:
       name: purefa_tgroup
       namespace: ''
     release_date: '2026-06-19'
+  1.44.0:
+    changes:
+      bugfixes:
+      - purefa_host - Fix get_hosts TypeError on pre-2.38 arrays by only sending allow_errors
+        when a context is set (https://github.com/Pure-Storage-Ansible/FlashArray-Collection/issues/1016)
+      - purefa_network - Fix TypeError updating an interface with existing subinterfaces
+        (LACP/VIF) (https://github.com/Pure-Storage-Ansible/FlashArray-Collection/issues/1013)
+      - purefa_pod - Do not create or modify default protection when running in check
+        mode
+      - purefa_realm - Do not create the realm when running in check mode
+      major_changes:
+      - This collection has been renamed from purestorage.flasharray to everpure.flasharray.
+        The purestorage.flasharray namespace is now a redirect-only deprecation stub.
+      minor_changes:
+      - purefa_dsrole - Add ``access_policy`` parameter to bind a directory service
+        role to a custom management access policy instead of a built-in role
+      - purefa_host - Add ``nutanix-mgmt`` and ``nutanix-cluster`` host personalities,
+        supported from REST API 2.50 and higher.
+      - purefa_pod - Add ``realm`` parameter to place a pod inside a realm without
+        having to hand-craft the ``realm::pod`` name
+    fragments:
+    - 1011_nutanix_personalities.yaml
+    - 1014_purefa_network_subinterface_sort.yaml
+    - 1017_purefa_host_allow_errors.yaml
+    - 1018_purefa_realm_pod_check_mode.yaml
+    - 1020_purefa_dsrole_access_policy.yaml
+    - 1021_purefa_pod_realm.yaml
+    - namespace-rename.yml
+    modules:
+    - description: Manage management-access (RBAC) policies on Everpure FlashArrays
+      name: purefa_policy_management_access
+      namespace: ''
+    release_date: '2026-07-17'
   1.5.0:
     changes:
       bugfixes:
