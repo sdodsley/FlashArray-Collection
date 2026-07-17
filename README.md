@@ -141,6 +141,7 @@ All modules are idempotent with the exception of modules that change or set pass
 - purefa_pod - manage ActiveCluster pods in FlashArrays
 - purefa_pod_replica - manage ActiveDR pod replica links in FlashArrays
 - purefa_policy - manage FlashArray NFS, SMB and snapshot policies
+- purefa_policy_management_access - manage FlashArray management-access (RBAC) policies
 - purefa_proxy - manage the phonehome HTTPS proxy setting for the FlashArray
 - purefa_ra - manage the Remote Assist setting for the FlashArray
 - purefa_realm - manage the FlashArray realms
