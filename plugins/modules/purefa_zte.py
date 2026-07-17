@@ -105,7 +105,7 @@ options:
       darksite array.
     type: str
 extends_documentation_fragment:
-- purestorage.flasharray.purestorage.fa
+- everpure.flasharray.everpure.fa
 """
 
 EXAMPLES = r"""
