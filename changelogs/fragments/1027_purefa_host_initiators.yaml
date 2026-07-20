@@ -1,0 +1,2 @@
+bugfixes:
+  - purefa_host - Reconcile a host's WWNs, IQNs and NQNs by adding only missing initiators and removing only unwanted ones, so one can be dropped by omitting it and those that stay are untouched

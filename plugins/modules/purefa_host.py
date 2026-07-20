@@ -62,16 +62,23 @@ options:
     elements: str
     description:
     - List of wwns of the host.
+    - This is the complete desired set of WWNs. The host is reconciled to match
+      it, adding any that are missing and removing any that are not listed, so a
+      single WWN can be removed by simply omitting it from the list.
   iqn:
     type: list
     elements: str
     description:
     - List of IQNs of the host.
+    - This is the complete desired set of IQNs; the host is reconciled to match
+      it, adding and removing IQNs as needed.
   nqn:
     type: list
     elements: str
     description:
     - List of NQNs of the host. Note that NMVe hosts can only possess NQNs.
+    - This is the complete desired set of NQNs; the host is reconciled to match
+      it, adding and removing NQNs as needed.
       Multi-protocol is not allowed for these hosts.
   volume:
     type: str
@@ -445,113 +452,84 @@ def _set_host_initiators(module, array):
         )
 
 
+def _sync_initiators(module, array, add_field, remove_field, desired, current, error):
+    """Reconcile a single initiator type to the desired set.
+
+    The FlashArray ``patch_hosts`` API exposes three fields per initiator type:
+    ``wwns``/``iqns``/``nqns`` *replace* the whole associated list, while
+    ``add_*`` associates extra initiators and ``remove_*`` disassociates
+    specific ones. We use the ``add_*``/``remove_*`` pair (never the replacing
+    field) so that only the genuinely changed initiators are touched: an
+    unwanted WWN/IQN/NQN is dropped by omitting it from the list, and the
+    initiators that stay are left untouched rather than being removed and
+    re-added (which would needlessly disrupt their existing sessions).
+
+    Returns True if a change was (or would be) made.
+    """
+    to_add = [item for item in desired if item not in current]
+    to_remove = [item for item in current if item not in desired]
+    if not to_add and not to_remove:
+        return False
+    if not module.check_mode:
+        patch = {}
+        if to_add:
+            patch[add_field] = to_add
+        if to_remove:
+            patch[remove_field] = to_remove
+        res = get_with_context(
+            array,
+            "patch_hosts",
+            CONTEXT_API_VERSION,
+            module,
+            names=[module.params["name"]],
+            host=HostPatch(**patch),
+        )
+        check_response(res, module, error)
+    return True
+
+
 def _update_host_initiators(module, array, answer=False):
-    """Change host initiator if iscsi or nvme or add new FC WWNs"""
+    """Reconcile host initiators (iSCSI, NVMe and FC) to the requested set"""
     current_connectors = get_host(module, array)
     if module.params["nqn"]:
-        if module.params["nqn"] != [""]:
-            if sorted(current_connectors.nqns) != sorted(module.params["nqn"]):
-                answer = True
-                if not module.check_mode:
-                    res = get_with_context(
-                        array,
-                        "patch_hosts",
-                        CONTEXT_API_VERSION,
-                        module,
-                        names=[module.params["name"]],
-                        host=HostPatch(nqns=module.params["nqn"]),
-                    )
-                    check_response(
-                        res,
-                        module,
-                        f"Change of NVMe NQNs failed on host {module.params['name']}",
-                    )
-        elif current_connectors.nqns:
+        desired = [] if module.params["nqn"] == [""] else module.params["nqn"]
+        if _sync_initiators(
+            module,
+            array,
+            "add_nqns",
+            "remove_nqns",
+            desired,
+            current_connectors.nqns or [],
+            f"Change of NVMe NQNs failed on host {module.params['name']}",
+        ):
             answer = True
-            if not module.check_mode:
-                res = get_with_context(
-                    array,
-                    "patch_hosts",
-                    CONTEXT_API_VERSION,
-                    module,
-                    names=[module.params["name"]],
-                    host=HostPatch(remove_nqns=current_connectors.nqns),
-                )
-                check_response(
-                    res,
-                    module,
-                    f"Removal of NVMe NQNs failed on host {module.params['name']}",
-                )
     if module.params["iqn"]:
-        if module.params["iqn"] != [""]:
-            if sorted(current_connectors.iqns) != sorted(module.params["iqn"]):
-                answer = True
-                if not module.check_mode:
-                    res = get_with_context(
-                        array,
-                        "patch_hosts",
-                        CONTEXT_API_VERSION,
-                        module,
-                        names=[module.params["name"]],
-                        host=HostPatch(iqns=module.params["iqn"]),
-                    )
-                    check_response(
-                        res,
-                        module,
-                        f"Change of iSCSI IQNs failed on host {module.params['name']}",
-                    )
-        elif current_connectors.iqns:
+        desired = [] if module.params["iqn"] == [""] else module.params["iqn"]
+        if _sync_initiators(
+            module,
+            array,
+            "add_iqns",
+            "remove_iqns",
+            desired,
+            current_connectors.iqns or [],
+            f"Change of iSCSI IQNs failed on host {module.params['name']}",
+        ):
             answer = True
-            if not module.check_mode:
-                res = get_with_context(
-                    array,
-                    "patch_hosts",
-                    CONTEXT_API_VERSION,
-                    module,
-                    names=[module.params["name"]],
-                    host=HostPatch(remove_iqns=current_connectors.iqns),
-                )
-                check_response(
-                    res,
-                    module,
-                    f"Removal of iSCSI IQNs failed on host {module.params['name']}",
-                )
     if module.params["wwns"]:
-        module.params["wwns"] = [wwn.replace(":", "") for wwn in module.params["wwns"]]
-        module.params["wwns"] = [wwn.upper() for wwn in module.params["wwns"]]
-        if module.params["wwns"] != [""]:
-            if sorted(current_connectors.wwns) != sorted(module.params["wwns"]):
-                answer = True
-                if not module.check_mode:
-                    res = get_with_context(
-                        array,
-                        "patch_hosts",
-                        CONTEXT_API_VERSION,
-                        module,
-                        names=module.params["name"],
-                        host=HostPatch(wwns=module.params["wwns"]),
-                    )
-                    check_response(
-                        res,
-                        module,
-                        f"Change of FC WWNs failed on host {module.params['name']}",
-                    )
-        elif current_connectors.wwns:
+        module.params["wwns"] = [
+            wwn.replace(":", "").upper() for wwn in module.params["wwns"]
+        ]
+        desired = [] if module.params["wwns"] == [""] else module.params["wwns"]
+        if _sync_initiators(
+            module,
+            array,
+            "add_wwns",
+            "remove_wwns",
+            desired,
+            current_connectors.wwns or [],
+            f"Change of FC WWNs failed on host {module.params['name']}",
+        ):
             answer = True
-            if not module.check_mode:
-                res = get_with_context(
-                    array,
-                    "patch_hosts",
-                    CONTEXT_API_VERSION,
-                    module,
-                    names=[module.params["name"]],
-                    host=HostPatch(remove_wwns=current_connectors.wwns),
-                )
-                check_response(
-                    res,
-                    module,
-                    f"Removal of FC WWNs failed on host {module.params['name']}",
-                )
     return answer
 
 
