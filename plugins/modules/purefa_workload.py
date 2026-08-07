@@ -29,6 +29,8 @@ options:
     - Name of fleet member on which to perform the workload operation.
     - This requires the array receiving the request is a member of a fleet
       and the context name to be a member of the same fleet.
+    - If not specified, defaults to I(placement) when that is set, otherwise
+      to the name of the array receiving the request.
     type: str
     default: ""
   host:
@@ -65,6 +67,9 @@ options:
   placement:
     description:
     - name of target on which the workload will be deployed
+    - Also used as the request context when I(context) is not specified.
+    - Ignored when I(recommendation) is true, as the recommended target
+      replaces it.
     type: str
   recommendation:
     description:
@@ -704,6 +709,14 @@ def main():
             "array is not a member of a fleet."
         )
     fleet = fleet_items[0].name
+    if not module.params["context"]:
+        # No context given: route the request via the placement target if one was
+        # named, otherwise via the local array. This module already requires a
+        # fleet, so the local array is always a valid fleet context. An empty
+        # context is rejected by the array with an internal error.
+        module.params["context"] = (
+            module.params["placement"] or list(array.get_arrays().items)[0].name
+        )
 
     workload_destroyed = False
     workload_exists = False

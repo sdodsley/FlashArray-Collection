@@ -61,6 +61,13 @@ def _mock_preset_parameter(name, parameter_type):
     return preset_parameter
 
 
+def _mock_get_arrays(name="local-array"):
+    """Response for get_arrays(), which returns only the array being addressed"""
+    local_array = Mock()
+    local_array.name = name
+    return Mock(items=[local_array])
+
+
 class TestDeleteWorkload:
     """Test cases for delete_workload function"""
 
@@ -1037,6 +1044,7 @@ class TestMain:
         mock_fleet.name = "test-fleet"
         mock_fleet_response.items = [mock_fleet]
         mock_array.get_fleets.return_value = mock_fleet_response
+        mock_array.get_arrays.return_value = _mock_get_arrays()
         mock_array.get_workloads.return_value = Mock(status_code=404)
         mock_preset_config = Mock()
         mock_array.get_presets_workload.return_value = Mock(
@@ -1075,6 +1083,7 @@ class TestMain:
             "context": "",
             "name": "test-workload",
             "host": "",
+            "placement": None,
             "eradicate": False,
         }
         mock_ansible_module.return_value = mock_module
@@ -1085,6 +1094,7 @@ class TestMain:
         mock_fleet.name = "test-fleet"
         mock_fleet_response.items = [mock_fleet]
         mock_array.get_fleets.return_value = mock_fleet_response
+        mock_array.get_arrays.return_value = _mock_get_arrays()
         # Workload exists and not destroyed
         mock_workload = Mock()
         mock_workload.destroyed = False
@@ -1124,6 +1134,7 @@ class TestMain:
             "context": "",
             "name": "test-workload",
             "host": "",
+            "placement": None,
             "eradicate": True,
         }
         mock_ansible_module.return_value = mock_module
@@ -1134,6 +1145,7 @@ class TestMain:
         mock_fleet.name = "test-fleet"
         mock_fleet_response.items = [mock_fleet]
         mock_array.get_fleets.return_value = mock_fleet_response
+        mock_array.get_arrays.return_value = _mock_get_arrays()
         # Workload exists and is destroyed
         mock_workload = Mock()
         mock_workload.destroyed = True
@@ -1171,6 +1183,7 @@ class TestMain:
             "context": "",
             "name": "test-workload",
             "host": "",
+            "placement": None,
             "eradicate": False,
         }
         mock_ansible_module.return_value = mock_module
@@ -1181,6 +1194,7 @@ class TestMain:
         mock_fleet.name = "test-fleet"
         mock_fleet_response.items = [mock_fleet]
         mock_array.get_fleets.return_value = mock_fleet_response
+        mock_array.get_arrays.return_value = _mock_get_arrays()
         # Workload does not exist - nothing to delete
         mock_array.get_workloads.return_value = Mock(status_code=404)
         mock_get_array.return_value = mock_array
@@ -1188,3 +1202,97 @@ class TestMain:
         main()
 
         mock_module.exit_json.assert_called_once_with(changed=False)
+
+
+class TestMainContextDefault:
+    """Test cases for defaulting an empty context in main()
+
+    An empty context is sent to the array as context_names=[""], which the
+    Fusion backend rejects with an unhelpful internal error.
+    """
+
+    def _run_main(self, mock_ansible_module, mock_get_array, params):
+        from plugins.modules.purefa_workload import main
+
+        mock_module = Mock()
+        mock_module.params = {
+            "volume_count": None,
+            "state": "absent",
+            "preset": "test-preset",
+            "name": "test-workload",
+            "host": "",
+            "eradicate": False,
+            "placement": None,
+            "context": "",
+        }
+        mock_module.params.update(params)
+        mock_ansible_module.return_value = mock_module
+
+        mock_array = Mock()
+        mock_array.get_rest_version.return_value = "2.40"
+        mock_fleet = Mock()
+        mock_fleet.name = "test-fleet"
+        mock_array.get_fleets.return_value = Mock(status_code=200, items=[mock_fleet])
+        mock_array.get_arrays.return_value = _mock_get_arrays("MUCFA21")
+        # Workload does not exist, so main() exits without acting on it
+        mock_array.get_workloads.return_value = Mock(status_code=404)
+        mock_get_array.return_value = mock_array
+
+        main()
+
+        return mock_module, mock_array
+
+    @patch("plugins.modules.purefa_workload.LooseVersion")
+    @patch("plugins.modules.purefa_workload.get_array")
+    @patch("plugins.modules.purefa_workload.AnsibleModule")
+    @patch("plugins.modules.purefa_workload.HAS_PURESTORAGE", True)
+    def test_empty_context_defaults_to_local_array(
+        self, mock_ansible_module, mock_get_array, mock_loose_version
+    ):
+        """Test main() defaults an empty context to the local array name"""
+        mock_loose_version.side_effect = lambda x: float(x) if x else 0.0
+
+        mock_module, mock_array = self._run_main(
+            mock_ansible_module, mock_get_array, {}
+        )
+
+        assert mock_module.params["context"] == "MUCFA21"
+        mock_array.get_workloads.assert_called_once_with(
+            names=["test-workload"], context_names=["MUCFA21"]
+        )
+
+    @patch("plugins.modules.purefa_workload.LooseVersion")
+    @patch("plugins.modules.purefa_workload.get_array")
+    @patch("plugins.modules.purefa_workload.AnsibleModule")
+    @patch("plugins.modules.purefa_workload.HAS_PURESTORAGE", True)
+    def test_empty_context_defaults_to_placement(
+        self, mock_ansible_module, mock_get_array, mock_loose_version
+    ):
+        """Test main() prefers the placement target over the local array name"""
+        mock_loose_version.side_effect = lambda x: float(x) if x else 0.0
+
+        mock_module, mock_array = self._run_main(
+            mock_ansible_module, mock_get_array, {"placement": "arrayB"}
+        )
+
+        assert mock_module.params["context"] == "arrayB"
+        mock_array.get_arrays.assert_not_called()
+
+    @patch("plugins.modules.purefa_workload.LooseVersion")
+    @patch("plugins.modules.purefa_workload.get_array")
+    @patch("plugins.modules.purefa_workload.AnsibleModule")
+    @patch("plugins.modules.purefa_workload.HAS_PURESTORAGE", True)
+    def test_explicit_context_is_preserved(
+        self, mock_ansible_module, mock_get_array, mock_loose_version
+    ):
+        """Test main() leaves an explicitly supplied context untouched"""
+        mock_loose_version.side_effect = lambda x: float(x) if x else 0.0
+
+        mock_module, mock_array = self._run_main(
+            mock_ansible_module,
+            mock_get_array,
+            {"context": "arrayC", "placement": "arrayB"},
+        )
+
+        assert mock_module.params["context"] == "arrayC"
+        mock_array.get_arrays.assert_not_called()
