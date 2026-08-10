@@ -1,7 +1,11 @@
 minor_changes:
-  - purefa_workload - Return a ``workload`` dict describing the workload the task left behind, covering the fleet member it was placed on, its volumes, the host connected to them, and whether the array has finished working on it, so that a recommendation-based placement and the volumes it produced can be used by later tasks
-  - purefa_workload - Add ``wait`` and ``wait_timeout`` options so that a task only returns once the array has finished provisioning, recovering, expanding, deleting or eradicating the workload, removing the need to poll ``purefa_info`` with ``until``. Waiting is on by default, and is required when ``host`` is set
+  - purefa_workload - Return a ``workload`` dict describing what the task left behind, covering the fleet member it was on, its volumes, the host connected to them, and whether the array has finished
+  - purefa_workload - Add ``wait`` and ``wait_timeout`` so a task waits for the array to finish, replacing the ``purefa_info`` with ``until`` idiom. On by default, and required when ``host`` is set
   - module_utils/api_helpers - Add a generic ``wait_for`` polling helper, with backoff and timeout, for modules that need to wait on an asynchronous array operation
 bugfixes:
-  - purefa_workload - Connect and disconnect a ``host`` only where it is needed, so that naming a host that already sees some of the workload's volumes no longer fails the task, and ``state=expand`` can be used on a workload that is already attached. Connections the host has to volumes outside the workload are left untouched
+  - purefa_workload - Connect and disconnect a ``host`` only where needed, so naming a host that already sees some of the workload's volumes no longer fails, and ``state=expand`` works when attached
+  - purefa_workload - Leave alone any volumes outside the workload that the named ``host`` is connected to, rather than including them when disconnecting
   - purefa_workload - Fail with a clear message, rather than a traceback, when the workload's volumes cannot be listed while connecting or disconnecting a host
+  - purefa_workload - Stop ``state=expand`` from creating volumes when running in check mode, where it previously added them for real
+  - purefa_workload - Give up on a placement recommendation once ``wait_timeout`` is reached, and fail clearly when Fusion reports that it cannot find a placement, rather than polling forever
+  - purefa_workload - Warn when ``placement`` is given alongside a different ``context``, rather than silently using the context. 

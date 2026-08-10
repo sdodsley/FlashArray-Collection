@@ -494,3 +494,76 @@ class TestWaitFor:
         probe.assert_not_called()
         assert clock.sleeps == []
         mock_module.fail_json.assert_not_called()
+
+
+class TestWaitForSkipInCheckMode:
+    """Some operations are safe to wait on under check mode
+
+    A calculation that changes nothing can and should still be polled, so the
+    task can report what it would have produced.
+    """
+
+    def test_polls_when_skipping_is_disabled(self, mock_module, clock):
+        """Test the wait runs under check mode when told the operation is safe"""
+        mock_module.check_mode = True
+        finished = _done()
+        probe = Mock(side_effect=[_transient(), finished])
+
+        result = wait_for(
+            mock_module,
+            probe=probe,
+            is_done=lambda value: value.status == "ready",
+            timeout=300,
+            description="a calculation to finish",
+            skip_in_check_mode=False,
+        )
+
+        assert result is finished
+        assert probe.call_count == 2
+        assert clock.sleeps == [5]
+
+    def test_still_fails_on_timeout_when_skipping_is_disabled(self, mock_module, clock):
+        """A safe operation that never finishes is still a failure"""
+        mock_module.check_mode = True
+
+        with pytest.raises(Exception, match="fail_json called"):
+            wait_for(
+                mock_module,
+                probe=Mock(return_value=_transient()),
+                is_done=lambda value: False,
+                timeout=10,
+                description="a calculation to finish",
+                skip_in_check_mode=False,
+            )
+
+    def test_default_still_skips_under_check_mode(self, mock_module, clock):
+        """The default is unchanged: no probe, no poll, no failure"""
+        mock_module.check_mode = True
+        probe = Mock()
+
+        result = wait_for(
+            mock_module,
+            probe=probe,
+            is_done=lambda value: False,
+            timeout=300,
+            description="workload foo to become ready",
+        )
+
+        assert result is None
+        probe.assert_not_called()
+        mock_module.fail_json.assert_not_called()
+
+    def test_irrelevant_outside_check_mode(self, mock_module, clock):
+        """The flag only governs check mode, not normal runs"""
+        finished = _done()
+
+        result = wait_for(
+            mock_module,
+            probe=Mock(return_value=finished),
+            is_done=lambda value: value.status == "ready",
+            timeout=300,
+            description="a calculation to finish",
+            skip_in_check_mode=False,
+        )
+
+        assert result is finished

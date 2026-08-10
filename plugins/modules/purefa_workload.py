@@ -71,7 +71,9 @@ options:
   placement:
     description:
     - name of target on which the workload will be deployed
-    - Also used as the request context when I(context) is not specified.
+    - A workload is deployed on its I(context), and the API has no separate
+      placement, so this only takes effect when I(context) is not specified.
+      Setting both is warned about and I(context) wins.
     - Ignored when I(recommendation) is true, as the recommended target
       replaces it.
     type: str
@@ -272,9 +274,8 @@ EXAMPLES = r"""
 RETURN = r"""
 workload:
     description: A dictionary describing the workload. Returned on every action
-        that leaves a workload in place. Empty only when there is genuinely no
-        workload to describe - after eradication, or in check mode for a create
-        that has not happened.
+        that leaves a workload in place, and empty only when no workload remains
+        to describe, as after an eradication.
     type: dict
     returned: success
     contains:
@@ -329,12 +330,13 @@ workload:
             sample: '2025-08-07 17:20:11'
         time_remaining:
             description: Milliseconds until a destroyed workload is eradicated.
-                Null unless I(destroyed) is true.
+                Null unless I(destroyed) is true, and null in check mode.
             type: int
             sample: 86400000
         volumes:
             description: Names of the volumes belonging to this workload, as they
-                stand after the action.
+                stand after the action. In check mode a create reports an empty 
+                list and an expand reports only the volumes that already exist.
             type: list
             elements: str
             sample: ['foo-vol1', 'foo-vol2']
@@ -544,21 +546,37 @@ def _build_workload_parameters(module, preset_config):
     return normalized_parameters
 
 
-def _workload_completed(module, workload):
-    """True when the array has no operation in flight for this workload.
+def _status_completed(module, name, status):
+    """True when the array has no operation in flight for a workload
 
     Anything unrecognised counts as in-flight, so a status added by a future
     Purity release can never be mistaken for success.
     """
-    status = getattr(workload, "status", None)
     if status in TERMINAL_STATUSES:
         return True
     if status not in TRANSIENT_STATUSES:
         module.warn(
-            f"Workload {workload.name} reported unrecognised status {status!r}. "
+            f"Workload {name} reported unrecognised status {status!r}. "
             f"Treating as in progress. This collection may need updating."
         )
     return False
+
+
+def _workload_completed(module, workload):
+    """_status_completed() for an already-read Workload"""
+    return _status_completed(module, workload.name, getattr(workload, "status", None))
+
+
+def _timestamp(milliseconds=None):
+    """Format array epoch milliseconds as UTC, defaulting to now"""
+    seconds = time.time() if milliseconds is None else milliseconds / 1000
+    return time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(seconds))
+
+
+# Check mode has two rules in this module. An action function decides what to
+# report, since only it knows what its own action would have produced. Every other
+# function guards its own writes, so that a write cannot escape by being called
+# from somewhere new. Waiting is handled once, in wait_for().
 
 
 def _workload_volume_names(module, array, name, context):
@@ -589,35 +607,71 @@ def _connected_volume_names(module, array, context, volume_names, host):
     return {connection.volume.name for connection in list(res.items)}
 
 
-def _workload_facts(module, array, workload, context, volume_names=None):
-    """Build the flat fact dict for a Workload object
+def _facts(
+    module,
+    context,
+    name=None,
+    preset=None,
+    status=None,
+    created=None,
+    volumes=None,
+    destroyed=False,
+    status_details=None,
+    time_remaining=None,
+):
+    """The workload contract
+
+    The defaults are what a workload that does not exist yet can honestly report,
+    so a predicted create only has to name what it knows. name and preset are not
+    among them: both are nullable on a real workload - a destroyed preset reports a
+    null name - so defaulting them to the requested values would report a parameter
+    as though the array had said it.
+    """
+    return {
+        "name": name,
+        "context": context,
+        "preset": preset,
+        "status": status,
+        # Derived here, so it can never disagree with the status beside it
+        "completed": _status_completed(module, name, status),
+        "status_details": status_details or [],
+        "destroyed": destroyed,
+        "time_remaining": time_remaining,
+        # A workload that does not exist yet would be created about now
+        "created": created or _timestamp(),
+        "volumes": volumes or [],
+        "host": module.params["host"] or None,
+    }
+
+
+def _workload_facts(module, array, workload, context, volume_names=None, **changes):
+    """Describe a workload the array reported
 
     volume_names is passed in by callers that have already read them, so a path
-    doing host work does not read the same list twice. Returns an empty dict,
-    without reading anything, when there is no workload to describe at all.
+    doing host work does not read the same list twice.
+
+    changes replaces fields the caller knows differ from what the array said,
+    which is how check mode reports a state it has not applied. They land on the
+    values _facts() is given rather than the dict it returns, so that everything
+    _facts() derives is derived from the changed values.
     """
     if not workload:
         return {}
     if volume_names is None:
-        # workload.name, not module.params["name"] - after a rename the workload
-        # reports its new name, and its volumes must be read under that
+        # Read under the name the workload still answers to, which for a rename is
+        # the old one
         volume_names = _workload_volume_names(module, array, workload.name, context)
-    return {
+    values = {
         "name": workload.name,
         "context": workload.context.name,
         "preset": workload.preset.name,
         "status": workload.status,
-        "completed": _workload_completed(module, workload),
-        "status_details": workload.status_details,
+        "created": _timestamp(workload.created),
         "destroyed": workload.destroyed,
+        "status_details": workload.status_details,
         "time_remaining": getattr(workload, "time_remaining", None),
-        "created": time.strftime(
-            "%Y-%m-%d %H:%M:%S",
-            time.gmtime(workload.created / 1000),
-        ),
-        "volumes": volume_names,
-        "host": module.params["host"] or None,
     }
+    return _facts(module, volumes=volume_names, **{**values, **changes})
 
 
 def _read_workload(module, array, context):
@@ -716,13 +770,51 @@ def _wait_for_connections(module, array, name, context, connected):
     )
 
 
-def _wait_for_volumes(module, array, context, volume_names):
+def _wait_for_recommendation(module, array, context, calculation):
+    """Wait for Fusion to finish calculating a placement recommendation
+
+    Unlike a workload, this endpoint reports a real failure state, so this is the
+    one waiter with something for wait_for's is_failed hook. Runs under check
+    mode: it reads a calculation and changes nothing on the array.
+    """
+
+    def probe():
+        res = array.get_workloads_placement_recommendations(
+            names=[calculation], context_names=[context]
+        )
+        check_response(res, module, "Failed to read placement recommendation")
+        return list(res.items)[0]
+
+    return wait_for(
+        module,
+        probe=probe,
+        is_done=lambda result: result.status == "completed",
+        is_failed=lambda result: (
+            f"Fusion could not find a placement for preset "
+            f"{module.params['preset']}"
+            if result.status == "failed"
+            else None
+        ),
+        timeout=module.params["wait_timeout"],
+        description=(
+            f"a placement recommendation for preset {module.params['preset']}"
+        ),
+        # Polled in check mode too: a calculation changes nothing on the array,
+        # and it is what lets a check run report the target Fusion would choose
+        skip_in_check_mode=False,
+    )
+
+
+def _wait_for_volumes(module, array, context, volume_names, workload):
     """Wait until new volumes exist and the workload has settled back to ready
 
     Volumes carry no lifecycle status of their own, so the volume half of this
     can only test existence, and the POST that created them has already
     returned. The workload half is what covers the configuration the preset
     derives from those volumes.
+
+    Falls back to the workload it was given when there was nothing to wait for,
+    so callers never have to handle an absent result.
     """
 
     def probe():
@@ -755,15 +847,22 @@ def _wait_for_volumes(module, array, context, volume_names):
         ),
         detail=lambda state: _status_detail(state["workload"]),
     )
-    return state["workload"] if state else None
+    return state["workload"] if state else workload
 
 
 def _create_volume(module, array):
     """Create an actual volume in a workload
 
     Returns the array-generated volume name, so that a later wait can target
-    exactly the volumes this task created.
+    exactly the volumes this task created, or None in check mode where no volume
+    was created and so none can be named.
+
+    The check-mode guard below is the second of two: expand_workload does not call
+    this at all in check mode. It is kept rather than removed as unreachable so
+    that no future caller can create a volume by forgetting to guard.
     """
+    if module.check_mode:
+        return None
     res = array.post_volumes(
         volume=VolumePost(
             workload=WorkloadConfigurationReference(
@@ -843,34 +942,40 @@ def create_workload(module, array, fleet, preset_config):
         )
         check_response(res, module, "Recommendation calculation failure")
         workload_calc = list(res.items)[0].name
-        # Wait for the workload calculation to complete
-        result = list(
-            array.get_workloads_placement_recommendations(
-                names=[workload_calc], context_names=[module.params["context"]]
-            ).items
-        )[0]
-        while result.status != "completed":
-            time.sleep(1)
-            result = list(
-                array.get_workloads_placement_recommendations(
-                    names=[workload_calc], context_names=[module.params["context"]]
-                ).items
-            )[0]
+        # A calculation, not a change, so this runs in check mode too - it is what
+        # lets a check-mode run report the target Fusion would have chosen
+        result = _wait_for_recommendation(
+            module, array, module.params["context"], workload_calc
+        )
         # Replace any defined placement with the result from the recommendation
         module.params["placement"] = result.results[0].placements[0].targets[0].name
         module.params["context"] = module.params["placement"]
-    workload_facts = {}
-    if not module.check_mode:
+    context = module.params["context"]
+    if module.check_mode:
+        # Nothing exists to read, so everything reported is predicted. The context
+        # is the resolved one, which for a recommendation is Fusion's choice.
+        # Only what a create can know is named here. created and volumes are left
+        # to _facts() to default, because the array generates the volume names and
+        # the workload would come into existence about now. name and preset have to
+        # be passed, since _facts() cannot tell a value that was not supplied from
+        # one the array reports as null.
+        workload_facts = _facts(
+            module,
+            name=module.params["name"],
+            context=context,
+            preset=module.params["preset"],
+            status="ready" if module.params["wait"] else "creating",
+        )
+    else:
         res = array.post_workloads(
             names=[module.params["name"]],
             preset_names=[module.params["preset"]],
             workload=WorkloadPost(parameters=workload_parameters),
-            context_names=[module.params["context"]],
+            context_names=[context],
         )
         check_response(
             res, module, f"Failed to create workload {module.params['name']}"
         )
-        context = module.params["context"]
         workload = list(res.items)[0]
         if module.params["wait"]:
             workload = _wait_for_status(module, array, context, "ready")
@@ -890,8 +995,12 @@ def expand_workload(module, array, fleet, volume_configs, workload):
     volume_names = []
     for vol_config in volume_configs:
         if vol_config.name == module.params["volume_configuration"]:
-            for x in range(module.params["volume_count"]):
+            for _volume in range(module.params["volume_count"]):
                 changed = True
+                # Creating storage is the costliest thing this module does, so it
+                # is guarded here as well as inside _create_volume
+                if module.check_mode:
+                    continue
                 volume_names.append(_create_volume(module, array))
     if not changed:
         module.fail_json(
@@ -900,33 +1009,54 @@ def expand_workload(module, array, fleet, volume_configs, workload):
             )
         )
     context = module.params["context"]
-    if module.params["wait"] and not module.check_mode:
+    if module.params["wait"]:
         # Re-read rather than reuse main()'s workload, which predates the volumes
-        workload = _wait_for_volumes(module, array, context, volume_names)
+        workload = _wait_for_volumes(module, array, context, volume_names, workload)
     # The full set, not just the volumes this task added - the host must end up
     # able to see all of them, and the facts report the grown set
     all_volume_names = _workload_volume_names(module, array, workload.name, context)
     if module.params["host"] != "":
         _connect_host(module, array, workload.name, context, all_volume_names)
 
-    # Without a wait the workload itself is still main()'s pre-expand read, which
-    # is accurate because only its volumes changed here
-    module.exit_json(
-        changed=changed,
-        workload=_workload_facts(module, array, workload, context, all_volume_names),
-    )
+    if module.check_mode:
+        # The volumes that would be added cannot be named in advance, so only the
+        # existing ones are listed
+        workload_facts = _workload_facts(
+            module,
+            array,
+            workload,
+            context,
+            all_volume_names,
+            status="ready" if module.params["wait"] else workload.status,
+        )
+    else:
+        # Without a wait this is still main()'s pre-expand read, which is accurate
+        # because only the workload's volumes changed here
+        workload_facts = _workload_facts(
+            module, array, workload, context, all_volume_names
+        )
+    module.exit_json(changed=changed, workload=workload_facts)
 
 
 def delete_workload(module, array, workload=None):
     """Delete the workload"""
     changed = True
     context = module.params["context"]
-    # Only built in check mode, where nothing is sent and the pre-delete state is
-    # the last known. Outside it this would be an immediately discarded read.
-    workload_facts = (
-        _workload_facts(module, array, workload, context) if module.check_mode else {}
-    )
-    if not module.check_mode:
+    if module.check_mode:
+        # Nothing is sent, so report the state this run would have produced
+        if module.params["eradicate"]:
+            # An eradicate leaves nothing behind, as the real run also reports
+            workload_facts = {}
+        else:
+            workload_facts = _workload_facts(
+                module,
+                array,
+                workload,
+                context,
+                destroyed=True,
+                status="destroyed" if module.params["wait"] else "destroying",
+            )
+    else:
         res = array.patch_workloads(
             names=[module.params["name"]],
             workload=WorkloadPatch(destroyed=True),
@@ -955,7 +1085,8 @@ def eradicate_workload(module, array):
         check_response(res, module, "Workload eradication failed")
         if module.params["wait"]:
             _wait_for_absent(module, array, module.params["context"])
-    # The workload no longer exists, so there is nothing to describe
+    # The workload no longer exists, so there is nothing to describe. The same is
+    # true of the run this predicts, so check mode reports it identically.
     module.exit_json(changed=changed, workload={})
 
 
@@ -963,12 +1094,17 @@ def recover_workload(module, array, workload=None):
     """Recover the workload and optionally reconnect to host"""
     changed = True
     context = module.params["context"]
-    # Only built in check mode, where nothing is sent and the destroyed state is
-    # the last known
-    workload_facts = (
-        _workload_facts(module, array, workload, context) if module.check_mode else {}
-    )
-    if not module.check_mode:
+    if module.check_mode:
+        # Nothing is sent, so report the state this run would have produced
+        workload_facts = _workload_facts(
+            module,
+            array,
+            workload,
+            context,
+            destroyed=False,
+            status="ready" if module.params["wait"] else "recovering",
+        )
+    else:
         res = array.patch_workloads(
             names=[module.params["name"]],
             workload=WorkloadPatch(destroyed=False),
@@ -999,12 +1135,12 @@ def rename_workload(module, array, workload=None):
     """
     changed = True
     context = module.params["context"]
-    # Only built in check mode, where nothing is sent and the workload therefore
-    # still has its old name
-    workload_facts = (
-        _workload_facts(module, array, workload, context) if module.check_mode else {}
-    )
-    if not module.check_mode:
+    if module.check_mode:
+        # Nothing is sent, so report the name this run would have given it
+        workload_facts = _workload_facts(
+            module, array, workload, context, name=module.params["rename"]
+        )
+    else:
         res = array.patch_workloads(
             names=[module.params["name"]],
             workload=WorkloadPatch(name=module.params["rename"]),
@@ -1107,6 +1243,20 @@ def main():
             msg="host cannot be used with wait: false. Connecting or "
             "disconnecting a host requires the workload's volume set to have "
             "settled first, which only happens when waiting."
+        )
+
+    # A workload is created on its context, and the API has no separate placement
+    # to send, so the two are the same thing. When they disagree the context wins,
+    # which is worth saying out loud rather than dropping the placement silently.
+    if (
+        module.params["context"]
+        and module.params["placement"]
+        and module.params["context"] != module.params["placement"]
+    ):
+        module.warn(
+            f"placement {module.params['placement']} is ignored because context "
+            f"{module.params['context']} was given. A workload is created on its "
+            f"context, which the API has no separate placement for."
         )
 
     array = get_array(module)

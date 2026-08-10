@@ -76,6 +76,10 @@ def _mock_get_arrays(name="local-array"):
 CREATED_MS = 1754587211000
 CREATED_STR = "2025-08-07 17:20:11"
 
+#: What _timestamp() is frozen to where a test predicts a create's creation time,
+#: which would otherwise be whatever the clock said
+PREDICTED_NOW = "2026-01-01 00:00:00"
+
 
 def _mock_workload(
     name="test-workload",
@@ -157,6 +161,17 @@ def _mock_array(volume_names=None, connected=None, host="host1"):
     return array
 
 
+def _mock_recommendation(target="arrayB", status="completed"):
+    """A calculated placement recommendation, as get_..._recommendations returns"""
+    result = Mock(status=status)
+    placement_target = Mock()
+    placement_target.name = target
+    result.results = [Mock()]
+    result.results[0].placements = [Mock()]
+    result.results[0].placements[0].targets = [placement_target]
+    return result
+
+
 def _expected_facts(
     name="test-workload",
     context="arrayB",
@@ -167,11 +182,14 @@ def _expected_facts(
     status_details=None,
     volumes=None,
     host=None,
+    created=CREATED_STR,
 ):
     """The fact dict _workload_facts() builds for the matching _mock_workload()
 
     Flat, with the name as a field rather than the key, the module-owned
     completed flag derived from the status, and the volume set and acted-on host.
+    Also used for check-mode predictions, where created and volumes are among the
+    values that cannot be known in advance.
     """
     return {
         "name": name,
@@ -182,7 +200,7 @@ def _expected_facts(
         "status_details": [] if status_details is None else status_details,
         "destroyed": destroyed,
         "time_remaining": time_remaining,
-        "created": CREATED_STR,
+        "created": created,
         "volumes": list(WORKLOAD_VOLUMES) if volumes is None else volumes,
         "host": host,
     }
@@ -193,6 +211,9 @@ def _params(**overrides):
     params = {
         "name": "test-workload",
         "context": "arrayB",
+        # Fleet-qualified by main() before any action runs
+        "preset": None,
+        "placement": None,
         "host": "",
         "eradicate": False,
         "recommendation": False,
@@ -208,7 +229,7 @@ class TestDeleteWorkload:
     """Test cases for delete_workload function"""
 
     def test_delete_workload_check_mode(self):
-        """Check mode sends nothing, so the pre-delete state is what is known"""
+        """Check mode predicts the destroyed workload the run would leave"""
         mock_module = Mock()
         mock_module.check_mode = True
         mock_module.params = _params()
@@ -217,9 +238,36 @@ class TestDeleteWorkload:
         delete_workload(mock_module, mock_array, _mock_workload())
 
         mock_array.patch_workloads.assert_not_called()
+        # wait is on, so a real run would settle on destroyed
         mock_module.exit_json.assert_called_once_with(
-            changed=True, workload=_expected_facts()
+            changed=True, workload=_expected_facts(status="destroyed", destroyed=True)
         )
+
+    def test_delete_workload_check_mode_without_wait(self):
+        """Without waiting a real run returns mid-flight, so that is predicted"""
+        mock_module = Mock()
+        mock_module.check_mode = True
+        mock_module.params = _params(wait=False)
+        mock_array = _mock_array()
+
+        delete_workload(mock_module, mock_array, _mock_workload())
+
+        mock_module.exit_json.assert_called_once_with(
+            changed=True, workload=_expected_facts(status="destroying", destroyed=True)
+        )
+
+    def test_delete_with_eradicate_check_mode_predicts_nothing_left(self):
+        """An eradicate leaves no workload, which is what a real run reports"""
+        mock_module = Mock()
+        mock_module.check_mode = True
+        mock_module.params = _params(eradicate=True)
+        mock_array = _mock_array()
+
+        delete_workload(mock_module, mock_array, _mock_workload())
+
+        mock_array.patch_workloads.assert_not_called()
+        mock_array.delete_workloads.assert_not_called()
+        mock_module.exit_json.assert_called_once_with(changed=True, workload={})
 
 
 class TestEradicateWorkload:
@@ -242,7 +290,7 @@ class TestRecoverWorkload:
     """Test cases for recover_workload function"""
 
     def test_recover_workload_check_mode(self):
-        """Check mode sends nothing, so the destroyed state is what is known"""
+        """Check mode predicts the recovered workload, not the destroyed one read"""
         mock_module = Mock()
         mock_module.check_mode = True
         mock_module.params = _params()
@@ -254,7 +302,22 @@ class TestRecoverWorkload:
 
         mock_array.patch_workloads.assert_not_called()
         mock_module.exit_json.assert_called_once_with(
-            changed=True, workload=_expected_facts(status="destroyed", destroyed=True)
+            changed=True, workload=_expected_facts(status="ready", destroyed=False)
+        )
+
+    def test_recover_workload_check_mode_without_wait(self):
+        """Without waiting a real run returns while still recovering"""
+        mock_module = Mock()
+        mock_module.check_mode = True
+        mock_module.params = _params(wait=False)
+        mock_array = _mock_array()
+
+        recover_workload(
+            mock_module, mock_array, _mock_workload(status="destroyed", destroyed=True)
+        )
+
+        mock_module.exit_json.assert_called_once_with(
+            changed=True, workload=_expected_facts(status="recovering", destroyed=False)
         )
 
 
@@ -262,7 +325,7 @@ class TestRenameWorkload:
     """Test cases for rename_workload function"""
 
     def test_rename_workload_check_mode(self):
-        """Check mode sends nothing, so the workload still has its old name"""
+        """Check mode predicts the new name, not the one the workload has now"""
         mock_module = Mock()
         mock_module.check_mode = True
         mock_module.params = _params(name="old-workload", rename="new-workload")
@@ -272,15 +335,26 @@ class TestRenameWorkload:
 
         mock_array.patch_workloads.assert_not_called()
         mock_module.exit_json.assert_called_once_with(
-            changed=True, workload=_expected_facts(name="old-workload")
+            changed=True, workload=_expected_facts(name="new-workload")
+        )
+        # The volumes are still read under the name the workload answers to now
+        assert (
+            mock_array.get_volumes.call_args.kwargs["filter"]
+            == "workload.name='old-workload'"
         )
 
 
 class TestCreateWorkload:
     """Test cases for create_workload function"""
 
-    def test_create_workload_check_mode(self):
-        """A create that has not happened has no workload to describe"""
+    @patch("plugins.modules.purefa_workload._timestamp", return_value=PREDICTED_NOW)
+    def test_create_workload_check_mode(self, mock_timestamp):
+        """Check mode predicts the workload the run would create
+
+        Nothing exists to read, so every value is either a parameter, unknowable,
+        or - for the creation time - approximately now. Only the volume names stay
+        empty, because the array generates those and a guess could be bound to.
+        """
         mock_module = Mock()
         mock_module.check_mode = True
         mock_module.params = _params(preset="test-preset", context="pod1")
@@ -297,7 +371,38 @@ class TestCreateWorkload:
 
         create_workload(mock_module, mock_array, mock_fleet, mock_preset_config)
 
-        mock_module.exit_json.assert_called_once_with(changed=True, workload={})
+        mock_array.post_workloads.assert_not_called()
+        mock_module.exit_json.assert_called_once_with(
+            changed=True,
+            workload=_expected_facts(
+                context="pod1",
+                preset="test-preset",
+                status="ready",
+                volumes=[],
+                created=PREDICTED_NOW,
+            ),
+        )
+
+    @patch("plugins.modules.purefa_workload._timestamp", return_value=PREDICTED_NOW)
+    def test_create_workload_check_mode_without_wait(self, mock_timestamp):
+        """Without waiting a real run returns while the workload is creating"""
+        mock_module = Mock()
+        mock_module.check_mode = True
+        mock_module.params = _params(preset="test-preset", context="pod1", wait=False)
+        mock_array = _mock_array()
+
+        create_workload(mock_module, mock_array, Mock(), Mock(parameters=[]))
+
+        mock_module.exit_json.assert_called_once_with(
+            changed=True,
+            workload=_expected_facts(
+                context="pod1",
+                preset="test-preset",
+                status="creating",
+                volumes=[],
+                created=PREDICTED_NOW,
+            ),
+        )
 
 
 class TestWorkloadCompleted:
@@ -765,10 +870,12 @@ class TestCreateWorkloadSuccess:
     @patch("plugins.modules.purefa_workload._build_workload_parameters")
     @patch("plugins.modules.purefa_workload.WorkloadPlacementRecommendation")
     @patch("plugins.modules.purefa_workload.WorkloadPost")
+    @patch("plugins.modules.purefa_workload._wait_for_recommendation")
     @patch("plugins.modules.purefa_workload.check_response")
     def test_create_workload_passes_parameters_to_recommendation_and_create(
         self,
         mock_check_response,
+        mock_wait_for_recommendation,
         mock_workload_post,
         mock_recommendation,
         mock_build_workload_parameters,
@@ -793,15 +900,7 @@ class TestCreateWorkloadSuccess:
         mock_array.post_workloads_placement_recommendations.return_value = Mock(
             status_code=200, items=[mock_calc]
         )
-        recommendation_result = Mock(status="completed")
-        placement_target = Mock()
-        placement_target.name = "arrayB"
-        recommendation_result.results = [Mock()]
-        recommendation_result.results[0].placements = [Mock()]
-        recommendation_result.results[0].placements[0].targets = [placement_target]
-        mock_array.get_workloads_placement_recommendations.return_value = Mock(
-            items=[recommendation_result]
-        )
+        mock_wait_for_recommendation.return_value = _mock_recommendation("arrayB")
         mock_build_workload_parameters.return_value = [Mock(name="param-1")]
         mock_preset_config = Mock()
 
@@ -828,26 +927,22 @@ class TestCreateWorkloadSuccess:
         )
         assert mock_module.exit_json.call_args.kwargs["workload"]["context"] == "arrayB"
 
-    def test_create_workload_check_mode(self):
-        """Test create_workload in check mode"""
+    def test_create_workload_check_mode_sends_no_create(self):
+        """Test create_workload posts nothing in check mode"""
         mock_module = Mock()
         mock_module.check_mode = True
         mock_module.params = _params(preset="test-preset", context="pod1")
         mock_array = _mock_array()
-        mock_fleet = Mock()
         mock_preset_config = Mock()
         mock_preset_config.parameters = []
-        mock_preset_config.periodic_replication_configurations = Mock()
-        mock_preset_config.placement_configurations = Mock()
-        mock_preset_config.qos_configurations = Mock()
-        mock_preset_config.snapshot_configurations = Mock()
-        mock_preset_config.volume_configurations = Mock()
-        mock_preset_config.workload_tags = Mock()
 
-        create_workload(mock_module, mock_array, mock_fleet, mock_preset_config)
+        create_workload(mock_module, mock_array, Mock(), mock_preset_config)
 
         mock_array.post_workloads.assert_not_called()
-        mock_module.exit_json.assert_called_once_with(changed=True, workload={})
+        # The contract keeps its shape, so result.workload.context works under --check
+        assert set(mock_module.exit_json.call_args.kwargs["workload"]) == set(
+            _expected_facts()
+        )
 
 
 class TestExpandWorkloadSuccess:
@@ -1090,6 +1185,7 @@ class TestCreateVolume:
         from plugins.modules.purefa_workload import _create_volume
 
         mock_module = Mock()
+        mock_module.check_mode = False
         mock_module.params = _params(volume_configuration="vol-config", context="pod1")
         mock_array = _mock_array()
         created_volume = Mock()
@@ -1392,7 +1488,13 @@ class TestMain:
         mock_loose_version.side_effect = lambda x: float(x) if x else 0.0
 
         mock_module = Mock()
-        mock_module.params = {"volume_count": None, "host": "", "wait": True}
+        mock_module.params = {
+            "volume_count": None,
+            "host": "",
+            "wait": True,
+            "context": "",
+            "placement": None,
+        }
         mock_module.fail_json.side_effect = SystemExit(1)
         mock_ansible_module.return_value = mock_module
         mock_array = _mock_array()
@@ -1422,6 +1524,7 @@ class TestMain:
             "volume_count": -1,
             "host": "",
             "wait": True,
+            "placement": None,
             "state": "present",
             "preset": "test-preset",
             "context": "",
@@ -1844,10 +1947,15 @@ class TestWaitDisabled:
             changed=True, workload=_expected_facts(name="new-workload", context="pod1")
         )
 
-    @patch("plugins.modules.purefa_workload.wait_for")
-    @patch("plugins.modules.purefa_workload._create_volume")
-    def test_expand_does_not_wait_in_check_mode(self, mock_create_vol, mock_wait_for):
-        """Waiting is a complete no-op under check mode"""
+    @patch("plugins.modules.purefa_workload.wait_for", return_value=None)
+    @patch("plugins.modules.purefa_workload._create_volume", return_value=None)
+    def test_expand_wait_is_a_no_op_in_check_mode(self, mock_create_vol, mock_wait_for):
+        """Waiting short-circuits, and the workload falls back to the one given
+
+        wait_for returns None under check mode, so _wait_for_volumes has nothing to
+        report and hands back the workload it was passed. Without that fallback the
+        caller would be building facts from None.
+        """
         mock_module = Mock()
         mock_module.check_mode = True
         mock_module.params = _params(
@@ -1855,16 +1963,18 @@ class TestWaitDisabled:
             context="pod1",
             volume_configuration="vol-config1",
             volume_count=1,
-            wait=True,
         )
         vol_config = Mock()
         vol_config.name = "vol-config1"
-
         mock_array = _mock_array()
 
         expand_workload(mock_module, mock_array, Mock(), [vol_config], _mock_workload())
 
-        mock_wait_for.assert_not_called()
+        # The facts describe the workload handed in, not None
+        assert (
+            mock_module.exit_json.call_args.kwargs["workload"]["name"]
+            == "test-workload"
+        )
         mock_array.get_workloads.assert_not_called()
 
     @patch("plugins.modules.purefa_workload.wait_for")
@@ -1978,12 +2088,14 @@ class TestWaitForCreate:
     @patch("plugins.modules.purefa_workload._build_workload_parameters")
     @patch("plugins.modules.purefa_workload.WorkloadPlacementRecommendation")
     @patch("plugins.modules.purefa_workload.WorkloadPost")
+    @patch("plugins.modules.purefa_workload._wait_for_recommendation")
     @patch("plugins.modules.purefa_workload.wait_for")
     @patch("plugins.modules.purefa_workload.check_response")
     def test_create_with_recommendation_polls_the_chosen_target(
         self,
         mock_check_response,
         mock_wait_for,
+        mock_wait_for_recommendation,
         mock_workload_post,
         mock_recommendation,
         mock_build_workload_parameters,
@@ -2004,15 +2116,7 @@ class TestWaitForCreate:
         mock_array.post_workloads_placement_recommendations.return_value = Mock(
             status_code=200, items=[mock_calc]
         )
-        recommendation_result = Mock(status="completed")
-        placement_target = Mock()
-        placement_target.name = "arrayB"
-        recommendation_result.results = [Mock()]
-        recommendation_result.results[0].placements = [Mock()]
-        recommendation_result.results[0].placements[0].targets = [placement_target]
-        mock_array.get_workloads_placement_recommendations.return_value = Mock(
-            items=[recommendation_result]
-        )
+        mock_wait_for_recommendation.return_value = _mock_recommendation("arrayB")
         mock_array.post_workloads.return_value = _mock_workload_response(
             context="arrayB", status="creating"
         )
@@ -2580,3 +2684,734 @@ class TestVolumeReadsHappenOnce:
 
         mock_array.get_volumes.assert_not_called()
         mock_module.exit_json.assert_called_once_with(changed=True, workload={})
+
+
+#: Every way this module can change the array. Asserted as a set so a future
+#: unguarded write is caught wherever it is added, not just where one is expected.
+WRITE_METHODS = (
+    "post_volumes",
+    "post_workloads",
+    "patch_workloads",
+    "delete_workloads",
+    "post_connections",
+    "delete_connections",
+)
+
+
+def _writes(mock_array):
+    """Which write endpoints were called, and how often"""
+    return {
+        method: getattr(mock_array, method).call_count
+        for method in WRITE_METHODS
+        if getattr(mock_array, method).call_count
+    }
+
+
+class TestCheckModeMakesNoChanges:
+    """--check must not touch the array on any path
+
+    The one deliberate exception is the placement recommendation, which is a
+    calculation rather than a change and is covered separately.
+    """
+
+    def _module(self, **params):
+        module = Mock()
+        module.check_mode = True
+        module.params = _params(**params)
+        return module
+
+    @patch("plugins.modules.purefa_workload.VolumePost")
+    @patch("plugins.modules.purefa_workload.WorkloadConfigurationReference")
+    def test_expand_creates_no_volumes(self, mock_config_ref, mock_volume_post):
+        """Test expand posts no volumes under --check
+
+        The regression: _create_volume had no guard, so a --check run of
+        volume_count: 3 created three volumes for real.
+        """
+        mock_module = self._module(
+            preset="test-preset",
+            context="pod1",
+            volume_configuration="vol-config1",
+            volume_count=3,
+        )
+        mock_array = _mock_array()
+        vol_config = Mock()
+        vol_config.name = "vol-config1"
+
+        expand_workload(
+            mock_module,
+            mock_array,
+            Mock(),
+            [vol_config],
+            _mock_workload(context="pod1"),
+        )
+
+        assert _writes(mock_array) == {}
+        # The change is still reported, it is just not made
+        assert mock_module.exit_json.call_args.kwargs["changed"] is True
+
+    def test_create_writes_nothing(self):
+        """Test create posts no workload under --check"""
+        mock_module = self._module(preset="test-preset", context="pod1")
+        mock_array = _mock_array()
+
+        create_workload(mock_module, mock_array, Mock(), Mock(parameters=[]))
+
+        assert _writes(mock_array) == {}
+
+    @patch("plugins.modules.purefa_workload.WorkloadPatch")
+    def test_delete_writes_nothing(self, mock_workload_patch):
+        """Test delete patches nothing under --check"""
+        mock_module = self._module(context="pod1")
+        mock_array = _mock_array()
+
+        delete_workload(mock_module, mock_array, _mock_workload())
+
+        assert _writes(mock_array) == {}
+
+    @patch("plugins.modules.purefa_workload.WorkloadPatch")
+    def test_delete_with_eradicate_writes_nothing(self, mock_workload_patch):
+        """Test delete + eradicate neither patches nor deletes under --check"""
+        mock_module = self._module(context="pod1", eradicate=True)
+        mock_array = _mock_array()
+
+        delete_workload(mock_module, mock_array, _mock_workload())
+
+        assert _writes(mock_array) == {}
+
+    def test_eradicate_writes_nothing(self):
+        """Test eradicate deletes nothing under --check"""
+        mock_module = self._module(context="pod1")
+        mock_array = _mock_array()
+
+        eradicate_workload(mock_module, mock_array)
+
+        assert _writes(mock_array) == {}
+
+    @patch("plugins.modules.purefa_workload.WorkloadPatch")
+    def test_recover_writes_nothing(self, mock_workload_patch):
+        """Test recover patches nothing under --check"""
+        mock_module = self._module(context="pod1")
+        mock_array = _mock_array()
+
+        recover_workload(
+            mock_module, mock_array, _mock_workload(status="destroyed", destroyed=True)
+        )
+
+        assert _writes(mock_array) == {}
+
+    @patch("plugins.modules.purefa_workload.WorkloadPatch")
+    def test_rename_writes_nothing(self, mock_workload_patch):
+        """Test rename patches nothing under --check"""
+        mock_module = self._module(context="pod1", rename="new-workload")
+        mock_array = _mock_array()
+
+        rename_workload(mock_module, mock_array, _mock_workload())
+
+        assert _writes(mock_array) == {}
+
+    @patch("plugins.modules.purefa_workload._wait_for_status")
+    def test_connect_writes_nothing(self, mock_wait_for_status):
+        """Test connecting a host posts no connections under --check"""
+        mock_module = self._module(context="pod1", host="host1")
+        mock_array = _mock_array(connected=[])
+        mock_wait_for_status.return_value = None
+
+        connect_or_disconnect_volumes(
+            mock_module, mock_array, "connect", _mock_workload()
+        )
+
+        assert _writes(mock_array) == {}
+        assert mock_module.exit_json.call_args.kwargs["changed"] is True
+
+    def test_disconnect_writes_nothing(self):
+        """Test disconnecting a host deletes no connections under --check"""
+        mock_module = self._module(context="pod1", host="host1")
+        mock_array = _mock_array(connected=WORKLOAD_VOLUMES)
+
+        connect_or_disconnect_volumes(
+            mock_module, mock_array, "disconnect", _mock_workload()
+        )
+
+        assert _writes(mock_array) == {}
+        assert mock_module.exit_json.call_args.kwargs["changed"] is True
+
+
+class TestCreateVolumeCheckMode:
+    """Test cases for _create_volume under --check"""
+
+    def test_creates_nothing_and_names_nothing(self):
+        """No volume was created, so there is no name to return"""
+        from plugins.modules.purefa_workload import _create_volume
+
+        mock_module = Mock()
+        mock_module.check_mode = True
+        mock_module.params = _params(volume_configuration="vc1", context="pod1")
+        mock_array = _mock_array()
+
+        assert _create_volume(mock_module, mock_array) is None
+        mock_array.post_volumes.assert_not_called()
+
+    @patch("plugins.modules.purefa_workload.VolumePost")
+    @patch("plugins.modules.purefa_workload.WorkloadConfigurationReference")
+    @patch("plugins.modules.purefa_workload._wait_for_volumes")
+    def test_expand_collects_no_placeholder_names(
+        self, mock_wait_for_volumes, mock_config_ref, mock_volume_post
+    ):
+        """The volume wait must not be handed a list of Nones"""
+        mock_module = Mock()
+        mock_module.check_mode = True
+        mock_module.params = _params(
+            preset="test-preset",
+            context="pod1",
+            volume_configuration="vol-config1",
+            volume_count=2,
+        )
+        mock_array = _mock_array()
+        workload = _mock_workload(context="pod1")
+        mock_wait_for_volumes.return_value = workload
+        vol_config = Mock()
+        vol_config.name = "vol-config1"
+
+        expand_workload(mock_module, mock_array, Mock(), [vol_config], workload)
+
+        # Nothing was created, so there are no names to wait on - not two Nones
+        mock_wait_for_volumes.assert_called_once_with(
+            mock_module, mock_array, "pod1", [], workload
+        )
+        # Only the volumes that already exist can be reported
+        assert (
+            mock_module.exit_json.call_args.kwargs["workload"]["volumes"]
+            == WORKLOAD_VOLUMES
+        )
+
+
+class TestWaitForRecommendation:
+    """Test cases for the placement recommendation poll
+
+    Replaces an unbounded `while result.status != "completed"` loop that had no
+    timeout, no response check, and no handling of the failed state.
+    """
+
+    def _wait_kwargs(self, mock_wait_for, mock_array, check_mode=False):
+        from plugins.modules.purefa_workload import _wait_for_recommendation
+
+        mock_module = Mock()
+        mock_module.check_mode = check_mode
+        mock_module.params = _params(preset="test-fleet:test-preset", context="pod1")
+
+        _wait_for_recommendation(mock_module, mock_array, "pod1", "calc-1")
+
+        return mock_wait_for.call_args.kwargs
+
+    @patch("plugins.modules.purefa_workload.wait_for")
+    def test_done_only_on_completed(self, mock_wait_for):
+        """processing is not done; completed is"""
+        kwargs = self._wait_kwargs(mock_wait_for, _mock_array())
+
+        is_done = kwargs["is_done"]
+        assert is_done(Mock(status="processing")) is False
+        assert is_done(Mock(status="completed")) is True
+        assert kwargs["timeout"] == 300
+        assert "test-fleet:test-preset" in kwargs["description"]
+
+    @patch("plugins.modules.purefa_workload.wait_for")
+    def test_failed_is_terminal(self, mock_wait_for):
+        """A placement that cannot be satisfied fails rather than spinning
+
+        This endpoint is the reason wait_for has an is_failed hook - a workload has
+        no failure state, but a recommendation does.
+        """
+        kwargs = self._wait_kwargs(mock_wait_for, _mock_array())
+
+        is_failed = kwargs["is_failed"]
+        assert is_failed(Mock(status="processing")) is None
+        assert is_failed(Mock(status="completed")) is None
+        message = is_failed(Mock(status="failed"))
+        assert message and "test-fleet:test-preset" in message
+
+    @patch("plugins.modules.purefa_workload.check_response")
+    @patch("plugins.modules.purefa_workload.wait_for")
+    def test_probe_checks_the_response(self, mock_wait_for, mock_check_response):
+        """The old loop read .items straight off an unchecked response"""
+        mock_array = _mock_array()
+        mock_array.get_workloads_placement_recommendations.return_value = Mock(
+            status_code=200, items=[_mock_recommendation()]
+        )
+        kwargs = self._wait_kwargs(mock_wait_for, mock_array)
+
+        kwargs["probe"]()
+
+        mock_array.get_workloads_placement_recommendations.assert_called_once_with(
+            names=["calc-1"], context_names=["pod1"]
+        )
+        mock_check_response.assert_called_once()
+
+    @patch("plugins.modules.purefa_workload.wait_for")
+    def test_runs_under_check_mode(self, mock_wait_for):
+        """A calculation changes nothing, so --check may wait on it"""
+        kwargs = self._wait_kwargs(mock_wait_for, _mock_array(), check_mode=True)
+
+        assert kwargs["skip_in_check_mode"] is False
+
+
+class TestCheckModePredictsTheRealRun:
+    """--check and a real run must agree on the shape of what they return"""
+
+    @patch("plugins.modules.purefa_workload._build_workload_parameters")
+    @patch("plugins.modules.purefa_workload.WorkloadPlacementRecommendation")
+    @patch("plugins.modules.purefa_workload._wait_for_recommendation")
+    @patch("plugins.modules.purefa_workload.check_response")
+    def test_check_mode_create_reports_the_recommended_target(
+        self,
+        mock_check_response,
+        mock_wait_for_recommendation,
+        mock_recommendation,
+        mock_build_workload_parameters,
+    ):
+        """The headline case, and only reachable because the calculation still runs"""
+        mock_module = Mock()
+        mock_module.check_mode = True
+        mock_module.params = _params(
+            preset="test-preset",
+            context="pod1",
+            recommendation=True,
+            placement="arrayA",
+        )
+        mock_array = _mock_array()
+        calculation = Mock()
+        calculation.name = "calc-1"
+        mock_array.post_workloads_placement_recommendations.return_value = Mock(
+            status_code=200, items=[calculation]
+        )
+        mock_wait_for_recommendation.return_value = _mock_recommendation("arrayB")
+
+        create_workload(mock_module, mock_array, Mock(), Mock())
+
+        # The calculation ran, so --check can name the array Fusion would choose
+        mock_array.post_workloads_placement_recommendations.assert_called_once()
+        mock_array.post_workloads.assert_not_called()
+        assert mock_module.exit_json.call_args.kwargs["workload"]["context"] == "arrayB"
+
+    @patch("plugins.modules.purefa_workload.WorkloadPatch")
+    @patch("plugins.modules.purefa_workload._wait_for_status")
+    @patch("plugins.modules.purefa_workload.check_response")
+    def test_delete_returns_the_same_keys_either_way(
+        self, mock_check_response, mock_wait_for_status, mock_workload_patch
+    ):
+        """A playbook binding to a key must not find it missing in one mode"""
+        settled = _mock_workload(status="destroyed", destroyed=True)
+        mock_wait_for_status.return_value = settled
+
+        checked = Mock()
+        checked.check_mode = True
+        checked.params = _params(context="pod1")
+        delete_workload(checked, _mock_array(), _mock_workload())
+
+        real = Mock()
+        real.check_mode = False
+        real.params = _params(context="pod1")
+        real_array = _mock_array()
+        real_array.patch_workloads.return_value = Mock(status_code=200, items=[settled])
+        delete_workload(real, real_array, _mock_workload())
+
+        predicted = checked.exit_json.call_args.kwargs["workload"]
+        actual = real.exit_json.call_args.kwargs["workload"]
+        assert set(predicted) == set(actual)
+        # And on the fields a prediction can be sure of, they agree outright
+        for key in ("name", "context", "status", "completed", "destroyed", "host"):
+            assert predicted[key] == actual[key], key
+
+    @patch("plugins.modules.purefa_workload.WorkloadPatch")
+    @patch("plugins.modules.purefa_workload.check_response")
+    def test_delete_with_eradicate_is_empty_either_way(
+        self, mock_check_response, mock_workload_patch
+    ):
+        """The divergence this fixes: --check used to return facts, a real run {}"""
+        checked = Mock()
+        checked.check_mode = True
+        checked.params = _params(context="pod1", eradicate=True)
+        delete_workload(checked, _mock_array(), _mock_workload())
+
+        real = Mock()
+        real.check_mode = False
+        real.params = _params(context="pod1", eradicate=True)
+        # The real exit_json terminates, so eradicate_workload's is the only one
+        real.exit_json.side_effect = SystemExit(0)
+        real_array = _mock_array()
+        real_array.patch_workloads.return_value = Mock(
+            status_code=200, items=[_mock_workload(destroyed=True)]
+        )
+        real_array.delete_workloads.return_value = Mock(status_code=200)
+        with pytest.raises(SystemExit):
+            delete_workload(real, real_array, _mock_workload())
+
+        assert checked.exit_json.call_args.kwargs["workload"] == {}
+        assert real.exit_json.call_args.kwargs["workload"] == {}
+
+    @pytest.mark.parametrize(
+        "wait,expected_status",
+        [(True, "ready"), (False, "creating")],
+    )
+    def test_predicted_completed_agrees_with_predicted_status(
+        self, wait, expected_status
+    ):
+        """completed is derived, so it can never contradict the status reported"""
+        mock_module = Mock()
+        mock_module.check_mode = True
+        mock_module.params = _params(preset="test-preset", context="pod1", wait=wait)
+
+        create_workload(mock_module, _mock_array(), Mock(), Mock(parameters=[]))
+
+        facts = mock_module.exit_json.call_args.kwargs["workload"]
+        assert facts["status"] == expected_status
+        assert facts["completed"] is (expected_status == "ready")
+
+
+class TestFactsShapeIsDefinedOnce:
+    """A read workload and a predicted one must describe themselves identically"""
+
+    def test_read_and_predicted_return_the_same_keys(self):
+        """_facts is the single definition, so the two builders cannot drift"""
+        from plugins.modules.purefa_workload import _facts, _workload_facts
+
+        mock_module = Mock()
+        mock_module.params = _params(preset="test-preset", context="pod1")
+        mock_array = _mock_array()
+
+        read = _workload_facts(mock_module, mock_array, _mock_workload(), "pod1")
+        predicted_create = _facts(
+            mock_module,
+            name=mock_module.params["name"],
+            context="pod1",
+            preset=mock_module.params["preset"],
+            status="ready",
+        )
+        predicted_change = _workload_facts(
+            mock_module, mock_array, _mock_workload(), "pod1", destroyed=True
+        )
+
+        assert set(read) == set(predicted_create) == set(predicted_change)
+        # ...and it is the documented contract, not just self-consistent
+        assert set(read) == set(_expected_facts())
+
+
+class TestPredictedFacts:
+    """Test cases for describing a workload that has not been changed yet
+
+    A prediction is expressed by passing changes, so it goes through the same two
+    builders a real run does rather than a separate code path.
+    """
+
+    def test_create_knows_only_what_it_was_asked_for(self):
+        """With no workload to read, params and the clock are all there is"""
+        from plugins.modules.purefa_workload import _facts
+
+        mock_module = Mock()
+        mock_module.params = _params(
+            name="new-workload", preset="test-fleet:test-preset", host="host1"
+        )
+        mock_array = _mock_array()
+
+        facts = _facts(
+            mock_module,
+            name=mock_module.params["name"],
+            context="arrayB",
+            preset=mock_module.params["preset"],
+            status="creating",
+        )
+
+        assert facts["name"] == "new-workload"
+        assert facts["preset"] == "test-fleet:test-preset"
+        assert facts["context"] == "arrayB"
+        assert facts["host"] == "host1"
+        assert facts["destroyed"] is False
+        # The array generates volume names, so none can be offered up front
+        assert facts["volumes"] == []
+        # Nothing was read to find any of this out
+        mock_array.get_volumes.assert_not_called()
+
+    def test_change_carries_over_what_it_is_not_changing(self):
+        """A prediction built on a real workload keeps that workload's values"""
+        from plugins.modules.purefa_workload import _workload_facts
+
+        mock_module = Mock()
+        mock_module.params = _params()
+        mock_array = _mock_array()
+        workload = _mock_workload(
+            preset="test-fleet:other-preset", status_details=["still working"]
+        )
+
+        facts = _workload_facts(
+            mock_module, mock_array, workload, "arrayB", name="renamed"
+        )
+
+        # Only the named change applies
+        assert facts["name"] == "renamed"
+        # ...everything else is the workload as it stands
+        assert facts["preset"] == "test-fleet:other-preset"
+        assert facts["created"] == CREATED_STR
+        assert facts["status_details"] == ["still working"]
+        assert facts["status"] == "ready"
+
+    @patch("plugins.modules.purefa_workload._timestamp", return_value=PREDICTED_NOW)
+    def test_a_create_predicts_its_own_creation_time(self, mock_timestamp):
+        """A workload created now is created now, so null would be the wrong answer"""
+        from plugins.modules.purefa_workload import _facts
+
+        mock_module = Mock()
+        mock_module.params = _params()
+
+        facts = _facts(
+            mock_module,
+            name=mock_module.params["name"],
+            context="arrayB",
+            preset=mock_module.params["preset"],
+            status="ready",
+        )
+
+        assert facts["created"] == PREDICTED_NOW
+        # Called with no argument, meaning "now" rather than an array timestamp
+        mock_timestamp.assert_called_once_with()
+
+    def test_completed_cannot_disagree_with_a_predicted_status(self):
+        """completed is derived inside _facts, not passed alongside the status"""
+        from plugins.modules.purefa_workload import _facts
+
+        mock_module = Mock()
+        mock_module.params = _params()
+
+        for status, completed in (
+            ("ready", True),
+            ("destroyed", True),
+            ("creating", False),
+            ("destroying", False),
+            ("recovering", False),
+        ):
+            facts = _facts(
+                mock_module,
+                name=mock_module.params["name"],
+                context="arrayB",
+                preset=mock_module.params["preset"],
+                status=status,
+            )
+            assert facts["completed"] is completed, status
+        # None of those are unrecognised, so nothing was warned about
+        mock_module.warn.assert_not_called()
+
+
+class TestTimestamp:
+    """Test cases for the shared timestamp formatter"""
+
+    def test_formats_array_milliseconds_as_utc(self):
+        """The array reports epoch milliseconds"""
+        from plugins.modules.purefa_workload import _timestamp
+
+        assert _timestamp(CREATED_MS) == CREATED_STR
+
+    def test_defaults_to_now_in_the_documented_format(self):
+        """A prediction needs the current time, in the same shape as a real one"""
+        import time as time_module
+        from plugins.modules.purefa_workload import _timestamp
+
+        result = _timestamp()
+
+        # Parses as the documented format, without pinning the test to the clock
+        parsed = time_module.strptime(result, "%Y-%m-%d %H:%M:%S")
+        assert parsed.tm_year >= 2025
+
+
+class TestPlacementIsIgnoredWarning:
+    """context and placement are the same thing, so disagreement needs saying"""
+
+    def _run_main(self, mock_ansible_module, mock_get_array, **params):
+        from plugins.modules.purefa_workload import main
+
+        mock_module = Mock()
+        mock_module.params = _params(
+            state="absent", preset="test-preset", volume_count=None, **params
+        )
+        mock_ansible_module.return_value = mock_module
+        mock_array = _mock_array()
+        mock_array.get_rest_version.return_value = "2.40"
+        mock_fleet = Mock()
+        mock_fleet.name = "test-fleet"
+        mock_array.get_fleets.return_value = Mock(status_code=200, items=[mock_fleet])
+        mock_array.get_arrays.return_value = _mock_get_arrays()
+        mock_array.get_workloads.return_value = Mock(status_code=404)
+        mock_get_array.return_value = mock_array
+
+        main()
+
+        return mock_module
+
+    @patch("plugins.modules.purefa_workload.LooseVersion")
+    @patch("plugins.modules.purefa_workload.get_array")
+    @patch("plugins.modules.purefa_workload.AnsibleModule")
+    @patch("plugins.modules.purefa_workload.HAS_PURESTORAGE", True)
+    def test_warns_when_they_disagree(
+        self, mock_ansible_module, mock_get_array, mock_loose_version
+    ):
+        """The placement loses silently today, which is the thing being fixed"""
+        mock_loose_version.side_effect = lambda x: float(x) if x else 0.0
+
+        mock_module = self._run_main(
+            mock_ansible_module, mock_get_array, context="arrayC", placement="arrayB"
+        )
+
+        mock_module.warn.assert_called_once()
+        warning = mock_module.warn.call_args[0][0]
+        assert "arrayB" in warning and "arrayC" in warning
+        # The context still wins, as it always has
+        assert mock_module.params["context"] == "arrayC"
+
+    @patch("plugins.modules.purefa_workload.LooseVersion")
+    @patch("plugins.modules.purefa_workload.get_array")
+    @patch("plugins.modules.purefa_workload.AnsibleModule")
+    @patch("plugins.modules.purefa_workload.HAS_PURESTORAGE", True)
+    def test_no_warning_when_only_placement_is_given(
+        self, mock_ansible_module, mock_get_array, mock_loose_version
+    ):
+        """The documented way to use placement, which must stay quiet"""
+        mock_loose_version.side_effect = lambda x: float(x) if x else 0.0
+
+        mock_module = self._run_main(
+            mock_ansible_module, mock_get_array, context="", placement="arrayB"
+        )
+
+        mock_module.warn.assert_not_called()
+        assert mock_module.params["context"] == "arrayB"
+
+    @patch("plugins.modules.purefa_workload.LooseVersion")
+    @patch("plugins.modules.purefa_workload.get_array")
+    @patch("plugins.modules.purefa_workload.AnsibleModule")
+    @patch("plugins.modules.purefa_workload.HAS_PURESTORAGE", True)
+    def test_no_warning_when_they_agree(
+        self, mock_ansible_module, mock_get_array, mock_loose_version
+    ):
+        """Redundant but not contradictory"""
+        mock_loose_version.side_effect = lambda x: float(x) if x else 0.0
+
+        mock_module = self._run_main(
+            mock_ansible_module, mock_get_array, context="arrayB", placement="arrayB"
+        )
+
+        mock_module.warn.assert_not_called()
+
+
+class TestWaitForCallsMatchTheRealHelper:
+    """The module's wait_for calls must match the real helper's signature
+
+    Every other test in this file runs against a mocked api_helpers, so a
+    MagicMock accepts any keyword and a renamed or removed wait_for parameter goes
+    unnoticed until a playbook hits it. This checks the calls against the real
+    signature instead.
+    """
+
+    def _real_wait_for_signature(self):
+        import importlib.util
+        import inspect
+        import sys
+        import types
+
+        # Import the real module_utils helper, stubbing only what it imports
+        package = "ansible_collections.everpure.flasharray.plugins.module_utils"
+        saved = {name: sys.modules.get(name) for name in list(sys.modules)}
+        version = types.ModuleType(package + ".version")
+        version.LooseVersion = str
+        sys.modules[package + ".version"] = version
+        try:
+            spec = importlib.util.spec_from_file_location(
+                "_real_api_helpers", "plugins/module_utils/api_helpers.py"
+            )
+            real = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(real)
+            return inspect.signature(real.wait_for)
+        finally:
+            for name, was in saved.items():
+                if was is not None:
+                    sys.modules[name] = was
+
+    @patch("plugins.modules.purefa_workload.check_response")
+    @patch("plugins.modules.purefa_workload.wait_for")
+    def test_every_wait_for_call_binds_against_the_real_signature(
+        self, mock_wait_for, mock_check_response
+    ):
+        """A renamed or removed parameter would raise here, not on a real array"""
+        from plugins.modules.purefa_workload import (
+            _wait_for_absent,
+            _wait_for_connections,
+            _wait_for_recommendation,
+            _wait_for_status,
+            _wait_for_volumes,
+        )
+
+        signature = self._real_wait_for_signature()
+        mock_module = Mock()
+        mock_module.check_mode = False
+        mock_module.params = _params(context="pod1", host="host1")
+        mock_array = _mock_array()
+        mock_array.get_workloads.return_value = _mock_workload_response()
+        mock_wait_for.return_value = None
+
+        waiters = [
+            lambda: _wait_for_status(mock_module, mock_array, "pod1", "ready"),
+            lambda: _wait_for_absent(mock_module, mock_array, "pod1"),
+            lambda: _wait_for_connections(
+                mock_module, mock_array, "test-workload", "pod1", True
+            ),
+            lambda: _wait_for_recommendation(mock_module, mock_array, "pod1", "calc-1"),
+            lambda: _wait_for_volumes(
+                mock_module, mock_array, "pod1", WORKLOAD_VOLUMES, _mock_workload()
+            ),
+        ]
+        for waiter in waiters:
+            mock_wait_for.reset_mock()
+            waiter()
+            args, kwargs = mock_wait_for.call_args
+            # Raises TypeError if a keyword no longer exists on the real helper
+            signature.bind(*args, **kwargs)
+
+    def test_the_recommendation_opts_out_of_skipping(self):
+        """The one waiter that must poll under check mode, spelled the real way"""
+        signature = self._real_wait_for_signature()
+
+        assert "skip_in_check_mode" in signature.parameters
+        # Skipping is the default, so only the recommendation says otherwise
+        assert signature.parameters["skip_in_check_mode"].default is True
+
+
+class TestFactsDoesNotSubstituteParameters:
+    """_facts reports what the array said, including when that is nothing
+
+    name and preset are both nullable on a real workload - the SDK documents a
+    destroyed preset as reporting a null name - so defaulting either to the
+    requested value would report a parameter as though the array had said it.
+    """
+
+    def test_a_null_name_or_preset_stays_null(self):
+        """The requested values must not stand in for what was read"""
+        from plugins.modules.purefa_workload import _facts
+
+        mock_module = Mock()
+        mock_module.params = _params(
+            name="requested-name", preset="test-fleet:requested-preset"
+        )
+
+        facts = _facts(
+            mock_module, context="arrayB", name=None, preset=None, status="ready"
+        )
+
+        assert facts["name"] is None
+        assert facts["preset"] is None
+
+    def test_the_array_name_wins_over_the_requested_one(self):
+        """A workload renamed outside Ansible reports its own name"""
+        from plugins.modules.purefa_workload import _facts
+
+        mock_module = Mock()
+        mock_module.params = _params(name="requested-name")
+
+        facts = _facts(mock_module, context="arrayB", name="array-name", status="ready")
+
+        assert facts["name"] == "array-name"

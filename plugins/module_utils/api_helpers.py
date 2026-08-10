@@ -209,6 +209,7 @@ def wait_for(
     detail=None,
     interval=5,
     max_interval=30,
+    skip_in_check_mode=True,
 ):
     """Poll an array operation until it completes, or fail the module.
 
@@ -229,16 +230,19 @@ def wait_for(
             diagnostics to append to the timeout message
         interval: Seconds to wait before the second probe
         max_interval: Ceiling for the interval as it backs off
+        skip_in_check_mode: By default polls are skipped in check mode, on the
+            basis that nothing was asked of the array so there is nothing to wait
+            for. Set this to False to poll in check mode anyway.
 
     Returns:
-        The value from the final probe, or None in check mode, where nothing
-        was asked of the array and so there is nothing to wait for.
+        The value from the final probe, or None when the poll was skipped in
+        check mode.
 
     Raises:
         Fails the module on a terminal failure or on timeout. Never returns a
         value that does not satisfy is_done.
     """
-    if module.check_mode:
+    if module.check_mode and skip_in_check_mode:
         return None
 
     deadline = time.monotonic() + timeout
