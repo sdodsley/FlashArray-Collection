@@ -36,7 +36,11 @@ options:
   host:
     type: str
     description:
-    - Host to connect to the workload after provisioning
+    - Host to connect to every volume in the workload after provisioning.
+    - With I(state=absent) the host is disconnected from the workload's volumes
+      instead of the workload being deleted.
+    - Only the workload's own volumes are affected. Volumes the host is connected
+      to outside this workload are never changed.
     default: ""
   name:
     description:
@@ -141,8 +145,10 @@ options:
   wait:
     description:
     - Whether to wait for the array to finish provisioning before returning.
+    - Cannot be disabled when I(host) is set. A host can only be connected to
+      every volume in a workload once the volume set has settled.
     type: bool
-    default: false
+    default: true
     version_added: '1.45.0'
   wait_timeout:
     description:
@@ -188,6 +194,10 @@ EXAMPLES = r"""
 - name: Report the fleet member Fusion placed the workload on
   ansible.builtin.debug:
     msg: "{{ new_workload.workload.name }} placed on {{ new_workload.workload.context }}"
+
+- name: Report the volumes the host can now see
+  ansible.builtin.debug:
+    msg: "{{ new_workload.workload.host }} sees {{ new_workload.workload.volumes }}"
 
 - name: Create a workload using preset parameters
   everpure.flasharray.purefa_workload:
@@ -322,6 +332,20 @@ workload:
                 Null unless I(destroyed) is true.
             type: int
             sample: 86400000
+        volumes:
+            description: Names of the volumes belonging to this workload, as they
+                stand after the action.
+            type: list
+            elements: str
+            sample: ['foo-vol1', 'foo-vol2']
+        host:
+            description: The host this task connected or disconnected, or null
+                when I(host) was not set. On a connect this host can see every
+                volume in I(volumes); on a disconnect it can see none of them.
+                Hosts connected to these volumes by other means are neither
+                reported nor changed.
+            type: str
+            sample: 'myhost'
 """
 
 HAS_PURESTORAGE = True
@@ -537,14 +561,47 @@ def _workload_completed(module, workload):
     return False
 
 
-def _workload_facts(module, workload):
+def _workload_volume_names(module, array, name, context):
+    """Sorted names of the volumes belonging to a workload"""
+    res = array.get_volumes(
+        filter="workload.name='{0}'".format(name),
+        context_names=[context],
+    )
+    check_response(res, module, f"Failed to get volumes for workload {name}")
+    return sorted(volume.name for volume in list(res.items))
+
+
+def _connected_volume_names(module, array, context, volume_names, host):
+    """Which of the given volumes the host can currently see
+
+    Scoped to volume_names, so connections the host has outside this workload are
+    never even read, let alone changed. get_connections rejects multiple names on
+    two objects at once, so the host is the single name and the volumes the many.
+    """
+    if not volume_names:
+        return set()
+    res = array.get_connections(
+        host_names=[host],
+        volume_names=volume_names,
+        context_names=[context],
+    )
+    check_response(res, module, f"Failed to get connections for host {host}")
+    return {connection.volume.name for connection in list(res.items)}
+
+
+def _workload_facts(module, array, workload, context, volume_names=None):
     """Build the flat fact dict for a Workload object
 
-    Takes an already-fetched Workload and performs no I/O. Returns an empty dict
-    only when there is no workload to describe at all.
+    volume_names is passed in by callers that have already read them, so a path
+    doing host work does not read the same list twice. Returns an empty dict,
+    without reading anything, when there is no workload to describe at all.
     """
     if not workload:
         return {}
+    if volume_names is None:
+        # workload.name, not module.params["name"] - after a rename the workload
+        # reports its new name, and its volumes must be read under that
+        volume_names = _workload_volume_names(module, array, workload.name, context)
     return {
         "name": workload.name,
         "context": workload.context.name,
@@ -558,6 +615,8 @@ def _workload_facts(module, workload):
             "%Y-%m-%d %H:%M:%S",
             time.gmtime(workload.created / 1000),
         ),
+        "volumes": volume_names,
+        "host": module.params["host"] or None,
     }
 
 
@@ -610,6 +669,50 @@ def _wait_for_absent(module, array, context):
         timeout=module.params["wait_timeout"],
         description=f"workload {module.params['name']} to be eradicated",
         detail=_status_detail,
+    )
+
+
+def _wait_for_connections(module, array, name, context, connected):
+    """Wait until the host sees all of the workload's volumes, or none of them
+
+    connected=True after a connect, False after a disconnect. Both the volume
+    list and the connections are re-read each iteration, so a volume that
+    appears late is caught rather than missed, and the poll never looks at
+    connections outside this workload.
+    """
+    host = module.params["host"]
+
+    def probe():
+        volume_names = _workload_volume_names(module, array, name, context)
+        return {
+            "volumes": volume_names,
+            "seen": _connected_volume_names(module, array, context, volume_names, host),
+        }
+
+    def is_done(state):
+        if connected:
+            return set(state["volumes"]) == state["seen"]
+        # Done is the host seeing none of *these* volumes, not the host having
+        # no connections at all
+        return not state["seen"]
+
+    def detail(state):
+        if connected:
+            outstanding = sorted(set(state["volumes"]) - state["seen"])
+        else:
+            outstanding = sorted(state["seen"])
+        return ", ".join(outstanding)
+
+    return wait_for(
+        module,
+        probe=probe,
+        is_done=is_done,
+        timeout=module.params["wait_timeout"],
+        description=(
+            f"host {host} to be {'connected to' if connected else 'disconnected from'} "
+            f"the volumes of workload {name}"
+        ),
+        detail=detail,
     )
 
 
@@ -674,41 +777,57 @@ def _create_volume(module, array):
     return list(res.items)[0].name
 
 
-def _disconnect_volumes(module, array):
-    """Disconnect host from volumes in the workload"""
-    volumes = list(
-        array.get_volumes(
-            filter="workload.name='{0}'".format(module.params["name"]),
-            context_names=[module.params["context"]],
-        ).items
-    )
-    volNames = [vol.name for vol in volumes]
+def _connect_host(module, array, name, context, volume_names):
+    """Connect the host to any of the workload's volumes it cannot already see
 
-    res = array.delete_connections(
-        host_names=[module.params["host"]],
-        context_names=[module.params["context"]],
-        volume_names=volNames,
+    Additive only, and only within this workload: the host keeps every connection
+    it has elsewhere. post_connections has no allow_errors, so reposting an
+    existing connection is an error rather than a no-op, which is why only the
+    difference is sent.
+
+    Returns whether a connection was missing.
+    """
+    host = module.params["host"]
+    missing = sorted(
+        set(volume_names)
+        - _connected_volume_names(module, array, context, volume_names, host)
     )
-    check_response(res, module, "Failed to disconnect volumes from host")
+    if missing and not module.check_mode:
+        res = array.post_connections(
+            host_names=[host],
+            volume_names=missing,
+            context_names=[context],
+            connection=ConnectionPost(),
+        )
+        check_response(res, module, f"Failed to connect volumes to host {host}")
+        if module.params["wait"]:
+            _wait_for_connections(module, array, name, context, connected=True)
+    return bool(missing)
 
 
-def _connect_volumes(module, array):
-    """Connect host to volumes in the workload"""
-    volumes = list(
-        array.get_volumes(
-            filter="workload.name='{0}'".format(module.params["name"]),
-            context_names=[module.params["context"]],
-        ).items
-    )
-    volNames = [vol.name for vol in volumes]
+def _disconnect_host(module, array, name, context, volume_names):
+    """Disconnect the host from the workload's volumes, and only those
 
-    res = array.post_connections(
-        host_names=[module.params["host"]],
-        context_names=[module.params["context"]],
-        volume_names=volNames,
-        connection=ConnectionPost(),
+    Subtractive only, and only within this workload. volume_names is always
+    passed, so connections the host has elsewhere are left alone.
+
+    Returns whether there was a connection to remove.
+    """
+    host = module.params["host"]
+    attached = sorted(
+        _connected_volume_names(module, array, context, volume_names, host)
+        & set(volume_names)
     )
-    check_response(res, module, "Failed to connect volumes to host")
+    if attached and not module.check_mode:
+        res = array.delete_connections(
+            host_names=[host],
+            volume_names=attached,
+            context_names=[context],
+        )
+        check_response(res, module, f"Failed to disconnect volumes from host {host}")
+        if module.params["wait"]:
+            _wait_for_connections(module, array, name, context, connected=False)
+    return bool(attached)
 
 
 def create_workload(module, array, fleet, preset_config):
@@ -751,14 +870,16 @@ def create_workload(module, array, fleet, preset_config):
         check_response(
             res, module, f"Failed to create workload {module.params['name']}"
         )
+        context = module.params["context"]
         workload = list(res.items)[0]
         if module.params["wait"]:
-            workload = _wait_for_status(
-                module, array, module.params["context"], "ready"
-            )
-        workload_facts = _workload_facts(module, workload)
+            workload = _wait_for_status(module, array, context, "ready")
+        # Read once, after the wait, so the host sees the settled volume set and
+        # the facts report the same list the connect worked from
+        volume_names = _workload_volume_names(module, array, workload.name, context)
         if module.params["host"] != "":
-            _connect_volumes(module, array)
+            _connect_host(module, array, workload.name, context, volume_names)
+        workload_facts = _workload_facts(module, array, workload, context, volume_names)
 
     module.exit_json(changed=changed, workload=workload_facts)
 
@@ -778,39 +899,46 @@ def expand_workload(module, array, fleet, volume_configs, workload):
                 module.params["volume_configuration"], module.params["preset"]
             )
         )
+    context = module.params["context"]
     if module.params["wait"] and not module.check_mode:
         # Re-read rather than reuse main()'s workload, which predates the volumes
-        workload = _wait_for_volumes(
-            module, array, module.params["context"], volume_names
-        )
+        workload = _wait_for_volumes(module, array, context, volume_names)
+    # The full set, not just the volumes this task added - the host must end up
+    # able to see all of them, and the facts report the grown set
+    all_volume_names = _workload_volume_names(module, array, workload.name, context)
     if module.params["host"] != "":
-        _connect_volumes(module, array)
+        _connect_host(module, array, workload.name, context, all_volume_names)
 
-    # Without a wait this is still main()'s pre-expand read, which is accurate
-    # because only the workload's volumes changed here
-    module.exit_json(changed=changed, workload=_workload_facts(module, workload))
+    # Without a wait the workload itself is still main()'s pre-expand read, which
+    # is accurate because only its volumes changed here
+    module.exit_json(
+        changed=changed,
+        workload=_workload_facts(module, array, workload, context, all_volume_names),
+    )
 
 
 def delete_workload(module, array, workload=None):
     """Delete the workload"""
     changed = True
-    # In check mode nothing is sent, so the pre-delete state is the last known
-    workload_facts = _workload_facts(module, workload)
+    context = module.params["context"]
+    # Only built in check mode, where nothing is sent and the pre-delete state is
+    # the last known. Outside it this would be an immediately discarded read.
+    workload_facts = (
+        _workload_facts(module, array, workload, context) if module.check_mode else {}
+    )
     if not module.check_mode:
         res = array.patch_workloads(
             names=[module.params["name"]],
             workload=WorkloadPatch(destroyed=True),
-            context_names=[module.params["context"]],
+            context_names=[context],
         )
         check_response(res, module, "Workload deletion failed")
         # The PATCH response reports destroyed=True and the time_remaining
         # countdown until eradication, so use it rather than the pre-delete read
         deleted = list(res.items)[0]
         if module.params["wait"]:
-            deleted = _wait_for_status(
-                module, array, module.params["context"], "destroyed"
-            )
-        workload_facts = _workload_facts(module, deleted)
+            deleted = _wait_for_status(module, array, context, "destroyed")
+        workload_facts = _workload_facts(module, array, deleted, context)
         if module.params["eradicate"]:
             eradicate_workload(module, array)
     module.exit_json(changed=changed, workload=workload_facts)
@@ -834,23 +962,30 @@ def eradicate_workload(module, array):
 def recover_workload(module, array, workload=None):
     """Recover the workload and optionally reconnect to host"""
     changed = True
-    # In check mode nothing is sent, so the destroyed state is the last known
-    workload_facts = _workload_facts(module, workload)
+    context = module.params["context"]
+    # Only built in check mode, where nothing is sent and the destroyed state is
+    # the last known
+    workload_facts = (
+        _workload_facts(module, array, workload, context) if module.check_mode else {}
+    )
     if not module.check_mode:
         res = array.patch_workloads(
             names=[module.params["name"]],
             workload=WorkloadPatch(destroyed=False),
-            context_names=[module.params["context"]],
+            context_names=[context],
         )
         check_response(res, module, "Workload recovery failed")
         recovered = list(res.items)[0]
         if module.params["wait"]:
-            recovered = _wait_for_status(
-                module, array, module.params["context"], "ready"
-            )
-        workload_facts = _workload_facts(module, recovered)
+            recovered = _wait_for_status(module, array, context, "ready")
+        # Recovered volumes may have kept their connections, so the diff inside
+        # _connect_host is what makes reconnecting work rather than error
+        volume_names = _workload_volume_names(module, array, recovered.name, context)
         if module.params["host"] != "":
-            _connect_volumes(module, array)
+            _connect_host(module, array, recovered.name, context, volume_names)
+        workload_facts = _workload_facts(
+            module, array, recovered, context, volume_names
+        )
 
     module.exit_json(changed=changed, workload=workload_facts)
 
@@ -858,62 +993,51 @@ def recover_workload(module, array, workload=None):
 def rename_workload(module, array, workload=None):
     """Rename the workload
 
-    Nothing about a rename is asynchronous, so wait does not apply.
+    Nothing about a rename is asynchronous, so wait does not apply, and a rename
+    does not disturb connections, so there is no host work either. The volumes
+    and host are still reported, read under whichever name is current.
     """
     changed = True
-    # In check mode nothing is sent, so the workload still has its old name
-    workload_facts = _workload_facts(module, workload)
+    context = module.params["context"]
+    # Only built in check mode, where nothing is sent and the workload therefore
+    # still has its old name
+    workload_facts = (
+        _workload_facts(module, array, workload, context) if module.check_mode else {}
+    )
     if not module.check_mode:
         res = array.patch_workloads(
             names=[module.params["name"]],
             workload=WorkloadPatch(name=module.params["rename"]),
-            context_names=[module.params["context"]],
+            context_names=[context],
         )
         check_response(res, module, "Workload rename failed")
         # Reports the new name, as returned by the PATCH response
-        workload_facts = _workload_facts(module, list(res.items)[0])
+        workload_facts = _workload_facts(module, array, list(res.items)[0], context)
     module.exit_json(changed=changed, workload=workload_facts)
 
 
 def connect_or_disconnect_volumes(module, array, mode, workload):
-    """Connect or disconnect volumes in the workload to a host"""
-    changed = False
+    """Connect the host to the workload's volumes, or disconnect it from them
 
-    res = array.get_connections(
-        host_names=[module.params["host"]],
-        context_names=[module.params["context"]],
-    )
-    check_response(
-        res, module, f"Failed to get volume connection for host {module.params['host']}"
-    )
-    volume_connections = [conn.volume.name for conn in list(res.items)]
-
-    res = array.get_volumes(
-        filter="workload.name='{0}'".format(module.params["name"]),
-        context_names=[module.params["context"]],
-    )
-    check_response(
-        res, module, f"Failed to get volumes for workload {module.params['name']}"
-    )
-    volumes = list(res.items)
+    Both directions are scoped to this workload's volumes. The host keeps every
+    connection it has outside the workload either way.
+    """
+    context = module.params["context"]
+    if mode == "connect" and module.params["wait"]:
+        # "All connected" only means something once the volume set has settled
+        workload = _wait_for_status(module, array, context, "ready") or workload
+    volume_names = _workload_volume_names(module, array, workload.name, context)
 
     if mode == "connect":
-        for volume in volumes:
-            if volume.name not in volume_connections:
-                changed = True
-    elif mode == "disconnect":
-        for volume in volumes:
-            if volume.name in volume_connections:
-                changed = True
-
-    if not module.check_mode and changed:
-        if mode == "connect":
-            _connect_volumes(module, array)
-        elif mode == "disconnect":
-            _disconnect_volumes(module, array)
+        changed = _connect_host(module, array, workload.name, context, volume_names)
+    else:
+        changed = _disconnect_host(module, array, workload.name, context, volume_names)
 
     # Only host connections change here, not the workload itself
-    module.exit_json(changed=changed, workload=_workload_facts(module, workload))
+    module.exit_json(
+        changed=changed,
+        workload=_workload_facts(module, array, workload, context, volume_names),
+    )
 
 
 def main():
@@ -961,7 +1085,7 @@ def main():
             host=dict(type="str", default=""),
             # Deliberately not in purefa_argument_spec(), which would land these
             # on every module in the collection
-            wait=dict(type="bool", default=False),
+            wait=dict(type="bool", default=True),
             wait_timeout=dict(type="int", default=300),
         )
     )
@@ -974,6 +1098,16 @@ def main():
 
     if not HAS_PURESTORAGE:
         module.fail_json(msg="py-pure-client sdk is required for this module")
+
+    # Checked before any API call. A host has to be connected to every volume in
+    # the workload, which cannot be established while the volume set is still
+    # growing, so there is no correct way to honour host without waiting.
+    if module.params["host"] and not module.params["wait"]:
+        module.fail_json(
+            msg="host cannot be used with wait: false. Connecting or "
+            "disconnecting a host requires the workload's volume set to have "
+            "settled first, which only happens when waiting."
+        )
 
     array = get_array(module)
     api_version = array.get_rest_version()
@@ -1062,7 +1196,10 @@ def main():
     elif state == "absent" and workload_destroyed and module.params["eradicate"]:
         eradicate_workload(module, array)
     else:
-        module.exit_json(changed=False, workload=_workload_facts(module, workload))
+        module.exit_json(
+            changed=False,
+            workload=_workload_facts(module, array, workload, module.params["context"]),
+        )
 
 
 if __name__ == "__main__":

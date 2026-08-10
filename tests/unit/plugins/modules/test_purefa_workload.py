@@ -107,6 +107,56 @@ def _mock_workload_response(status_code=200, **kwargs):
     return Mock(status_code=status_code, items=[_mock_workload(**kwargs)])
 
 
+#: Volume names _mock_volumes_response() reports for the workload by default
+WORKLOAD_VOLUMES = ["wl-vol1", "wl-vol2"]
+
+
+def _mock_volumes_response(names=None, status_code=200):
+    """Response for get_volumes(), whose items only need a name"""
+    volumes = []
+    for name in WORKLOAD_VOLUMES if names is None else names:
+        volume = Mock()
+        volume.name = name
+        volumes.append(volume)
+    return Mock(status_code=status_code, items=volumes)
+
+
+def _mock_connections_response(volume_names, host="host1", status_code=200):
+    """Response for get_connections(), keyed off conn.volume.name"""
+    connections = []
+    for name in volume_names:
+        connection = Mock()
+        connection.volume = Mock()
+        connection.volume.name = name
+        connection.host = Mock()
+        connection.host.name = host
+        connections.append(connection)
+    return Mock(status_code=status_code, items=connections)
+
+
+def _mock_array(volume_names=None, connected=None, host="host1"):
+    """A Mock array with the reads every fact-returning path performs stubbed
+
+    volume_names is what get_volumes reports for the workload; connected is every
+    volume the host can see, anywhere on the array.
+
+    get_connections honours the volume_names it is asked for, as the real endpoint
+    does, so a test cannot accidentally pass by relying on an unscoped read.
+    """
+    array = Mock()
+    array.get_volumes.return_value = _mock_volumes_response(volume_names)
+    all_connected = [] if connected is None else connected
+
+    def get_connections(volume_names=None, **kwargs):
+        requested = all_connected if volume_names is None else volume_names
+        return _mock_connections_response(
+            [name for name in all_connected if name in requested], host
+        )
+
+    array.get_connections.side_effect = get_connections
+    return array
+
+
 def _expected_facts(
     name="test-workload",
     context="arrayB",
@@ -115,11 +165,13 @@ def _expected_facts(
     destroyed=False,
     time_remaining=None,
     status_details=None,
+    volumes=None,
+    host=None,
 ):
     """The fact dict _workload_facts() builds for the matching _mock_workload()
 
-    Flat, with the name as a field rather than the key, and with the
-    module-owned completed flag derived from the status.
+    Flat, with the name as a field rather than the key, the module-owned
+    completed flag derived from the status, and the volume set and acted-on host.
     """
     return {
         "name": name,
@@ -131,6 +183,8 @@ def _expected_facts(
         "destroyed": destroyed,
         "time_remaining": time_remaining,
         "created": CREATED_STR,
+        "volumes": list(WORKLOAD_VOLUMES) if volumes is None else volumes,
+        "host": host,
     }
 
 
@@ -142,7 +196,8 @@ def _params(**overrides):
         "host": "",
         "eradicate": False,
         "recommendation": False,
-        "wait": False,
+        # wait is on by default, and host cannot be used without it
+        "wait": True,
         "wait_timeout": 300,
     }
     params.update(overrides)
@@ -157,7 +212,7 @@ class TestDeleteWorkload:
         mock_module = Mock()
         mock_module.check_mode = True
         mock_module.params = _params()
-        mock_array = Mock()
+        mock_array = _mock_array()
 
         delete_workload(mock_module, mock_array, _mock_workload())
 
@@ -175,7 +230,7 @@ class TestEradicateWorkload:
         mock_module = Mock()
         mock_module.check_mode = True
         mock_module.params = _params()
-        mock_array = Mock()
+        mock_array = _mock_array()
 
         eradicate_workload(mock_module, mock_array)
 
@@ -191,7 +246,7 @@ class TestRecoverWorkload:
         mock_module = Mock()
         mock_module.check_mode = True
         mock_module.params = _params()
-        mock_array = Mock()
+        mock_array = _mock_array()
 
         recover_workload(
             mock_module, mock_array, _mock_workload(status="destroyed", destroyed=True)
@@ -211,7 +266,7 @@ class TestRenameWorkload:
         mock_module = Mock()
         mock_module.check_mode = True
         mock_module.params = _params(name="old-workload", rename="new-workload")
-        mock_array = Mock()
+        mock_array = _mock_array()
 
         rename_workload(mock_module, mock_array, _mock_workload(name="old-workload"))
 
@@ -229,7 +284,7 @@ class TestCreateWorkload:
         mock_module = Mock()
         mock_module.check_mode = True
         mock_module.params = _params(preset="test-preset", context="pod1")
-        mock_array = Mock()
+        mock_array = _mock_array()
         mock_fleet = Mock()
         mock_preset_config = Mock()
         mock_preset_config.parameters = []
@@ -484,87 +539,104 @@ class TestBuildWorkloadParameters:
 class TestConnectOrDisconnectVolumes:
     """Test cases for connect_or_disconnect_volumes function"""
 
-    def test_connect_volumes_check_mode(self):
-        """Test connect_or_disconnect_volumes in connect mode with check_mode"""
+    @patch("plugins.modules.purefa_workload._wait_for_status")
+    def test_connect_volumes_check_mode(self, mock_wait_for_status):
+        """Check mode reports the change without posting a connection"""
         mock_module = Mock()
         mock_module.check_mode = True
         mock_module.params = _params(context="pod1", host="host1")
-        mock_array = Mock()
-
-        # Mock get_connections - no existing connections
-        mock_array.get_connections.return_value = Mock(status_code=200, items=[])
-
-        # Mock get_volumes - workload has volumes
-        mock_volume = Mock()
-        mock_volume.name = "test-volume"
-        mock_array.get_volumes.return_value = Mock(status_code=200, items=[mock_volume])
+        # The host sees neither workload volume yet
+        mock_array = _mock_array(connected=[])
+        mock_wait_for_status.return_value = None
 
         connect_or_disconnect_volumes(
             mock_module, mock_array, "connect", _mock_workload()
         )
 
+        mock_array.post_connections.assert_not_called()
         # Only host connections would change, so the workload is described as read
         mock_module.exit_json.assert_called_once_with(
-            changed=True, workload=_expected_facts()
+            changed=True, workload=_expected_facts(host="host1")
         )
 
-    def test_disconnect_volumes_check_mode(self):
-        """Test connect_or_disconnect_volumes in disconnect mode with check_mode"""
+    @patch("plugins.modules.purefa_workload._wait_for_status")
+    def test_disconnect_volumes_check_mode(self, mock_wait_for_status):
+        """Check mode reports the change without deleting a connection"""
         mock_module = Mock()
         mock_module.check_mode = True
         mock_module.params = _params(context="pod1", host="host1")
-        mock_array = Mock()
-
-        # Mock get_connections - volume is connected
-        mock_conn = Mock()
-        mock_conn.volume = Mock()
-        mock_conn.volume.name = "test-volume"
-        mock_array.get_connections.return_value = Mock(
-            status_code=200, items=[mock_conn]
-        )
-
-        # Mock get_volumes - workload has the connected volume
-        mock_volume = Mock()
-        mock_volume.name = "test-volume"
-        mock_array.get_volumes.return_value = Mock(status_code=200, items=[mock_volume])
+        mock_array = _mock_array(connected=WORKLOAD_VOLUMES)
 
         connect_or_disconnect_volumes(
             mock_module, mock_array, "disconnect", _mock_workload()
         )
 
-        # Only host connections would change, so the workload is described as read
+        mock_array.delete_connections.assert_not_called()
+        # A disconnect never waits for a status - nothing about it is async
+        mock_wait_for_status.assert_not_called()
         mock_module.exit_json.assert_called_once_with(
-            changed=True, workload=_expected_facts()
+            changed=True, workload=_expected_facts(host="host1")
         )
 
-    def test_connect_volumes_no_change(self):
-        """Test connect_or_disconnect_volumes when volume is already connected"""
+    @patch("plugins.modules.purefa_workload._wait_for_status")
+    def test_connect_volumes_no_change(self, mock_wait_for_status):
+        """Nothing is posted when the host already sees every workload volume"""
         mock_module = Mock()
         mock_module.check_mode = False
         mock_module.params = _params(context="pod1", host="host1")
-        mock_array = Mock()
-
-        # Mock get_connections - volume is already connected
-        mock_conn = Mock()
-        mock_conn.volume = Mock()
-        mock_conn.volume.name = "test-volume"
-        mock_array.get_connections.return_value = Mock(
-            status_code=200, items=[mock_conn]
-        )
-
-        # Mock get_volumes - workload has the same volume
-        mock_volume = Mock()
-        mock_volume.name = "test-volume"
-        mock_array.get_volumes.return_value = Mock(status_code=200, items=[mock_volume])
+        mock_array = _mock_array(connected=WORKLOAD_VOLUMES)
+        mock_wait_for_status.return_value = None
 
         connect_or_disconnect_volumes(
             mock_module, mock_array, "connect", _mock_workload()
         )
 
+        mock_array.post_connections.assert_not_called()
         # Nothing changed, but the workload is still described
         mock_module.exit_json.assert_called_once_with(
-            changed=False, workload=_expected_facts()
+            changed=False, workload=_expected_facts(host="host1")
         )
+
+    @patch("plugins.modules.purefa_workload._wait_for_status")
+    def test_disconnect_volumes_no_change(self, mock_wait_for_status):
+        """Nothing is deleted when the host sees none of the workload volumes"""
+        mock_module = Mock()
+        mock_module.check_mode = False
+        mock_module.params = _params(context="pod1", host="host1")
+        mock_array = _mock_array(connected=[])
+
+        connect_or_disconnect_volumes(
+            mock_module, mock_array, "disconnect", _mock_workload()
+        )
+
+        mock_array.delete_connections.assert_not_called()
+        mock_module.exit_json.assert_called_once_with(
+            changed=False, workload=_expected_facts(host="host1")
+        )
+
+    @patch("plugins.modules.purefa_workload._wait_for_connections")
+    @patch("plugins.modules.purefa_workload.check_response")
+    @patch("plugins.modules.purefa_workload._wait_for_status")
+    def test_connect_waits_for_ready_before_connecting(
+        self, mock_wait_for_status, mock_check_response, mock_wait_for_connections
+    ):
+        """ "All connected" only means something once the volume set has settled"""
+        mock_module = Mock()
+        mock_module.check_mode = False
+        mock_module.params = _params(context="pod1", host="host1")
+        mock_array = _mock_array(connected=[])
+        mock_wait_for_status.return_value = _mock_workload(context="pod1")
+
+        connect_or_disconnect_volumes(
+            mock_module, mock_array, "connect", _mock_workload(context="pod1")
+        )
+
+        mock_wait_for_status.assert_called_once_with(
+            mock_module, mock_array, "pod1", "ready"
+        )
+        # ...and only then is the volume set read and the connection posted
+        mock_array.post_connections.assert_called_once()
+        mock_wait_for_connections.assert_called_once()
 
 
 class TestDeleteWorkloadSuccess:
@@ -575,8 +647,8 @@ class TestDeleteWorkloadSuccess:
         """Test delete_workload successfully deletes"""
         mock_module = Mock()
         mock_module.check_mode = False
-        mock_module.params = _params(context="pod1")
-        mock_array = Mock()
+        mock_module.params = _params(context="pod1", wait=False)
+        mock_array = _mock_array()
         # The PATCH response reports the post-delete state
         mock_array.patch_workloads.return_value = _mock_workload_response(
             status="destroying", destroyed=True, time_remaining=86400000
@@ -602,7 +674,7 @@ class TestEradicateWorkloadSuccess:
         mock_module = Mock()
         mock_module.check_mode = False
         mock_module.params = _params(context="pod1")
-        mock_array = Mock()
+        mock_array = _mock_array()
         mock_array.delete_workloads.return_value = Mock(status_code=200)
 
         eradicate_workload(mock_module, mock_array)
@@ -619,8 +691,8 @@ class TestRecoverWorkloadSuccess:
         """Test recover_workload successfully recovers without host"""
         mock_module = Mock()
         mock_module.check_mode = False
-        mock_module.params = _params(context="pod1")
-        mock_array = Mock()
+        mock_module.params = _params(context="pod1", wait=False)
+        mock_array = _mock_array()
         mock_array.patch_workloads.return_value = _mock_workload_response(
             status="recovering"
         )
@@ -644,7 +716,7 @@ class TestRenameWorkloadSuccess:
         mock_module.params = _params(
             name="old-workload", rename="new-workload", context="pod1"
         )
-        mock_array = Mock()
+        mock_array = _mock_array()
         # The PATCH response is keyed by the new name
         mock_array.patch_workloads.return_value = _mock_workload_response(
             name="new-workload"
@@ -667,8 +739,8 @@ class TestCreateWorkloadSuccess:
         """Test create_workload successfully creates"""
         mock_module = Mock()
         mock_module.check_mode = False
-        mock_module.params = _params(preset="test-preset", context="pod1")
-        mock_array = Mock()
+        mock_module.params = _params(preset="test-preset", context="pod1", wait=False)
+        mock_array = _mock_array()
         # A freshly created workload is still provisioning
         mock_array.post_workloads.return_value = _mock_workload_response(
             context="pod1", status="creating"
@@ -710,8 +782,9 @@ class TestCreateWorkloadSuccess:
             recommendation=True,
             # Fusion's recommendation replaces this requested placement
             placement="arrayA",
+            wait=False,
         )
-        mock_array = Mock()
+        mock_array = _mock_array()
         mock_array.post_workloads.return_value = _mock_workload_response(
             context="arrayB", status="creating"
         )
@@ -760,7 +833,7 @@ class TestCreateWorkloadSuccess:
         mock_module = Mock()
         mock_module.check_mode = True
         mock_module.params = _params(preset="test-preset", context="pod1")
-        mock_array = Mock()
+        mock_array = _mock_array()
         mock_fleet = Mock()
         mock_preset_config = Mock()
         mock_preset_config.parameters = []
@@ -780,9 +853,12 @@ class TestCreateWorkloadSuccess:
 class TestExpandWorkloadSuccess:
     """Test cases for expand_workload function success scenarios"""
 
-    @patch("plugins.modules.purefa_workload._connect_volumes")
+    @patch("plugins.modules.purefa_workload._wait_for_volumes")
+    @patch("plugins.modules.purefa_workload._connect_host")
     @patch("plugins.modules.purefa_workload._create_volume")
-    def test_expand_workload_success(self, mock_create_vol, mock_connect_vols):
+    def test_expand_workload_success(
+        self, mock_create_vol, mock_connect_host, mock_wait_for_volumes
+    ):
         """Test expand_workload successfully expands"""
         mock_module = Mock()
         mock_module.check_mode = False
@@ -793,7 +869,8 @@ class TestExpandWorkloadSuccess:
             volume_count=2,
             host="host1",
         )
-        mock_array = Mock()
+        mock_array = _mock_array()
+        mock_wait_for_volumes.return_value = _mock_workload()
         mock_fleet = Mock()
         # Create volume config that matches
         mock_vol_config = Mock()
@@ -805,9 +882,13 @@ class TestExpandWorkloadSuccess:
         )
 
         assert mock_create_vol.call_count == 2
-        mock_connect_vols.assert_called_once()
+        # The host is reconciled against the full volume set, not just the new
+        # volumes - only the ones it cannot see get posted, inside _connect_host
+        mock_connect_host.assert_called_once_with(
+            mock_module, mock_array, "test-workload", "pod1", WORKLOAD_VOLUMES
+        )
         mock_module.exit_json.assert_called_once_with(
-            changed=True, workload=_expected_facts()
+            changed=True, workload=_expected_facts(host="host1")
         )
 
     @patch("plugins.modules.purefa_workload._create_volume")
@@ -824,7 +905,7 @@ class TestExpandWorkloadSuccess:
             volume_count=2,
         )
         mock_module.fail_json.side_effect = SystemExit(1)
-        mock_array = Mock()
+        mock_array = _mock_array()
         mock_fleet = Mock()
         # Create volume config with different name
         mock_vol_config = Mock()
@@ -852,7 +933,7 @@ class TestDeleteWorkloadWithEradicate:
         mock_module = Mock()
         mock_module.check_mode = False
         mock_module.params = _params(context="pod1", eradicate=True)
-        mock_array = Mock()
+        mock_array = _mock_array()
         mock_array.patch_workloads.return_value = _mock_workload_response(
             destroyed=True
         )
@@ -875,7 +956,7 @@ class TestDeleteWorkloadWithEradicate:
         # is the only one that ever runs on this path
         mock_module.exit_json.side_effect = SystemExit(0)
         mock_module.params = _params(context="pod1", eradicate=True)
-        mock_array = Mock()
+        mock_array = _mock_array()
         mock_array.patch_workloads.return_value = _mock_workload_response(
             destroyed=True
         )
@@ -892,8 +973,8 @@ class TestDeleteWorkloadWithEradicate:
         """Test delete_workload without eradicate flag"""
         mock_module = Mock()
         mock_module.check_mode = False
-        mock_module.params = _params(context="pod1")
-        mock_array = Mock()
+        mock_module.params = _params(context="pod1", wait=False)
+        mock_array = _mock_array()
         mock_array.patch_workloads.return_value = _mock_workload_response(
             destroyed=True
         )
@@ -909,91 +990,90 @@ class TestDeleteWorkloadWithEradicate:
 class TestRecoverWorkloadWithHost:
     """Test cases for recover_workload with host option"""
 
-    @patch("plugins.modules.purefa_workload._connect_volumes")
+    @patch("plugins.modules.purefa_workload._wait_for_status")
+    @patch("plugins.modules.purefa_workload._connect_host")
     @patch("plugins.modules.purefa_workload.check_response")
     def test_recover_workload_with_host(
-        self, mock_check_response, mock_connect_volumes
+        self, mock_check_response, mock_connect_host, mock_wait_for_status
     ):
         """Test recover_workload with host connection"""
         mock_module = Mock()
         mock_module.check_mode = False
         mock_module.params = _params(context="pod1", host="host1")
-        mock_array = Mock()
+        mock_array = _mock_array()
         mock_array.patch_workloads.return_value = _mock_workload_response()
+        mock_wait_for_status.return_value = _mock_workload()
 
         recover_workload(mock_module, mock_array)
 
         mock_array.patch_workloads.assert_called_once()
-        mock_connect_volumes.assert_called_once_with(mock_module, mock_array)
+        # Recovered volumes may have kept their connections, so the diff inside
+        # _connect_host is what stops this reposting and failing
+        mock_connect_host.assert_called_once_with(
+            mock_module, mock_array, "test-workload", "pod1", WORKLOAD_VOLUMES
+        )
         mock_module.exit_json.assert_called_once_with(
-            changed=True, workload=_expected_facts()
+            changed=True, workload=_expected_facts(host="host1")
         )
 
 
 class TestConnectOrDisconnectVolumesSuccess:
     """Test cases for connect_or_disconnect_volumes success paths"""
 
-    @patch("plugins.modules.purefa_workload._connect_volumes")
+    @patch("plugins.modules.purefa_workload._wait_for_connections")
+    @patch("plugins.modules.purefa_workload.ConnectionPost")
     @patch("plugins.modules.purefa_workload.check_response")
-    def test_connect_volumes_success(self, mock_check_response, mock_connect_volumes):
-        """Test connect_or_disconnect_volumes connects volumes"""
+    @patch("plugins.modules.purefa_workload._wait_for_status")
+    def test_connect_volumes_success(
+        self,
+        mock_wait_for_status,
+        mock_check_response,
+        mock_connection_post,
+        mock_wait_for_connections,
+    ):
+        """Test connect_or_disconnect_volumes connects the missing volumes"""
         mock_module = Mock()
         mock_module.check_mode = False
         mock_module.params = _params(context="pod1", host="host1")
-        mock_array = Mock()
-        # Mock no existing connections
-        mock_response = Mock()
-        mock_response.status_code = 200
-        mock_response.items = []
-        mock_array.get_connections.return_value = mock_response
-        # Mock workload volumes exist
-        mock_vol_response = Mock()
-        mock_vol_response.status_code = 200
-        mock_vol_response.items = [Mock(name="vol1")]
-        mock_array.get_volumes.return_value = mock_vol_response
+        mock_array = _mock_array(connected=[])
+        mock_wait_for_status.return_value = _mock_workload()
 
         connect_or_disconnect_volumes(
             mock_module, mock_array, "connect", _mock_workload()
         )
 
-        mock_connect_volumes.assert_called_once_with(mock_module, mock_array)
+        mock_array.post_connections.assert_called_once_with(
+            host_names=["host1"],
+            volume_names=WORKLOAD_VOLUMES,
+            context_names=["pod1"],
+            connection=mock_connection_post.return_value,
+        )
         mock_module.exit_json.assert_called_once_with(
-            changed=True, workload=_expected_facts()
+            changed=True, workload=_expected_facts(host="host1")
         )
 
-    @patch("plugins.modules.purefa_workload._disconnect_volumes")
+    @patch("plugins.modules.purefa_workload._wait_for_connections")
     @patch("plugins.modules.purefa_workload.check_response")
     def test_disconnect_volumes_success(
-        self, mock_check_response, mock_disconnect_volumes
+        self, mock_check_response, mock_wait_for_connections
     ):
-        """Test connect_or_disconnect_volumes disconnects volumes"""
+        """Test connect_or_disconnect_volumes disconnects the attached volumes"""
         mock_module = Mock()
         mock_module.check_mode = False
         mock_module.params = _params(context="pod1", host="host1")
-        mock_array = Mock()
-        # Mock existing connections - volume name must be accessible via conn.volume.name
-        mock_response = Mock()
-        mock_response.status_code = 200
-        mock_conn = Mock()
-        mock_conn.volume = Mock()
-        mock_conn.volume.name = "vol1"  # Set as attribute, not constructor arg
-        mock_response.items = [mock_conn]
-        mock_array.get_connections.return_value = mock_response
-        # Mock workload volumes exist - must match connection volume name
-        mock_vol_response = Mock()
-        mock_vol_response.status_code = 200
-        mock_vol = Mock()
-        mock_vol.name = "vol1"  # Must match the connection volume name
-        mock_vol_response.items = [mock_vol]
-        mock_array.get_volumes.return_value = mock_vol_response
+        mock_array = _mock_array(connected=WORKLOAD_VOLUMES)
 
         connect_or_disconnect_volumes(
             mock_module, mock_array, "disconnect", _mock_workload()
         )
 
-        mock_disconnect_volumes.assert_called_once_with(mock_module, mock_array)
+        mock_array.delete_connections.assert_called_once_with(
+            host_names=["host1"],
+            volume_names=WORKLOAD_VOLUMES,
+            context_names=["pod1"],
+        )
         mock_module.exit_json.assert_called_once_with(
-            changed=True, workload=_expected_facts()
+            changed=True, workload=_expected_facts(host="host1")
         )
 
 
@@ -1011,7 +1091,7 @@ class TestCreateVolume:
 
         mock_module = Mock()
         mock_module.params = _params(volume_configuration="vol-config", context="pod1")
-        mock_array = Mock()
+        mock_array = _mock_array()
         created_volume = Mock()
         created_volume.name = "test-workload-vol1"
         mock_array.post_volumes.return_value = Mock(
@@ -1026,53 +1106,251 @@ class TestCreateVolume:
         assert result == "test-workload-vol1"
 
 
-class TestDisconnectVolumes:
-    """Test cases for _disconnect_volumes helper function"""
+class TestDisconnectHost:
+    """Test cases for _disconnect_host
+
+    The invariant here is the one that destroys data if it regresses: only the
+    workload's own volumes may ever be disconnected.
+    """
 
     @patch("plugins.modules.purefa_workload.check_response")
-    def test_disconnect_volumes_success(self, mock_check_response):
-        """Test _disconnect_volumes disconnects all workload volumes"""
-        from plugins.modules.purefa_workload import _disconnect_volumes
+    def test_never_widens_beyond_the_workload(self, mock_check_response):
+        """A host's connections outside the workload are left strictly alone"""
+        from plugins.modules.purefa_workload import _disconnect_host
 
         mock_module = Mock()
-        mock_module.params = _params(context="pod1", host="host1")
-        mock_array = Mock()
-        mock_vol = Mock()
-        mock_vol.name = "vol1"
-        mock_array.get_volumes.return_value = Mock(items=[mock_vol])
-        mock_array.delete_connections.return_value = Mock(status_code=200)
-
-        _disconnect_volumes(mock_module, mock_array)
-
-        mock_array.get_volumes.assert_called_once()
-        mock_array.delete_connections.assert_called_once_with(
-            host_names=["host1"],
-            context_names=["pod1"],
-            volume_names=["vol1"],
+        mock_module.check_mode = False
+        mock_module.params = _params(context="pod1", host="host1", wait=False)
+        mock_array = _mock_array()
+        # Deliberately make the read over-return a volume that has nothing to do
+        # with this workload, so the intersection guard is what is under test
+        mock_array.get_connections.side_effect = None
+        mock_array.get_connections.return_value = _mock_connections_response(
+            WORKLOAD_VOLUMES + ["other-vol"]
         )
 
+        changed = _disconnect_host(
+            mock_module, mock_array, "test-workload", "pod1", WORKLOAD_VOLUMES
+        )
 
-class TestConnectVolumes:
-    """Test cases for _connect_volumes helper function"""
+        assert changed is True
+        mock_array.delete_connections.assert_called_once_with(
+            host_names=["host1"],
+            volume_names=WORKLOAD_VOLUMES,
+            context_names=["pod1"],
+        )
+        # volume_names is always sent, and never names a foreign volume
+        call_kwargs = mock_array.delete_connections.call_args.kwargs
+        assert "other-vol" not in call_kwargs["volume_names"]
+        assert call_kwargs["volume_names"]
 
     @patch("plugins.modules.purefa_workload.check_response")
-    @patch("plugins.modules.purefa_workload.ConnectionPost")
-    def test_connect_volumes_success(self, mock_connection_post, mock_check_response):
-        """Test _connect_volumes connects all workload volumes"""
-        from plugins.modules.purefa_workload import _connect_volumes
+    def test_deletes_only_what_is_attached(self, mock_check_response):
+        """Converges from a partially attached host rather than failing"""
+        from plugins.modules.purefa_workload import _disconnect_host
 
         mock_module = Mock()
+        mock_module.check_mode = False
+        mock_module.params = _params(context="pod1", host="host1", wait=False)
+        mock_array = _mock_array(connected=["wl-vol1"])
+
+        changed = _disconnect_host(
+            mock_module, mock_array, "test-workload", "pod1", WORKLOAD_VOLUMES
+        )
+
+        assert changed is True
+        mock_array.delete_connections.assert_called_once_with(
+            host_names=["host1"],
+            volume_names=["wl-vol1"],
+            context_names=["pod1"],
+        )
+
+    def test_no_op_when_nothing_is_attached(self):
+        """Nothing to remove means no call and no change"""
+        from plugins.modules.purefa_workload import _disconnect_host
+
+        mock_module = Mock()
+        mock_module.check_mode = False
+        mock_module.params = _params(context="pod1", host="host1", wait=False)
+        mock_array = _mock_array(connected=[])
+
+        changed = _disconnect_host(
+            mock_module, mock_array, "test-workload", "pod1", WORKLOAD_VOLUMES
+        )
+
+        assert changed is False
+        mock_array.delete_connections.assert_not_called()
+
+    def test_check_mode_reports_without_acting(self):
+        """Check mode returns the diff result but touches nothing"""
+        from plugins.modules.purefa_workload import _disconnect_host
+
+        mock_module = Mock()
+        mock_module.check_mode = True
         mock_module.params = _params(context="pod1", host="host1")
-        mock_array = Mock()
-        mock_vol = Mock()
-        mock_vol.name = "vol1"
-        mock_array.get_volumes.return_value = Mock(items=[mock_vol])
-        mock_array.post_connections.return_value = Mock(status_code=200)
+        mock_array = _mock_array(connected=WORKLOAD_VOLUMES)
 
-        _connect_volumes(mock_module, mock_array)
+        changed = _disconnect_host(
+            mock_module, mock_array, "test-workload", "pod1", WORKLOAD_VOLUMES
+        )
 
-        mock_array.get_volumes.assert_called_once()
-        mock_array.post_connections.assert_called_once()
+        assert changed is True
+        mock_array.delete_connections.assert_not_called()
+
+    def test_no_volumes_reads_and_writes_nothing(self):
+        """A workload with no volumes yet cannot have connections to remove"""
+        from plugins.modules.purefa_workload import _disconnect_host
+
+        mock_module = Mock()
+        mock_module.check_mode = False
+        mock_module.params = _params(context="pod1", host="host1", wait=False)
+        mock_array = _mock_array()
+
+        assert (
+            _disconnect_host(mock_module, mock_array, "test-workload", "pod1", [])
+            is False
+        )
+        mock_array.get_connections.assert_not_called()
+        mock_array.delete_connections.assert_not_called()
+
+
+class TestConnectHost:
+    """Test cases for _connect_host"""
+
+    @patch("plugins.modules.purefa_workload.ConnectionPost")
+    @patch("plugins.modules.purefa_workload.check_response")
+    def test_never_reposts_and_never_widens(
+        self, mock_check_response, mock_connection_post
+    ):
+        """Only the volumes the host cannot see are posted
+
+        post_connections has no allow_errors, so reposting wl-vol1 would fail the
+        task. This is the regression that makes expand-with-host unusable.
+        """
+        from plugins.modules.purefa_workload import _connect_host
+
+        mock_module = Mock()
+        mock_module.check_mode = False
+        mock_module.params = _params(context="pod1", host="host1", wait=False)
+        # Already on one workload volume, plus one that is none of our business.
+        # The read is left unscoped on purpose, so the set difference is what
+        # keeps other-vol out of the POST.
+        mock_array = _mock_array()
+        mock_array.get_connections.side_effect = None
+        mock_array.get_connections.return_value = _mock_connections_response(
+            ["wl-vol1", "other-vol"]
+        )
+
+        changed = _connect_host(
+            mock_module, mock_array, "test-workload", "pod1", WORKLOAD_VOLUMES
+        )
+
+        assert changed is True
+        mock_array.post_connections.assert_called_once_with(
+            host_names=["host1"],
+            volume_names=["wl-vol2"],
+            context_names=["pod1"],
+            connection=mock_connection_post.return_value,
+        )
+
+    @patch("plugins.modules.purefa_workload.check_response")
+    def test_no_op_when_fully_connected(self, mock_check_response):
+        """Already seeing everything means no call and no change"""
+        from plugins.modules.purefa_workload import _connect_host
+
+        mock_module = Mock()
+        mock_module.check_mode = False
+        mock_module.params = _params(context="pod1", host="host1", wait=False)
+        mock_array = _mock_array(connected=WORKLOAD_VOLUMES)
+
+        changed = _connect_host(
+            mock_module, mock_array, "test-workload", "pod1", WORKLOAD_VOLUMES
+        )
+
+        assert changed is False
+        mock_array.post_connections.assert_not_called()
+
+    def test_check_mode_reports_without_acting(self):
+        """Check mode returns the diff result but touches nothing"""
+        from plugins.modules.purefa_workload import _connect_host
+
+        mock_module = Mock()
+        mock_module.check_mode = True
+        mock_module.params = _params(context="pod1", host="host1")
+        mock_array = _mock_array(connected=[])
+
+        changed = _connect_host(
+            mock_module, mock_array, "test-workload", "pod1", WORKLOAD_VOLUMES
+        )
+
+        assert changed is True
+        mock_array.post_connections.assert_not_called()
+
+    def test_no_volumes_posts_nothing(self):
+        """A workload with no volumes yet has nothing to connect
+
+        The old helper reached post_connections with volume_names=[], which the
+        array rejects.
+        """
+        from plugins.modules.purefa_workload import _connect_host
+
+        mock_module = Mock()
+        mock_module.check_mode = False
+        mock_module.params = _params(context="pod1", host="host1", wait=False)
+        mock_array = _mock_array()
+
+        assert (
+            _connect_host(mock_module, mock_array, "test-workload", "pod1", []) is False
+        )
+        mock_array.get_connections.assert_not_called()
+        mock_array.post_connections.assert_not_called()
+
+
+class TestScopedReads:
+    """Test cases for the two shared read helpers"""
+
+    @patch("plugins.modules.purefa_workload.check_response")
+    def test_volume_names_are_checked_and_sorted(self, mock_check_response):
+        """The volume read goes through check_response, unlike the old helpers"""
+        from plugins.modules.purefa_workload import _workload_volume_names
+
+        mock_module = Mock()
+        mock_module.params = _params()
+        mock_array = _mock_array(volume_names=["wl-vol2", "wl-vol1"])
+
+        result = _workload_volume_names(
+            mock_module, mock_array, "test-workload", "pod1"
+        )
+
+        assert result == ["wl-vol1", "wl-vol2"]
+        mock_array.get_volumes.assert_called_once_with(
+            filter="workload.name='test-workload'", context_names=["pod1"]
+        )
+        mock_check_response.assert_called_once()
+
+    @patch("plugins.modules.purefa_workload.check_response")
+    def test_connections_are_scoped_to_one_host_and_many_volumes(
+        self, mock_check_response
+    ):
+        """The SDK rejects multiple names on two objects at once"""
+        from plugins.modules.purefa_workload import _connected_volume_names
+
+        mock_module = Mock()
+        mock_module.params = _params()
+        mock_array = _mock_array(connected=["wl-vol1"])
+
+        result = _connected_volume_names(
+            mock_module, mock_array, "pod1", WORKLOAD_VOLUMES, "host1"
+        )
+
+        assert result == {"wl-vol1"}
+        mock_array.get_connections.assert_called_once_with(
+            host_names=["host1"],
+            volume_names=WORKLOAD_VOLUMES,
+            context_names=["pod1"],
+        )
+        assert len(mock_array.get_connections.call_args.kwargs["host_names"]) == 1
+        mock_check_response.assert_called_once()
 
 
 class TestMain:
@@ -1114,10 +1392,10 @@ class TestMain:
         mock_loose_version.side_effect = lambda x: float(x) if x else 0.0
 
         mock_module = Mock()
-        mock_module.params = {"volume_count": None}
+        mock_module.params = {"volume_count": None, "host": "", "wait": True}
         mock_module.fail_json.side_effect = SystemExit(1)
         mock_ansible_module.return_value = mock_module
-        mock_array = Mock()
+        mock_array = _mock_array()
         mock_array.get_rest_version.return_value = "2.0"  # Too old (needs 2.40)
         mock_get_array.return_value = mock_array
 
@@ -1142,6 +1420,8 @@ class TestMain:
         mock_module = Mock()
         mock_module.params = {
             "volume_count": -1,
+            "host": "",
+            "wait": True,
             "state": "present",
             "preset": "test-preset",
             "context": "",
@@ -1149,7 +1429,7 @@ class TestMain:
         }
         mock_module.fail_json.side_effect = SystemExit(1)
         mock_ansible_module.return_value = mock_module
-        mock_array = Mock()
+        mock_array = _mock_array()
         mock_array.get_rest_version.return_value = "2.40"
         mock_get_array.return_value = mock_array
 
@@ -1191,7 +1471,7 @@ class TestMain:
             "eradicate": False,
         }
         mock_ansible_module.return_value = mock_module
-        mock_array = Mock()
+        mock_array = _mock_array()
         mock_array.get_rest_version.return_value = "2.40"
         mock_fleet_response = Mock(status_code=200)
         mock_fleet = Mock()
@@ -1241,7 +1521,7 @@ class TestMain:
             "eradicate": False,
         }
         mock_ansible_module.return_value = mock_module
-        mock_array = Mock()
+        mock_array = _mock_array()
         mock_array.get_rest_version.return_value = "2.40"
         mock_fleet_response = Mock(status_code=200)
         mock_fleet = Mock()
@@ -1292,7 +1572,7 @@ class TestMain:
             "eradicate": True,
         }
         mock_ansible_module.return_value = mock_module
-        mock_array = Mock()
+        mock_array = _mock_array()
         mock_array.get_rest_version.return_value = "2.40"
         mock_fleet_response = Mock(status_code=200)
         mock_fleet = Mock()
@@ -1341,7 +1621,7 @@ class TestMain:
             "eradicate": False,
         }
         mock_ansible_module.return_value = mock_module
-        mock_array = Mock()
+        mock_array = _mock_array()
         mock_array.get_rest_version.return_value = "2.40"
         mock_fleet_response = Mock(status_code=200)
         mock_fleet = Mock()
@@ -1388,7 +1668,7 @@ class TestMain:
             "rename": None,
         }
         mock_ansible_module.return_value = mock_module
-        mock_array = Mock()
+        mock_array = _mock_array()
         mock_array.get_rest_version.return_value = "2.40"
         mock_fleet_response = Mock(status_code=200)
         mock_fleet = Mock()
@@ -1433,7 +1713,7 @@ class TestMainContextDefault:
         mock_module.params.update(params)
         mock_ansible_module.return_value = mock_module
 
-        mock_array = Mock()
+        mock_array = _mock_array()
         mock_array.get_rest_version.return_value = "2.40"
         mock_fleet = Mock()
         mock_fleet.name = "test-fleet"
@@ -1504,16 +1784,16 @@ class TestMainContextDefault:
 
 
 class TestWaitDisabled:
-    """The default must preserve the pre-wait behaviour exactly"""
+    """wait: false is the fire-and-forget opt-out, available without a host"""
 
     @patch("plugins.modules.purefa_workload.wait_for")
     @patch("plugins.modules.purefa_workload.check_response")
-    def test_create_does_not_poll_by_default(self, mock_check_response, mock_wait_for):
+    def test_create_does_not_poll(self, mock_check_response, mock_wait_for):
         """Test create_workload issues no polls when wait is false"""
         mock_module = Mock()
         mock_module.check_mode = False
-        mock_module.params = _params(preset="test-preset", context="pod1")
-        mock_array = Mock()
+        mock_module.params = _params(preset="test-preset", context="pod1", wait=False)
+        mock_array = _mock_array()
         mock_array.post_workloads.return_value = _mock_workload_response(
             context="pod1", status="creating"
         )
@@ -1529,12 +1809,12 @@ class TestWaitDisabled:
 
     @patch("plugins.modules.purefa_workload.wait_for")
     @patch("plugins.modules.purefa_workload.check_response")
-    def test_delete_does_not_poll_by_default(self, mock_check_response, mock_wait_for):
+    def test_delete_does_not_poll(self, mock_check_response, mock_wait_for):
         """Test delete_workload issues no polls when wait is false"""
         mock_module = Mock()
         mock_module.check_mode = False
-        mock_module.params = _params(context="pod1")
-        mock_array = Mock()
+        mock_module.params = _params(context="pod1", wait=False)
+        mock_array = _mock_array()
         mock_array.patch_workloads.return_value = _mock_workload_response(
             context="pod1", status="destroying", destroyed=True
         )
@@ -1552,7 +1832,7 @@ class TestWaitDisabled:
         mock_module.params = _params(
             name="old-workload", rename="new-workload", context="pod1", wait=True
         )
-        mock_array = Mock()
+        mock_array = _mock_array()
         mock_array.patch_workloads.return_value = _mock_workload_response(
             name="new-workload", context="pod1"
         )
@@ -1565,11 +1845,8 @@ class TestWaitDisabled:
         )
 
     @patch("plugins.modules.purefa_workload.wait_for")
-    @patch("plugins.modules.purefa_workload._connect_volumes")
     @patch("plugins.modules.purefa_workload._create_volume")
-    def test_expand_does_not_wait_in_check_mode(
-        self, mock_create_vol, mock_connect_vols, mock_wait_for
-    ):
+    def test_expand_does_not_wait_in_check_mode(self, mock_create_vol, mock_wait_for):
         """Waiting is a complete no-op under check mode"""
         mock_module = Mock()
         mock_module.check_mode = True
@@ -1583,12 +1860,28 @@ class TestWaitDisabled:
         vol_config = Mock()
         vol_config.name = "vol-config1"
 
-        mock_array = Mock()
+        mock_array = _mock_array()
 
         expand_workload(mock_module, mock_array, Mock(), [vol_config], _mock_workload())
 
         mock_wait_for.assert_not_called()
         mock_array.get_workloads.assert_not_called()
+
+    @patch("plugins.modules.purefa_workload.wait_for")
+    @patch("plugins.modules.purefa_workload.check_response")
+    def test_host_less_eradicate_does_not_poll(
+        self, mock_check_response, mock_wait_for
+    ):
+        """Test eradicate_workload issues no polls when wait is false"""
+        mock_module = Mock()
+        mock_module.check_mode = False
+        mock_module.params = _params(context="pod1", wait=False)
+        mock_array = _mock_array()
+        mock_array.delete_workloads.return_value = Mock(status_code=200)
+
+        eradicate_workload(mock_module, mock_array)
+
+        mock_wait_for.assert_not_called()
 
 
 class TestWaitForCreate:
@@ -1601,7 +1894,7 @@ class TestWaitForCreate:
         mock_module = Mock()
         mock_module.check_mode = False
         mock_module.params = _params(preset="test-preset", context="pod1", wait=True)
-        mock_array = Mock()
+        mock_array = _mock_array()
         mock_array.post_workloads.return_value = _mock_workload_response(
             context="pod1", status="creating"
         )
@@ -1627,7 +1920,7 @@ class TestWaitForCreate:
         mock_module = Mock()
         mock_module.check_mode = False
         mock_module.params = _params(preset="test-preset", context="pod1", wait=True)
-        mock_array = Mock()
+        mock_array = _mock_array()
         mock_array.post_workloads.return_value = _mock_workload_response(context="pod1")
         mock_array.get_workloads.return_value = _mock_workload_response(context="pod1")
         mock_wait_for.return_value = _mock_workload(context="pod1")
@@ -1648,7 +1941,7 @@ class TestWaitForCreate:
         mock_module = Mock()
         mock_module.check_mode = False
         mock_module.params = _params(preset="test-preset", context="pod1", wait=True)
-        mock_array = Mock()
+        mock_array = _mock_array()
         mock_array.post_workloads.return_value = _mock_workload_response(context="pod1")
         mock_wait_for.return_value = _mock_workload(context="pod1")
 
@@ -1671,7 +1964,7 @@ class TestWaitForCreate:
         mock_module = Mock()
         mock_module.check_mode = False
         mock_module.params = _params(preset="test-preset", context="pod1", wait=True)
-        mock_array = Mock()
+        mock_array = _mock_array()
         mock_array.post_workloads.return_value = _mock_workload_response(context="pod1")
         mock_wait_for.return_value = _mock_workload(context="pod1")
 
@@ -1705,7 +1998,7 @@ class TestWaitForCreate:
             placement="arrayA",
             wait=True,
         )
-        mock_array = Mock()
+        mock_array = _mock_array()
         mock_calc = Mock()
         mock_calc.name = "calc-1"
         mock_array.post_workloads_placement_recommendations.return_value = Mock(
@@ -1750,7 +2043,7 @@ class TestWaitForRecover:
         mock_module = Mock()
         mock_module.check_mode = False
         mock_module.params = _params(context="pod1", wait=True)
-        mock_array = Mock()
+        mock_array = _mock_array()
         mock_array.patch_workloads.return_value = _mock_workload_response(
             context="pod1", status="recovering"
         )
@@ -1782,7 +2075,7 @@ class TestWaitForDelete:
         mock_module = Mock()
         mock_module.check_mode = False
         mock_module.params = _params(context="pod1", wait=True)
-        mock_array = Mock()
+        mock_array = _mock_array()
         mock_array.patch_workloads.return_value = _mock_workload_response(
             context="pod1", status="destroying", destroyed=True
         )
@@ -1825,7 +2118,7 @@ class TestWaitForEradicate:
         mock_module = Mock()
         mock_module.check_mode = False
         mock_module.params = _params(context="pod1", wait=True)
-        mock_array = Mock()
+        mock_array = _mock_array()
         mock_array.delete_workloads.return_value = Mock(status_code=200)
 
         eradicate_workload(mock_module, mock_array)
@@ -1849,7 +2142,7 @@ class TestWaitForEradicate:
         mock_module = Mock()
         mock_module.check_mode = False
         mock_module.params = _params(context="pod1", wait=True)
-        mock_array = Mock()
+        mock_array = _mock_array()
         mock_array.delete_workloads.return_value = Mock(status_code=200)
         mock_array.get_workloads.return_value = Mock(status_code=404)
 
@@ -1868,7 +2161,7 @@ class TestWaitForEradicate:
         mock_module = Mock()
         mock_module.check_mode = False
         mock_module.params = _params(context="pod1", wait=True)
-        mock_array = Mock()
+        mock_array = _mock_array()
         mock_array.delete_workloads.return_value = Mock(status_code=200)
         mock_array.get_workloads.return_value = Mock(status_code=500, items=[])
 
@@ -1898,12 +2191,12 @@ class TestWaitForExpand:
             volume_count=2,
             wait=True,
         )
-        mock_create_vol.side_effect = ["wl-vol1", "wl-vol2"]
+        mock_create_vol.side_effect = list(WORKLOAD_VOLUMES)
         vol_config = Mock()
         vol_config.name = "vol-config1"
         mock_wait_for.return_value = {
             "workload": _mock_workload(context="pod1", status="ready"),
-            "volumes": {"wl-vol1", "wl-vol2"},
+            "volumes": set(WORKLOAD_VOLUMES),
         }
 
         expand_workload(
@@ -1917,14 +2210,10 @@ class TestWaitForExpand:
         return mock_module
 
     @patch("plugins.modules.purefa_workload.wait_for")
-    @patch("plugins.modules.purefa_workload._connect_volumes")
     @patch("plugins.modules.purefa_workload._create_volume")
-    def test_expand_waits_on_volumes_and_workload(
-        self, mock_create_vol, mock_connect_vols, mock_wait_for
-    ):
+    def test_expand_waits_on_volumes_and_workload(self, mock_create_vol, mock_wait_for):
         """Test expand waits for both the new volumes and the workload status"""
-        mock_array = Mock()
-        mock_array.get_volumes.return_value = Mock(status_code=200, items=[])
+        mock_array = _mock_array()
         mock_array.get_workloads.return_value = _mock_workload_response(context="pod1")
 
         mock_module = self._run_expand(mock_wait_for, mock_create_vol, mock_array)
@@ -1936,7 +2225,7 @@ class TestWaitForExpand:
         ready = _mock_workload(status="ready")
         is_done = wait_kwargs["is_done"]
         # Both halves satisfied
-        assert is_done({"workload": ready, "volumes": {"wl-vol1", "wl-vol2"}}) is True
+        assert is_done({"workload": ready, "volumes": set(WORKLOAD_VOLUMES)}) is True
         # A volume this task created has not appeared yet
         assert is_done({"workload": ready, "volumes": {"wl-vol1"}}) is False
         # The volumes exist, but the preset is still deriving configuration
@@ -1944,7 +2233,7 @@ class TestWaitForExpand:
             is_done(
                 {
                     "workload": _mock_workload(status="creating"),
-                    "volumes": {"wl-vol1", "wl-vol2"},
+                    "volumes": set(WORKLOAD_VOLUMES),
                 }
             )
             is False
@@ -1955,43 +2244,339 @@ class TestWaitForExpand:
         )
 
     @patch("plugins.modules.purefa_workload.wait_for")
-    @patch("plugins.modules.purefa_workload._connect_volumes")
     @patch("plugins.modules.purefa_workload._create_volume")
     def test_expand_probe_targets_the_created_volumes(
-        self, mock_create_vol, mock_connect_vols, mock_wait_for
+        self, mock_create_vol, mock_wait_for
     ):
         """Test the poll names the volumes this task created, not a volume count"""
-        mock_array = Mock()
-        created = [Mock(), Mock()]
-        created[0].name = "wl-vol1"
-        created[1].name = "wl-vol2"
-        mock_array.get_volumes.return_value = Mock(status_code=200, items=created)
+        mock_array = _mock_array()
         mock_array.get_workloads.return_value = _mock_workload_response(context="pod1")
 
         self._run_expand(mock_wait_for, mock_create_vol, mock_array)
 
+        # The facts read has already happened, so isolate the probe's own call
+        mock_array.get_volumes.reset_mock()
         state = mock_wait_for.call_args.kwargs["probe"]()
 
         mock_array.get_volumes.assert_called_once_with(
-            names=["wl-vol1", "wl-vol2"], context_names=["pod1"]
+            names=WORKLOAD_VOLUMES, context_names=["pod1"]
         )
-        assert state["volumes"] == {"wl-vol1", "wl-vol2"}
+        assert state["volumes"] == set(WORKLOAD_VOLUMES)
         assert state["workload"].name == "test-workload"
 
     @patch("plugins.modules.purefa_workload.wait_for")
-    @patch("plugins.modules.purefa_workload._connect_volumes")
     @patch("plugins.modules.purefa_workload._create_volume")
     def test_expand_probe_tolerates_unresolvable_volume_names(
-        self, mock_create_vol, mock_connect_vols, mock_wait_for
+        self, mock_create_vol, mock_wait_for
     ):
         """A name that does not resolve yet means not created, not failed"""
-        mock_array = Mock()
-        mock_array.get_volumes.return_value = Mock(status_code=400, items=[])
+        mock_array = _mock_array()
         mock_array.get_workloads.return_value = _mock_workload_response(context="pod1")
 
         self._run_expand(mock_wait_for, mock_create_vol, mock_array)
 
+        # Set only now, so the facts read during expand still succeeded
+        mock_array.get_volumes.return_value = _mock_volumes_response(
+            names=[], status_code=400
+        )
         state = mock_wait_for.call_args.kwargs["probe"]()
 
         assert state["volumes"] == set()
         mock_array.get_workloads.assert_called_once()
+
+
+class TestHostRequiresWait:
+    """host cannot be honoured without waiting, so the combination is rejected
+
+    Connecting means the host sees *every* volume in the workload, which cannot
+    be established while the volume set is still growing.
+    """
+
+    @pytest.mark.parametrize("state", ["present", "expand", "absent"])
+    @patch("plugins.modules.purefa_workload.get_array")
+    @patch("plugins.modules.purefa_workload.AnsibleModule")
+    @patch("plugins.modules.purefa_workload.HAS_PURESTORAGE", True)
+    def test_host_with_wait_false_fails(
+        self, mock_ansible_module, mock_get_array, state
+    ):
+        """Test main() rejects host with wait: false before touching the array"""
+        from plugins.modules.purefa_workload import main
+
+        mock_module = Mock()
+        mock_module.params = _params(state=state, host="host1", wait=False)
+        mock_module.fail_json.side_effect = SystemExit(1)
+        mock_ansible_module.return_value = mock_module
+
+        with pytest.raises(SystemExit):
+            main()
+
+        mock_module.fail_json.assert_called_once()
+        assert "wait" in mock_module.fail_json.call_args.kwargs["msg"]
+        # Fails before any API call, so nothing was asked of the array
+        mock_get_array.assert_not_called()
+
+    @patch("plugins.modules.purefa_workload.LooseVersion")
+    @patch("plugins.modules.purefa_workload.get_array")
+    @patch("plugins.modules.purefa_workload.AnsibleModule")
+    @patch("plugins.modules.purefa_workload.HAS_PURESTORAGE", True)
+    def test_wait_false_without_host_is_allowed(
+        self, mock_ansible_module, mock_get_array, mock_loose_version
+    ):
+        """Fire-and-forget stays available to tasks that ask for no host work"""
+        from plugins.modules.purefa_workload import main
+
+        mock_loose_version.side_effect = lambda x: float(x) if x else 0.0
+        mock_module = Mock()
+        mock_module.params = _params(
+            state="absent", preset="test-preset", volume_count=None, wait=False
+        )
+        mock_ansible_module.return_value = mock_module
+        mock_array = _mock_array()
+        mock_array.get_rest_version.return_value = "2.40"
+        mock_fleet = Mock()
+        mock_fleet.name = "test-fleet"
+        mock_array.get_fleets.return_value = Mock(status_code=200, items=[mock_fleet])
+        mock_array.get_arrays.return_value = _mock_get_arrays()
+        mock_array.get_workloads.return_value = Mock(status_code=404)
+        mock_get_array.return_value = mock_array
+
+        main()
+
+        mock_module.fail_json.assert_not_called()
+
+    def test_wait_defaults_to_true_in_the_argument_spec(self):
+        """The default has to be true for host to work without being asked for"""
+        import plugins.modules.purefa_workload as module_under_test
+
+        source = open(module_under_test.__file__).read()
+        assert 'wait=dict(type="bool", default=True)' in source
+        assert 'wait_timeout=dict(type="int", default=300)' in source
+
+
+class TestWaitForConnections:
+    """Test cases for waiting on the host operation itself"""
+
+    def _wait_kwargs(self, mock_wait_for, mock_array, connected):
+        from plugins.modules.purefa_workload import _wait_for_connections
+
+        mock_module = Mock()
+        mock_module.check_mode = False
+        mock_module.params = _params(context="pod1", host="host1")
+
+        _wait_for_connections(
+            mock_module, mock_array, "test-workload", "pod1", connected
+        )
+
+        return mock_wait_for.call_args.kwargs
+
+    @patch("plugins.modules.purefa_workload.wait_for")
+    def test_connect_is_done_only_when_every_volume_is_seen(self, mock_wait_for):
+        """Partial attachment is never an acceptable end state"""
+        kwargs = self._wait_kwargs(mock_wait_for, _mock_array(), True)
+
+        is_done = kwargs["is_done"]
+        assert is_done({"volumes": WORKLOAD_VOLUMES, "seen": {"wl-vol1"}}) is False
+        assert (
+            is_done({"volumes": WORKLOAD_VOLUMES, "seen": set(WORKLOAD_VOLUMES)})
+            is True
+        )
+        assert kwargs["timeout"] == 300
+        assert "connected to" in kwargs["description"]
+
+    @patch("plugins.modules.purefa_workload.wait_for")
+    def test_disconnect_is_done_when_none_are_seen(self, mock_wait_for):
+        """Done is the host seeing none of *these* volumes"""
+        kwargs = self._wait_kwargs(mock_wait_for, _mock_array(), False)
+
+        is_done = kwargs["is_done"]
+        assert is_done({"volumes": WORKLOAD_VOLUMES, "seen": {"wl-vol1"}}) is False
+        assert is_done({"volumes": WORKLOAD_VOLUMES, "seen": set()}) is True
+        assert "disconnected from" in kwargs["description"]
+
+    @patch("plugins.modules.purefa_workload.wait_for")
+    @patch("plugins.modules.purefa_workload.check_response")
+    def test_probe_never_looks_outside_the_workload(
+        self, mock_check_response, mock_wait_for
+    ):
+        """The connection read is scoped to the workload's volumes
+
+        A host still connected to other-vol must not keep a disconnect spinning,
+        which it would if the poll read the host's whole connection list.
+        """
+        mock_array = _mock_array(connected=["other-vol"])
+        kwargs = self._wait_kwargs(mock_wait_for, mock_array, False)
+
+        state = kwargs["probe"]()
+
+        mock_array.get_connections.assert_called_once_with(
+            host_names=["host1"],
+            volume_names=WORKLOAD_VOLUMES,
+            context_names=["pod1"],
+        )
+        # other-vol is not a workload volume, so it cannot appear in seen
+        assert state["seen"] == set()
+        assert kwargs["is_done"](state) is True
+
+    @patch("plugins.modules.purefa_workload.wait_for")
+    @patch("plugins.modules.purefa_workload.check_response")
+    def test_probe_rereads_the_volume_set_each_iteration(
+        self, mock_check_response, mock_wait_for
+    ):
+        """A volume that appears late has to be caught, not missed"""
+        mock_array = _mock_array()
+        kwargs = self._wait_kwargs(mock_wait_for, mock_array, True)
+
+        mock_array.get_volumes.return_value = _mock_volumes_response(["wl-vol1"])
+        first = kwargs["probe"]()
+        mock_array.get_volumes.return_value = _mock_volumes_response(
+            WORKLOAD_VOLUMES + ["wl-vol3"]
+        )
+        second = kwargs["probe"]()
+
+        assert first["volumes"] == ["wl-vol1"]
+        assert second["volumes"] == WORKLOAD_VOLUMES + ["wl-vol3"]
+
+    @patch("plugins.modules.purefa_workload.wait_for")
+    def test_timeout_detail_names_the_outstanding_volumes(self, mock_wait_for):
+        """A timeout has to say which volumes are on the wrong side"""
+        connect = self._wait_kwargs(mock_wait_for, _mock_array(), True)
+        assert (
+            connect["detail"]({"volumes": WORKLOAD_VOLUMES, "seen": {"wl-vol1"}})
+            == "wl-vol2"
+        )
+
+        disconnect = self._wait_kwargs(mock_wait_for, _mock_array(), False)
+        assert (
+            disconnect["detail"]({"volumes": WORKLOAD_VOLUMES, "seen": {"wl-vol1"}})
+            == "wl-vol1"
+        )
+
+
+class TestHostConnectionsAreWaitedOn:
+    """The host operation is covered by wait, not just the workload"""
+
+    @patch("plugins.modules.purefa_workload._wait_for_connections")
+    @patch("plugins.modules.purefa_workload.ConnectionPost")
+    @patch("plugins.modules.purefa_workload.check_response")
+    def test_connect_waits_for_the_connections(
+        self, mock_check_response, mock_connection_post, mock_wait_for_connections
+    ):
+        """Test _connect_host waits for the connections it just posted"""
+        from plugins.modules.purefa_workload import _connect_host
+
+        mock_module = Mock()
+        mock_module.check_mode = False
+        mock_module.params = _params(context="pod1", host="host1")
+        mock_array = _mock_array(connected=[])
+
+        _connect_host(
+            mock_module, mock_array, "test-workload", "pod1", WORKLOAD_VOLUMES
+        )
+
+        mock_wait_for_connections.assert_called_once_with(
+            mock_module, mock_array, "test-workload", "pod1", connected=True
+        )
+
+    @patch("plugins.modules.purefa_workload._wait_for_connections")
+    @patch("plugins.modules.purefa_workload.check_response")
+    def test_disconnect_waits_for_the_connections_to_go(
+        self, mock_check_response, mock_wait_for_connections
+    ):
+        """Test _disconnect_host waits for the connections it just deleted"""
+        from plugins.modules.purefa_workload import _disconnect_host
+
+        mock_module = Mock()
+        mock_module.check_mode = False
+        mock_module.params = _params(context="pod1", host="host1")
+        mock_array = _mock_array(connected=WORKLOAD_VOLUMES)
+
+        _disconnect_host(
+            mock_module, mock_array, "test-workload", "pod1", WORKLOAD_VOLUMES
+        )
+
+        mock_wait_for_connections.assert_called_once_with(
+            mock_module, mock_array, "test-workload", "pod1", connected=False
+        )
+
+    @patch("plugins.modules.purefa_workload._wait_for_connections")
+    @patch("plugins.modules.purefa_workload.check_response")
+    def test_no_wait_when_nothing_changed(
+        self, mock_check_response, mock_wait_for_connections
+    ):
+        """Nothing was posted, so there is nothing to wait for"""
+        from plugins.modules.purefa_workload import _connect_host
+
+        mock_module = Mock()
+        mock_module.check_mode = False
+        mock_module.params = _params(context="pod1", host="host1")
+        mock_array = _mock_array(connected=WORKLOAD_VOLUMES)
+
+        _connect_host(
+            mock_module, mock_array, "test-workload", "pod1", WORKLOAD_VOLUMES
+        )
+
+        mock_wait_for_connections.assert_not_called()
+
+
+class TestVolumeReadsHappenOnce:
+    """The volume list is read at most once per run, not once per consumer"""
+
+    @patch("plugins.modules.purefa_workload._wait_for_connections")
+    @patch("plugins.modules.purefa_workload.ConnectionPost")
+    @patch("plugins.modules.purefa_workload.check_response")
+    @patch("plugins.modules.purefa_workload._wait_for_status")
+    def test_connect_path_reads_volumes_once(
+        self,
+        mock_wait_for_status,
+        mock_check_response,
+        mock_connection_post,
+        mock_wait_for_connections,
+    ):
+        """The diff and the facts share one read, unlike the old helpers"""
+        mock_module = Mock()
+        mock_module.check_mode = False
+        mock_module.params = _params(context="pod1", host="host1")
+        mock_array = _mock_array(connected=[])
+        mock_wait_for_status.return_value = _mock_workload()
+
+        connect_or_disconnect_volumes(
+            mock_module, mock_array, "connect", _mock_workload()
+        )
+
+        mock_array.get_volumes.assert_called_once()
+
+    @patch("plugins.modules.purefa_workload.check_response")
+    def test_rename_path_reads_volumes_once(self, mock_check_response):
+        """Only the facts need them here"""
+        mock_module = Mock()
+        mock_module.check_mode = False
+        mock_module.params = _params(
+            name="old-workload", rename="new-workload", context="pod1"
+        )
+        mock_array = _mock_array()
+        mock_array.patch_workloads.return_value = _mock_workload_response(
+            name="new-workload"
+        )
+
+        rename_workload(mock_module, mock_array, _mock_workload(name="old-workload"))
+
+        mock_array.get_volumes.assert_called_once()
+        # Read under the new name, since that is what the workload is called now
+        assert (
+            mock_array.get_volumes.call_args.kwargs["filter"]
+            == "workload.name='new-workload'"
+        )
+
+    @patch("plugins.modules.purefa_workload.check_response")
+    def test_eradicate_reads_no_volumes(self, mock_check_response):
+        """There is no workload left, so there is nothing to describe or read"""
+        mock_module = Mock()
+        mock_module.check_mode = False
+        mock_module.params = _params(context="pod1", wait=False)
+        mock_array = _mock_array()
+        mock_array.delete_workloads.return_value = Mock(status_code=200)
+
+        eradicate_workload(mock_module, mock_array)
+
+        mock_array.get_volumes.assert_not_called()
+        mock_module.exit_json.assert_called_once_with(changed=True, workload={})

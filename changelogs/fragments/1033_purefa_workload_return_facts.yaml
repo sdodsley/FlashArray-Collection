@@ -1,4 +1,7 @@
 minor_changes:
-  - purefa_workload - Return a ``workload`` dict describing the workload, including the fleet member it was placed on, so a recommendation-based placement can be used by later tasks. The dict includes a module-owned ``completed`` flag; ``status`` is passed through from the array unmodified
-  - purefa_workload - Add ``wait`` and ``wait_timeout`` options to wait for the array to finish provisioning, recovering, expanding, deleting or eradicating a workload, replacing the need to poll ``purefa_info`` with ``until``
+  - purefa_workload - Return a ``workload`` dict describing the workload the task left behind, covering the fleet member it was placed on, its volumes, the host connected to them, and whether the array has finished working on it, so that a recommendation-based placement and the volumes it produced can be used by later tasks
+  - purefa_workload - Add ``wait`` and ``wait_timeout`` options so that a task only returns once the array has finished provisioning, recovering, expanding, deleting or eradicating the workload, removing the need to poll ``purefa_info`` with ``until``. Waiting is on by default, and is required when ``host`` is set
   - module_utils/api_helpers - Add a generic ``wait_for`` polling helper, with backoff and timeout, for modules that need to wait on an asynchronous array operation
+bugfixes:
+  - purefa_workload - Connect and disconnect a ``host`` only where it is needed, so that naming a host that already sees some of the workload's volumes no longer fails the task, and ``state=expand`` can be used on a workload that is already attached. Connections the host has to volumes outside the workload are left untouched
+  - purefa_workload - Fail with a clear message, rather than a traceback, when the workload's volumes cannot be listed while connecting or disconnecting a host
