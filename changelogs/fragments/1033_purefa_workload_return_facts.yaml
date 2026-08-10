@@ -1,0 +1,4 @@
+minor_changes:
+  - purefa_workload - Return a ``workload`` dict describing the workload, including the fleet member it was placed on, so a recommendation-based placement can be used by later tasks. The dict includes a module-owned ``completed`` flag; ``status`` is passed through from the array unmodified
+  - purefa_workload - Add ``wait`` and ``wait_timeout`` options to wait for the array to finish provisioning, recovering, expanding, deleting or eradicating a workload, replacing the need to poll ``purefa_info`` with ``until``
+  - module_utils/api_helpers - Add a generic ``wait_for`` polling helper, with backoff and timeout, for modules that need to wait on an asynchronous array operation

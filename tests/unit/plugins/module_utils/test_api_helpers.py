@@ -8,7 +8,9 @@ from __future__ import absolute_import, division, print_function
 __metaclass__ = type
 
 import sys
-from unittest.mock import Mock, MagicMock
+from unittest.mock import Mock, MagicMock, patch
+
+import pytest
 
 # Mock external dependencies before importing api_helpers
 sys.modules["pypureclient"] = MagicMock()
@@ -60,6 +62,7 @@ from plugins.module_utils.api_helpers import (
     get_cached_api_version,
     check_api_version,
     get_with_context,
+    wait_for,
 )
 
 
@@ -288,3 +291,206 @@ class TestGetWithContext:
             destroyed=False,
             filter="name='vol*'",
         )
+
+
+class FakeClock:
+    """A monotonic clock that only advances when the code under test sleeps.
+
+    Keeps the polling tests instant while still letting them assert exactly how
+    long wait_for() slept for on each iteration.
+    """
+
+    def __init__(self, start=1000.0):
+        self.now = start
+        self.sleeps = []
+
+    def monotonic(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.sleeps.append(seconds)
+        self.now += seconds
+
+
+@pytest.fixture
+def clock():
+    """Patch the time module wait_for() uses with a controllable fake clock."""
+    fake = FakeClock()
+    with patch("plugins.module_utils.api_helpers.time") as mock_time:
+        mock_time.monotonic = fake.monotonic
+        mock_time.sleep = fake.sleep
+        yield fake
+
+
+def _transient():
+    """A probed value that is not finished yet."""
+    value = Mock()
+    value.status = "creating"
+    return value
+
+
+def _done():
+    """A probed value that is finished."""
+    value = Mock()
+    value.status = "ready"
+    return value
+
+
+class TestWaitFor:
+    """Tests for the wait_for polling helper."""
+
+    def test_already_satisfied_never_sleeps(self, mock_module, clock):
+        """Test that a condition true on the first probe costs no delay."""
+        finished = _done()
+        probe = Mock(return_value=finished)
+
+        result = wait_for(
+            mock_module,
+            probe=probe,
+            is_done=lambda value: value.status == "ready",
+            timeout=300,
+            description="workload foo to become ready",
+        )
+
+        assert result is finished
+        probe.assert_called_once_with()
+        assert clock.sleeps == []
+        mock_module.fail_json.assert_not_called()
+
+    def test_polls_until_done(self, mock_module, clock):
+        """Test that wait_for keeps probing, with backoff, until done."""
+        finished = _done()
+        probe = Mock(side_effect=[_transient(), _transient(), finished])
+
+        result = wait_for(
+            mock_module,
+            probe=probe,
+            is_done=lambda value: value.status == "ready",
+            timeout=300,
+            description="workload foo to become ready",
+        )
+
+        assert result is finished
+        assert probe.call_count == 3
+        # Probes first, then sleeps, so two waits for three probes
+        assert clock.sleeps == [5, 7.5]
+
+    def test_backoff_caps_at_max_interval(self, mock_module, clock):
+        """Test that the interval grows by 1.5x but never past max_interval."""
+        probe = Mock(side_effect=[_transient()] * 5 + [_done()])
+
+        wait_for(
+            mock_module,
+            probe=probe,
+            is_done=lambda value: value.status == "ready",
+            timeout=1000,
+            description="workload foo to become ready",
+            max_interval=10,
+        )
+
+        assert clock.sleeps == [5, 7.5, 10, 10, 10]
+
+    def test_absent_resource_is_a_valid_outcome(self, mock_module, clock):
+        """Test that a probe returning None can satisfy the condition."""
+        probe = Mock(side_effect=[_transient(), None])
+
+        result = wait_for(
+            mock_module,
+            probe=probe,
+            is_done=lambda value: value is None,
+            timeout=300,
+            description="workload foo to be eradicated",
+        )
+
+        assert result is None
+        assert probe.call_count == 2
+
+    def test_timeout_fails_module(self, mock_module, clock):
+        """Test that exhausting the timeout fails the module."""
+        probe = Mock(return_value=_transient())
+
+        with pytest.raises(Exception, match="fail_json called"):
+            wait_for(
+                mock_module,
+                probe=probe,
+                is_done=lambda value: value.status == "ready",
+                timeout=10,
+                description="workload foo to become ready",
+            )
+
+        # The final sleep is clamped so the last probe lands on the deadline
+        assert clock.sleeps == [5, 5]
+        assert probe.call_count == 3
+        call_kwargs = mock_module.fail_json.call_args[1]
+        assert "Timed out after 10 seconds" in call_kwargs["msg"]
+        assert "workload foo to become ready" in call_kwargs["msg"]
+
+    def test_timeout_message_includes_detail(self, mock_module, clock):
+        """Test that the array's own diagnostics are quoted on timeout."""
+        with pytest.raises(Exception, match="fail_json called"):
+            wait_for(
+                mock_module,
+                probe=Mock(return_value=_transient()),
+                is_done=lambda value: False,
+                timeout=5,
+                description="workload foo to become ready",
+                detail=lambda value: "creating volume foo-vol1",
+            )
+
+        call_kwargs = mock_module.fail_json.call_args[1]
+        assert "creating volume foo-vol1" in call_kwargs["msg"]
+
+    def test_failure_predicate_fails_module(self, mock_module, clock):
+        """Test that a terminal failure fails the module without waiting out."""
+        probe = Mock(return_value=_transient())
+
+        with pytest.raises(Exception, match="fail_json called"):
+            wait_for(
+                mock_module,
+                probe=probe,
+                is_done=lambda value: False,
+                timeout=300,
+                description="workload foo to become ready",
+                is_failed=lambda value: "placement rejected",
+            )
+
+        probe.assert_called_once_with()
+        assert clock.sleeps == []
+        call_kwargs = mock_module.fail_json.call_args[1]
+        assert "placement rejected" in call_kwargs["msg"]
+        assert "workload foo to become ready" in call_kwargs["msg"]
+
+    def test_failure_predicate_ignored_while_healthy(self, mock_module, clock):
+        """Test that a falsy is_failed result does not stop the wait."""
+        finished = _done()
+        probe = Mock(side_effect=[_transient(), finished])
+
+        result = wait_for(
+            mock_module,
+            probe=probe,
+            is_done=lambda value: value.status == "ready",
+            timeout=300,
+            description="workload foo to become ready",
+            is_failed=lambda value: None,
+        )
+
+        assert result is finished
+        mock_module.fail_json.assert_not_called()
+
+    def test_check_mode_returns_immediately(self, mock_module, clock):
+        """Test that check mode never probes - nothing was asked of the array."""
+        mock_module.check_mode = True
+        probe = Mock()
+
+        result = wait_for(
+            mock_module,
+            probe=probe,
+            is_done=lambda value: False,
+            timeout=300,
+            description="workload foo to become ready",
+        )
+
+        assert result is None
+        probe.assert_not_called()
+        assert clock.sleeps == []
+        mock_module.fail_json.assert_not_called()
