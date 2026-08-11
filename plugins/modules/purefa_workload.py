@@ -154,8 +154,14 @@ options:
     version_added: '1.45.0'
   wait_timeout:
     description:
-    - Maximum number of seconds to wait when I(wait) is true.
-    - The task fails if the array has not finished within this time.
+    - Maximum number of seconds to wait for a single array operation when
+      I(wait) is true. The task fails if that operation has not finished within
+      this time.
+    - This bounds each operation individually rather than the task as a whole, so
+      a task that waits for more than one can take a multiple of it. Creating a
+      workload with I(recommendation) and a I(host) waits three times - for the
+      placement to be calculated, for the workload to become ready, and for the
+      host connections - and so can take up to three times this value.
     type: int
     default: 300
     version_added: '1.45.0'
@@ -335,7 +341,7 @@ workload:
             sample: 86400000
         volumes:
             description: Names of the volumes belonging to this workload, as they
-                stand after the action. In check mode a create reports an empty 
+                stand after the action. In check mode a create reports an empty
                 list and an expand reports only the volumes that already exist.
             type: list
             elements: str

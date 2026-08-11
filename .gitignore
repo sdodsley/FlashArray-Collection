@@ -2,3 +2,4 @@
 .pylintrc
 collections/ansible_collections/everpure/flasharray/tests/output/*
 collections/ansible_collections/everpure/flasharray/tests/output/.*
+.ansible/collections
