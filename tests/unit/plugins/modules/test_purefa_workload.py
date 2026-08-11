@@ -47,6 +47,7 @@ sys.modules[
 from plugins.modules.purefa_workload import (
     _build_workload_parameters,
     _workload_completed,
+    _workload_facts,
     delete_workload,
     eradicate_workload,
     recover_workload,
@@ -55,6 +56,50 @@ from plugins.modules.purefa_workload import (
     expand_workload,
     connect_or_disconnect_volumes,
 )
+
+
+class _ApiObject:
+    """Stands in for an API object, which Mock cannot.
+
+    Reading a field whose value is null raises AttributeError on the objects the
+    SDK builds, rather than returning None, and so does reading a field they do not
+    define. Mock returns a value for everything, so a Mock-based fixture cannot
+    express a workload the array described with nulls - which is why a crash on a
+    null status_details went unnoticed.
+    """
+
+    def __init__(self, **fields):
+        self._fields = fields
+
+    def __getattr__(self, name):
+        try:
+            value = self._fields[name]
+        except KeyError:
+            raise AttributeError(name) from None
+        if value is None:
+            raise AttributeError(name)
+        return value
+
+
+def _api_workload(**overrides):
+    """A Workload as the array really sends it, nulls and all
+
+    The defaults mirror a GET response captured from a live array, where
+    status_details and time_remaining both come back null even though the POST that
+    created the same workload reported status_details as [].
+    """
+    fields = {
+        "name": "test-workload",
+        "context": _ApiObject(name="arrayB"),
+        "preset": _ApiObject(name="test-fleet:test-preset"),
+        "status": "ready",
+        "status_details": None,
+        "destroyed": False,
+        "created": CREATED_MS,
+        "time_remaining": None,
+    }
+    fields.update(overrides)
+    return _ApiObject(**fields)
 
 
 def _mock_preset_parameter(name, parameter_type):
@@ -71,14 +116,11 @@ def _mock_get_arrays(name="local-array"):
     return Mock(items=[local_array])
 
 
-# 1754587211000ms is 2025-08-07 17:20:11 UTC, the pair the fact formatting is
-# checked against
+# The array reports creation time as epoch milliseconds. Not returned by the
+# module - purefa_info reports a workload's own properties - but still set on the
+# fixtures, so that reading a workload that has one goes down the same path a real
+# one would.
 CREATED_MS = 1754587211000
-CREATED_STR = "2025-08-07 17:20:11"
-
-#: What _timestamp() is frozen to where a test predicts a create's creation time,
-#: which would otherwise be whatever the clock said
-PREDICTED_NOW = "2026-01-01 00:00:00"
 
 
 def _mock_workload(
@@ -138,6 +180,37 @@ def _mock_connections_response(volume_names, host="host1", status_code=200):
     return Mock(status_code=status_code, items=connections)
 
 
+#: The fleet the tests run against. context and placement must name one of these,
+#: and "test-fleet" itself is deliberately not a member - naming the fleet is the
+#: mistake the validation exists to catch.
+FLEET_MEMBERS = ("arrayA", "arrayB", "pod1", "MUCFA21", "MUCFA22")
+
+
+def _mock_not_found_response(status_code=400):
+    """The array's answer for a workload that is not there.
+
+    The message matters as much as the status. Several different 400s come back
+    from a workload read and only this one means absence, so a bare Mock without
+    an explanation is treated as a real error rather than as "not there".
+    """
+    return Mock(
+        status_code=status_code,
+        items=[],
+        errors=[Mock(message="Workload does not exist.")],
+    )
+
+
+def _mock_fleet_members(names=FLEET_MEMBERS):
+    """Response for get_fleets_members(), whose items wrap the name in .member"""
+    members = []
+    for name in names:
+        member = Mock()
+        member.member = Mock()
+        member.member.name = name
+        members.append(member)
+    return Mock(status_code=200, items=members)
+
+
 def _mock_array(volume_names=None, connected=None, host="host1"):
     """A Mock array with the reads every fact-returning path performs stubbed
 
@@ -149,6 +222,7 @@ def _mock_array(volume_names=None, connected=None, host="host1"):
     """
     array = Mock()
     array.get_volumes.return_value = _mock_volumes_response(volume_names)
+    array.get_fleets_members.return_value = _mock_fleet_members()
     all_connected = [] if connected is None else connected
 
     def get_connections(volume_names=None, **kwargs):
@@ -175,34 +249,27 @@ def _mock_recommendation(target="arrayB", status="completed"):
 def _expected_facts(
     name="test-workload",
     context="arrayB",
-    preset="test-fleet:test-preset",
     status="ready",
     destroyed=False,
     time_remaining=None,
-    status_details=None,
     volumes=None,
-    host=None,
-    created=CREATED_STR,
 ):
     """The fact dict _workload_facts() builds for the matching _mock_workload()
 
-    Flat, with the name as a field rather than the key, the module-owned
-    completed flag derived from the status, and the volume set and acted-on host.
-    Also used for check-mode predictions, where created and volumes are among the
-    values that cannot be known in advance.
+    What the task did, not everything the array knows: a workload's own
+    properties are purefa_info's job. Flat, with the name as a field rather than
+    the key, and the module-owned completed flag derived from the status. Also
+    used for check-mode predictions, where the volumes cannot be known in
+    advance.
     """
     return {
         "name": name,
         "context": context,
-        "preset": preset,
         "status": status,
         "completed": status in ("ready", "destroyed"),
-        "status_details": [] if status_details is None else status_details,
         "destroyed": destroyed,
         "time_remaining": time_remaining,
-        "created": created,
         "volumes": list(WORKLOAD_VOLUMES) if volumes is None else volumes,
-        "host": host,
     }
 
 
@@ -347,8 +414,7 @@ class TestRenameWorkload:
 class TestCreateWorkload:
     """Test cases for create_workload function"""
 
-    @patch("plugins.modules.purefa_workload._timestamp", return_value=PREDICTED_NOW)
-    def test_create_workload_check_mode(self, mock_timestamp):
+    def test_create_workload_check_mode(self):
         """Check mode predicts the workload the run would create
 
         Nothing exists to read, so every value is either a parameter, unknowable,
@@ -376,15 +442,12 @@ class TestCreateWorkload:
             changed=True,
             workload=_expected_facts(
                 context="pod1",
-                preset="test-preset",
                 status="ready",
                 volumes=[],
-                created=PREDICTED_NOW,
             ),
         )
 
-    @patch("plugins.modules.purefa_workload._timestamp", return_value=PREDICTED_NOW)
-    def test_create_workload_check_mode_without_wait(self, mock_timestamp):
+    def test_create_workload_check_mode_without_wait(self):
         """Without waiting a real run returns while the workload is creating"""
         mock_module = Mock()
         mock_module.check_mode = True
@@ -397,10 +460,8 @@ class TestCreateWorkload:
             changed=True,
             workload=_expected_facts(
                 context="pod1",
-                preset="test-preset",
                 status="creating",
                 volumes=[],
-                created=PREDICTED_NOW,
             ),
         )
 
@@ -661,7 +722,7 @@ class TestConnectOrDisconnectVolumes:
         mock_array.post_connections.assert_not_called()
         # Only host connections would change, so the workload is described as read
         mock_module.exit_json.assert_called_once_with(
-            changed=True, workload=_expected_facts(host="host1")
+            changed=True, workload=_expected_facts()
         )
 
     @patch("plugins.modules.purefa_workload._wait_for_status")
@@ -680,7 +741,7 @@ class TestConnectOrDisconnectVolumes:
         # A disconnect never waits for a status - nothing about it is async
         mock_wait_for_status.assert_not_called()
         mock_module.exit_json.assert_called_once_with(
-            changed=True, workload=_expected_facts(host="host1")
+            changed=True, workload=_expected_facts()
         )
 
     @patch("plugins.modules.purefa_workload._wait_for_status")
@@ -699,7 +760,7 @@ class TestConnectOrDisconnectVolumes:
         mock_array.post_connections.assert_not_called()
         # Nothing changed, but the workload is still described
         mock_module.exit_json.assert_called_once_with(
-            changed=False, workload=_expected_facts(host="host1")
+            changed=False, workload=_expected_facts()
         )
 
     @patch("plugins.modules.purefa_workload._wait_for_status")
@@ -716,7 +777,7 @@ class TestConnectOrDisconnectVolumes:
 
         mock_array.delete_connections.assert_not_called()
         mock_module.exit_json.assert_called_once_with(
-            changed=False, workload=_expected_facts(host="host1")
+            changed=False, workload=_expected_facts()
         )
 
     @patch("plugins.modules.purefa_workload._wait_for_connections")
@@ -983,7 +1044,7 @@ class TestExpandWorkloadSuccess:
             mock_module, mock_array, "test-workload", "pod1", WORKLOAD_VOLUMES
         )
         mock_module.exit_json.assert_called_once_with(
-            changed=True, workload=_expected_facts(host="host1")
+            changed=True, workload=_expected_facts()
         )
 
     @patch("plugins.modules.purefa_workload._create_volume")
@@ -1108,7 +1169,7 @@ class TestRecoverWorkloadWithHost:
             mock_module, mock_array, "test-workload", "pod1", WORKLOAD_VOLUMES
         )
         mock_module.exit_json.assert_called_once_with(
-            changed=True, workload=_expected_facts(host="host1")
+            changed=True, workload=_expected_facts()
         )
 
 
@@ -1144,7 +1205,7 @@ class TestConnectOrDisconnectVolumesSuccess:
             connection=mock_connection_post.return_value,
         )
         mock_module.exit_json.assert_called_once_with(
-            changed=True, workload=_expected_facts(host="host1")
+            changed=True, workload=_expected_facts()
         )
 
     @patch("plugins.modules.purefa_workload._wait_for_connections")
@@ -1168,7 +1229,7 @@ class TestConnectOrDisconnectVolumesSuccess:
             context_names=["pod1"],
         )
         mock_module.exit_json.assert_called_once_with(
-            changed=True, workload=_expected_facts(host="host1")
+            changed=True, workload=_expected_facts()
         )
 
 
@@ -1582,7 +1643,7 @@ class TestMain:
         mock_fleet_response.items = [mock_fleet]
         mock_array.get_fleets.return_value = mock_fleet_response
         mock_array.get_arrays.return_value = _mock_get_arrays()
-        mock_array.get_workloads.return_value = Mock(status_code=404)
+        mock_array.get_workloads.return_value = _mock_not_found_response(404)
         mock_preset_config = Mock()
         mock_array.get_presets_workload.return_value = Mock(
             status_code=200, items=[mock_preset_config]
@@ -1617,7 +1678,8 @@ class TestMain:
             "volume_count": None,
             "state": "absent",
             "preset": "test-preset",
-            "context": "",
+            # A member has to be named now - there is no default context
+            "context": "arrayB",
             "name": "test-workload",
             "host": "",
             "placement": None,
@@ -1632,9 +1694,10 @@ class TestMain:
         mock_fleet_response.items = [mock_fleet]
         mock_array.get_fleets.return_value = mock_fleet_response
         mock_array.get_arrays.return_value = _mock_get_arrays()
-        # Workload exists and not destroyed
-        mock_workload = Mock()
-        mock_workload.destroyed = False
+        # Workload exists and not destroyed. The context has to be a real name:
+        # the removal path sweeps the fleet to report copies elsewhere, and reads
+        # each result's context to name them.
+        mock_workload = _mock_workload(context="arrayB", destroyed=False)
         mock_array.get_workloads.return_value = Mock(
             status_code=200, items=[mock_workload]
         )
@@ -1668,7 +1731,8 @@ class TestMain:
             "volume_count": None,
             "state": "absent",
             "preset": "test-preset",
-            "context": "",
+            # A member has to be named now - there is no default context
+            "context": "arrayB",
             "name": "test-workload",
             "host": "",
             "placement": None,
@@ -1683,9 +1747,9 @@ class TestMain:
         mock_fleet_response.items = [mock_fleet]
         mock_array.get_fleets.return_value = mock_fleet_response
         mock_array.get_arrays.return_value = _mock_get_arrays()
-        # Workload exists and is destroyed
-        mock_workload = Mock()
-        mock_workload.destroyed = True
+        # Workload exists and is destroyed. A real context name matters here: the
+        # removal path sweeps the fleet and names any copies it finds.
+        mock_workload = _mock_workload(context="arrayB", destroyed=True)
         mock_array.get_workloads.return_value = Mock(
             status_code=200, items=[mock_workload]
         )
@@ -1717,7 +1781,8 @@ class TestMain:
             "volume_count": None,
             "state": "absent",
             "preset": "test-preset",
-            "context": "",
+            # A member has to be named now - there is no default context
+            "context": "arrayB",
             "name": "test-workload",
             "host": "",
             "placement": None,
@@ -1733,7 +1798,7 @@ class TestMain:
         mock_array.get_fleets.return_value = mock_fleet_response
         mock_array.get_arrays.return_value = _mock_get_arrays()
         # Workload does not exist - nothing to delete, nothing to describe
-        mock_array.get_workloads.return_value = Mock(status_code=404)
+        mock_array.get_workloads.return_value = _mock_not_found_response(404)
         mock_get_array.return_value = mock_array
 
         main()
@@ -1763,10 +1828,12 @@ class TestMain:
             "volume_count": None,
             "state": "present",
             "preset": "test-preset",
-            "context": "",
+            # A member has to be named now - there is no default context
+            "context": "arrayB",
             "name": "test-workload",
             "host": "",
             "placement": None,
+            "recommendation": False,
             "eradicate": False,
             "rename": None,
         }
@@ -1793,13 +1860,15 @@ class TestMain:
 
 
 class TestMainContextDefault:
-    """Test cases for defaulting an empty context in main()
+    """Where a task applies is stated, never guessed
 
-    An empty context is sent to the array as context_names=[""], which the
-    Fusion backend rejects with an unhelpful internal error.
+    There is no default context. Falling back to whichever array the request
+    reached would make the same playbook mean different things depending on
+    fa_url, which is how a re-run creates a second workload instead of finding
+    the first.
     """
 
-    def _run_main(self, mock_ansible_module, mock_get_array, params):
+    def _run_main(self, mock_ansible_module, mock_get_array, params, fails=False):
         from plugins.modules.purefa_workload import main
 
         mock_module = Mock()
@@ -1814,6 +1883,10 @@ class TestMainContextDefault:
             "context": "",
         }
         mock_module.params.update(params)
+        # A real fail_json ends the module. Without this the mock returns and main()
+        # carries on past a refusal, which reads as the refusal not having happened.
+        if fails:
+            mock_module.fail_json.side_effect = SystemExit
         mock_ansible_module.return_value = mock_module
 
         mock_array = _mock_array()
@@ -1823,7 +1896,7 @@ class TestMainContextDefault:
         mock_array.get_fleets.return_value = Mock(status_code=200, items=[mock_fleet])
         mock_array.get_arrays.return_value = _mock_get_arrays("MUCFA21")
         # Workload does not exist, so main() exits without acting on it
-        mock_array.get_workloads.return_value = Mock(status_code=404)
+        mock_array.get_workloads.return_value = _mock_not_found_response(404)
         mock_get_array.return_value = mock_array
 
         main()
@@ -1834,20 +1907,22 @@ class TestMainContextDefault:
     @patch("plugins.modules.purefa_workload.get_array")
     @patch("plugins.modules.purefa_workload.AnsibleModule")
     @patch("plugins.modules.purefa_workload.HAS_PURESTORAGE", True)
-    def test_empty_context_defaults_to_local_array(
+    def test_neither_context_nor_placement_fails(
         self, mock_ansible_module, mock_get_array, mock_loose_version
     ):
-        """Test main() defaults an empty context to the local array name"""
+        """Nothing to go on, so the task is refused rather than guessed at"""
         mock_loose_version.side_effect = lambda x: float(x) if x else 0.0
 
-        mock_module, mock_array = self._run_main(
-            mock_ansible_module, mock_get_array, {}
-        )
+        with pytest.raises(SystemExit):
+            self._run_main(mock_ansible_module, mock_get_array, {}, fails=True)
+        mock_module = mock_ansible_module.return_value
+        mock_array = mock_get_array.return_value
 
-        assert mock_module.params["context"] == "MUCFA21"
-        mock_array.get_workloads.assert_called_once_with(
-            names=["test-workload"], context_names=["MUCFA21"]
-        )
+        mock_module.fail_json.assert_called_once()
+        message = mock_module.fail_json.call_args.kwargs["msg"]
+        assert "context or placement" in message
+        # Refused before anything was read
+        mock_array.get_workloads.assert_not_called()
 
     @patch("plugins.modules.purefa_workload.LooseVersion")
     @patch("plugins.modules.purefa_workload.get_array")
@@ -1903,8 +1978,9 @@ class TestWaitDisabled:
 
         create_workload(mock_module, mock_array, Mock(), Mock(parameters=[]))
 
+        # create_workload sweeps the fleet before creating, so get_workloads is
+        # read either way - not polling means wait_for is never reached
         mock_wait_for.assert_not_called()
-        mock_array.get_workloads.assert_not_called()
         # The immediate POST response is what gets reported
         mock_module.exit_json.assert_called_once_with(
             changed=True, workload=_expected_facts(context="pod1", status="creating")
@@ -2038,10 +2114,17 @@ class TestWaitForCreate:
         create_workload(mock_module, mock_array, Mock(), Mock(parameters=[]))
 
         probe = mock_wait_for.call_args.kwargs["probe"]
+        # create_workload sweeps every fleet member first, so the mock is
+        # cleared to make this assertion about the poll and nothing else
+        mock_array.get_workloads.reset_mock()
         probe()
 
         mock_array.get_workloads.assert_called_once_with(
-            names=["test-workload"], context_names=["pod1"]
+            names=["test-workload"],
+            context_names=["pod1"],
+            # Required whenever the context is a fleet member other than the array
+            # being addressed, and harmless when it is not
+            allow_errors=True,
         )
 
     @patch("plugins.modules.purefa_workload.wait_for")
@@ -2120,16 +2203,25 @@ class TestWaitForCreate:
         mock_array.post_workloads.return_value = _mock_workload_response(
             context="arrayB", status="creating"
         )
-        mock_array.get_workloads.return_value = _mock_workload_response(
-            context="arrayB"
-        )
+        # Nothing exists yet, which is why a create is happening at all, so the
+        # fleet sweep inside create_workload must come up empty
+        mock_array.get_workloads.return_value = _mock_not_found_response()
         mock_wait_for.return_value = _mock_workload(context="arrayB", status="ready")
 
         create_workload(mock_module, mock_array, Mock(), Mock())
 
+        # The poll runs after the create, by which point the workload is there
+        mock_array.get_workloads.reset_mock()
+        mock_array.get_workloads.return_value = _mock_workload_response(
+            context="arrayB"
+        )
         mock_wait_for.call_args.kwargs["probe"]()
         mock_array.get_workloads.assert_called_once_with(
-            names=["test-workload"], context_names=["arrayB"]
+            names=["test-workload"],
+            context_names=["arrayB"],
+            # Required whenever the context is a fleet member other than the array
+            # being addressed, and harmless when it is not
+            allow_errors=True,
         )
         # The headline case: the caller learns where Fusion put the workload
         mock_module.exit_json.assert_called_once_with(
@@ -2248,7 +2340,7 @@ class TestWaitForEradicate:
         mock_module.params = _params(context="pod1", wait=True)
         mock_array = _mock_array()
         mock_array.delete_workloads.return_value = Mock(status_code=200)
-        mock_array.get_workloads.return_value = Mock(status_code=404)
+        mock_array.get_workloads.return_value = _mock_not_found_response(404)
 
         eradicate_workload(mock_module, mock_array)
 
@@ -2441,7 +2533,7 @@ class TestHostRequiresWait:
         mock_fleet.name = "test-fleet"
         mock_array.get_fleets.return_value = Mock(status_code=200, items=[mock_fleet])
         mock_array.get_arrays.return_value = _mock_get_arrays()
-        mock_array.get_workloads.return_value = Mock(status_code=404)
+        mock_array.get_workloads.return_value = _mock_not_found_response(404)
         mock_get_array.return_value = mock_array
 
         main()
@@ -3019,7 +3111,7 @@ class TestCheckModePredictsTheRealRun:
         actual = real.exit_json.call_args.kwargs["workload"]
         assert set(predicted) == set(actual)
         # And on the fields a prediction can be sure of, they agree outright
-        for key in ("name", "context", "status", "completed", "destroyed", "host"):
+        for key in ("name", "context", "status", "completed", "destroyed"):
             assert predicted[key] == actual[key], key
 
     @patch("plugins.modules.purefa_workload.WorkloadPatch")
@@ -3084,7 +3176,6 @@ class TestFactsShapeIsDefinedOnce:
             mock_module,
             name=mock_module.params["name"],
             context="pod1",
-            preset=mock_module.params["preset"],
             status="ready",
         )
         predicted_change = _workload_facts(
@@ -3117,14 +3208,11 @@ class TestPredictedFacts:
             mock_module,
             name=mock_module.params["name"],
             context="arrayB",
-            preset=mock_module.params["preset"],
             status="creating",
         )
 
         assert facts["name"] == "new-workload"
-        assert facts["preset"] == "test-fleet:test-preset"
         assert facts["context"] == "arrayB"
-        assert facts["host"] == "host1"
         assert facts["destroyed"] is False
         # The array generates volume names, so none can be offered up front
         assert facts["volumes"] == []
@@ -3149,30 +3237,8 @@ class TestPredictedFacts:
         # Only the named change applies
         assert facts["name"] == "renamed"
         # ...everything else is the workload as it stands
-        assert facts["preset"] == "test-fleet:other-preset"
-        assert facts["created"] == CREATED_STR
-        assert facts["status_details"] == ["still working"]
         assert facts["status"] == "ready"
-
-    @patch("plugins.modules.purefa_workload._timestamp", return_value=PREDICTED_NOW)
-    def test_a_create_predicts_its_own_creation_time(self, mock_timestamp):
-        """A workload created now is created now, so null would be the wrong answer"""
-        from plugins.modules.purefa_workload import _facts
-
-        mock_module = Mock()
-        mock_module.params = _params()
-
-        facts = _facts(
-            mock_module,
-            name=mock_module.params["name"],
-            context="arrayB",
-            preset=mock_module.params["preset"],
-            status="ready",
-        )
-
-        assert facts["created"] == PREDICTED_NOW
-        # Called with no argument, meaning "now" rather than an array timestamp
-        mock_timestamp.assert_called_once_with()
+        assert facts["context"] == "arrayB"
 
     def test_completed_cannot_disagree_with_a_predicted_status(self):
         """completed is derived inside _facts, not passed alongside the status"""
@@ -3192,7 +3258,6 @@ class TestPredictedFacts:
                 mock_module,
                 name=mock_module.params["name"],
                 context="arrayB",
-                preset=mock_module.params["preset"],
                 status=status,
             )
             assert facts["completed"] is completed, status
@@ -3200,37 +3265,23 @@ class TestPredictedFacts:
         mock_module.warn.assert_not_called()
 
 
-class TestTimestamp:
-    """Test cases for the shared timestamp formatter"""
-
-    def test_formats_array_milliseconds_as_utc(self):
-        """The array reports epoch milliseconds"""
-        from plugins.modules.purefa_workload import _timestamp
-
-        assert _timestamp(CREATED_MS) == CREATED_STR
-
-    def test_defaults_to_now_in_the_documented_format(self):
-        """A prediction needs the current time, in the same shape as a real one"""
-        import time as time_module
-        from plugins.modules.purefa_workload import _timestamp
-
-        result = _timestamp()
-
-        # Parses as the documented format, without pinning the test to the clock
-        parsed = time_module.strptime(result, "%Y-%m-%d %H:%M:%S")
-        assert parsed.tm_year >= 2025
-
-
 class TestPlacementIsIgnoredWarning:
-    """context and placement are the same thing, so disagreement needs saying"""
+    """context and placement are the same thing, so disagreement is refused
 
-    def _run_main(self, mock_ansible_module, mock_get_array, **params):
+    They mean one value to the array - a workload is created on its context, and
+    there is no separate placement to send - so two different members is not a
+    preference to resolve but an instruction that cannot be carried out.
+    """
+
+    def _run_main(self, mock_ansible_module, mock_get_array, fails=False, **params):
         from plugins.modules.purefa_workload import main
 
         mock_module = Mock()
         mock_module.params = _params(
             state="absent", preset="test-preset", volume_count=None, **params
         )
+        if fails:
+            mock_module.fail_json.side_effect = SystemExit
         mock_ansible_module.return_value = mock_module
         mock_array = _mock_array()
         mock_array.get_rest_version.return_value = "2.40"
@@ -3238,7 +3289,7 @@ class TestPlacementIsIgnoredWarning:
         mock_fleet.name = "test-fleet"
         mock_array.get_fleets.return_value = Mock(status_code=200, items=[mock_fleet])
         mock_array.get_arrays.return_value = _mock_get_arrays()
-        mock_array.get_workloads.return_value = Mock(status_code=404)
+        mock_array.get_workloads.return_value = _mock_not_found_response(404)
         mock_get_array.return_value = mock_array
 
         main()
@@ -3249,21 +3300,26 @@ class TestPlacementIsIgnoredWarning:
     @patch("plugins.modules.purefa_workload.get_array")
     @patch("plugins.modules.purefa_workload.AnsibleModule")
     @patch("plugins.modules.purefa_workload.HAS_PURESTORAGE", True)
-    def test_warns_when_they_disagree(
+    def test_fails_when_they_disagree(
         self, mock_ansible_module, mock_get_array, mock_loose_version
     ):
-        """The placement loses silently today, which is the thing being fixed"""
+        """A warning was too easy to miss, and the cost is a workload on the
+        wrong array"""
         mock_loose_version.side_effect = lambda x: float(x) if x else 0.0
 
-        mock_module = self._run_main(
-            mock_ansible_module, mock_get_array, context="arrayC", placement="arrayB"
-        )
+        with pytest.raises(SystemExit):
+            self._run_main(
+                mock_ansible_module,
+                mock_get_array,
+                fails=True,
+                context="arrayA",
+                placement="arrayB",
+            )
+        mock_module = mock_ansible_module.return_value
 
-        mock_module.warn.assert_called_once()
-        warning = mock_module.warn.call_args[0][0]
-        assert "arrayB" in warning and "arrayC" in warning
-        # The context still wins, as it always has
-        assert mock_module.params["context"] == "arrayC"
+        message = mock_module.fail_json.call_args.kwargs["msg"]
+        assert "arrayA" in message and "arrayB" in message
+        mock_module.warn.assert_not_called()
 
     @patch("plugins.modules.purefa_workload.LooseVersion")
     @patch("plugins.modules.purefa_workload.get_array")
@@ -3381,29 +3437,50 @@ class TestWaitForCallsMatchTheRealHelper:
         assert signature.parameters["skip_in_check_mode"].default is True
 
 
-class TestFactsDoesNotSubstituteParameters:
-    """_facts reports what the array said, including when that is nothing
+class TestNameAndContextAreAlwaysKnown:
+    """name and context are not only array observations
 
-    name and preset are both nullable on a real workload - the SDK documents a
-    destroyed preset as reporting a null name - so defaulting either to the
-    requested value would report a parameter as though the array had said it.
+    name is a required parameter and main() resolves context before any workload
+    work, so both are known even when the array's reply leaves them out. The
+    fallback belongs to _workload_facts, which does the reading; _facts itself
+    reports whatever it is handed.
     """
 
-    def test_a_null_name_or_preset_stays_null(self):
-        """The requested values must not stand in for what was read"""
+    def _array(self):
+        array = _mock_array()
+        array.get_volumes.return_value = Mock(status_code=200, items=[])
+        return array
+
+    def test_facts_reports_what_it_is_handed(self):
+        """_facts does not reach for parameters of its own accord"""
         from plugins.modules.purefa_workload import _facts
 
         mock_module = Mock()
-        mock_module.params = _params(
-            name="requested-name", preset="test-fleet:requested-preset"
-        )
+        mock_module.params = _params(name="requested-name")
 
-        facts = _facts(
-            mock_module, context="arrayB", name=None, preset=None, status="ready"
-        )
+        facts = _facts(mock_module, context="arrayB", name=None, status="ready")
 
         assert facts["name"] is None
-        assert facts["preset"] is None
+
+    def test_a_null_name_falls_back_to_the_requested_one(self):
+        """A reply that names nothing still describes the workload we asked for"""
+        module = Mock(params=_params(name="requested-name"))
+
+        facts = _workload_facts(
+            module, self._array(), _api_workload(name=None), "arrayB", []
+        )
+
+        assert facts["name"] == "requested-name"
+
+    def test_a_null_context_falls_back_to_the_resolved_one(self):
+        """main() resolves the context before any of this runs"""
+        module = Mock(params=_params())
+
+        facts = _workload_facts(
+            module, self._array(), _api_workload(context=None), "resolved-array", []
+        )
+
+        assert facts["context"] == "resolved-array"
 
     def test_the_array_name_wins_over_the_requested_one(self):
         """A workload renamed outside Ansible reports its own name"""
@@ -3415,3 +3492,755 @@ class TestFactsDoesNotSubstituteParameters:
         facts = _facts(mock_module, context="arrayB", name="array-name", status="ready")
 
         assert facts["name"] == "array-name"
+
+
+class TestNullFieldsFromTheArray:
+    """The array describes a workload with nulls, and the module must survive it
+
+    Every field on a workload is optional in the API, and reading a null one off an
+    API object raises AttributeError instead of returning None. These use
+    _ApiObject rather than Mock because only it reproduces that.
+    """
+
+    def _array(self):
+        array = _mock_array()
+        array.get_volumes.return_value = Mock(status_code=200, items=[])
+        return array
+
+    def test_a_workload_full_of_nulls_is_described_without_raising(self):
+        """The reported crash came from reading fields the array reports as null"""
+        facts = _workload_facts(
+            Mock(params=_params()), self._array(), _api_workload(), "arrayB", []
+        )
+
+        assert facts["status"] == "ready"
+        assert facts["time_remaining"] is None
+
+    def test_only_the_agreed_fields_are_returned(self):
+        """The dict is the task's outcome, not everything the array knows
+
+        A workload's own properties - the preset, the creation time, the array's
+        free-form status text - are purefa_info's job, and were deliberately
+        dropped from here. Pinned so they cannot drift back in.
+        """
+        facts = _workload_facts(
+            Mock(params=_params()), self._array(), _api_workload(), "arrayB", []
+        )
+
+        assert set(facts) == {
+            "name",
+            "context",
+            "status",
+            "completed",
+            "destroyed",
+            "time_remaining",
+            "volumes",
+        }
+
+    def test_null_destroyed_is_reported_as_false(self):
+        facts = _workload_facts(
+            Mock(params=_params()),
+            self._array(),
+            _api_workload(destroyed=None),
+            "arrayB",
+            [],
+        )
+
+        assert facts["destroyed"] is False
+
+    def test_every_optional_field_null_does_not_crash(self):
+        """The guard against the whole class, not just the field that bit us"""
+        workload = _ApiObject(
+            name=None,
+            context=None,
+            preset=None,
+            status=None,
+            status_details=None,
+            destroyed=None,
+            created=None,
+            time_remaining=None,
+        )
+
+        facts = _workload_facts(
+            Mock(params=_params()), self._array(), workload, "arrayB", []
+        )
+
+        # The two the module knows regardless of what the array said
+        assert facts["name"] == "test-workload"
+        assert facts["context"] == "arrayB"
+        # The rest are array state, and null is the honest answer for them
+        assert facts["status"] is None
+        assert facts["time_remaining"] is None
+        assert facts["completed"] is False
+        assert facts["destroyed"] is False
+        assert facts["volumes"] == []
+
+    @patch("plugins.modules.purefa_workload.wait_for")
+    @patch("plugins.modules.purefa_workload.check_response")
+    def test_create_with_wait_survives_the_null_the_poll_returns(
+        self, mock_check_response, mock_wait_for
+    ):
+        """End to end for the reported failure.
+
+        The POST reports status_details as [], the GET the wait resolves to reports
+        it as null, and the facts are built from the latter.
+        """
+        mock_module = Mock()
+        mock_module.check_mode = False
+        mock_module.params = _params(preset="test-preset", context="arrayB", wait=True)
+        array = self._array()
+        array.post_workloads.return_value = Mock(
+            status_code=200, items=[_api_workload(status_details=[], status="creating")]
+        )
+        mock_wait_for.return_value = _api_workload()
+
+        create_workload(mock_module, array, Mock(), Mock(parameters=[]))
+
+        mock_module.fail_json.assert_not_called()
+        facts = mock_module.exit_json.call_args.kwargs["workload"]
+        assert facts["status"] == "ready"
+        assert facts["name"] == "test-workload"
+
+    def test_completed_handles_a_null_name_and_status(self):
+        """_workload_completed reads both, and both are optional"""
+        module = Mock()
+
+        assert _workload_completed(module, _ApiObject(name=None, status=None)) is False
+        module.warn.assert_called_once()
+
+
+class TestRecommendationTargetIsGuarded:
+    """The walk to the chosen target crosses four optional links and three lists"""
+
+    def _module(self):
+        module = Mock()
+        module.check_mode = False
+        module.params = _params(
+            preset="test-preset", context="arrayB", recommendation=True
+        )
+        module.fail_json.side_effect = SystemExit
+        return module
+
+    def _recommendation(self, results):
+        return _ApiObject(name="calc1", status="completed", results=results)
+
+    @patch("plugins.modules.purefa_workload._wait_for_recommendation")
+    @patch("plugins.modules.purefa_workload.check_response")
+    def test_null_results_fails_with_a_message(self, mock_check, mock_wait):
+        module = self._module()
+        array = _mock_array()
+        array.post_workloads_placement_recommendations.return_value = Mock(
+            status_code=200, items=[_ApiObject(name="calc1")]
+        )
+        mock_wait.return_value = self._recommendation(None)
+
+        with pytest.raises(SystemExit):
+            create_workload(module, array, Mock(), Mock(parameters=[]))
+
+        assert "named no target" in module.fail_json.call_args.kwargs["msg"]
+        array.post_workloads.assert_not_called()
+
+    @patch("plugins.modules.purefa_workload._wait_for_recommendation")
+    @patch("plugins.modules.purefa_workload.check_response")
+    def test_empty_results_fails_with_a_message(self, mock_check, mock_wait):
+        module = self._module()
+        array = _mock_array()
+        array.post_workloads_placement_recommendations.return_value = Mock(
+            status_code=200, items=[_ApiObject(name="calc1")]
+        )
+        mock_wait.return_value = self._recommendation([])
+
+        with pytest.raises(SystemExit):
+            create_workload(module, array, Mock(), Mock(parameters=[]))
+
+        assert "named no target" in module.fail_json.call_args.kwargs["msg"]
+
+    @patch("plugins.modules.purefa_workload._wait_for_recommendation")
+    @patch("plugins.modules.purefa_workload.check_response")
+    def test_null_target_name_fails_with_a_message(self, mock_check, mock_wait):
+        module = self._module()
+        array = _mock_array()
+        array.post_workloads_placement_recommendations.return_value = Mock(
+            status_code=200, items=[_ApiObject(name="calc1")]
+        )
+        mock_wait.return_value = self._recommendation(
+            [_ApiObject(placements=[_ApiObject(targets=[_ApiObject(name=None)])])]
+        )
+
+        with pytest.raises(SystemExit):
+            create_workload(module, array, Mock(), Mock(parameters=[]))
+
+        assert "named no target" in module.fail_json.call_args.kwargs["msg"]
+
+
+class TestReadingAWorkloadThatIsNotThere:
+    """Absence is read from the status code, and only from two of them
+
+    A read by name reports a missing workload as an error rather than as an empty
+    result, so there is no item count to test. The risk that shapes this is a
+    server error being taken for absence: a caller waiting for a workload to go
+    away would then report success while the array was never asked.
+    """
+
+    def _read(self, status_code):
+        from plugins.modules.purefa_workload import _read_workload
+
+        module = Mock(params=_params())
+        module.fail_json.side_effect = SystemExit
+        array = _mock_array()
+        array.get_workloads.return_value = Mock(
+            status_code=status_code,
+            items=[_mock_workload()] if status_code == 200 else [],
+            errors=[Mock(message="Workload does not exist.")],
+        )
+        return module, _read_workload(module, array, "arrayB")
+
+    def test_a_workload_that_exists_is_returned(self):
+        module, workload = self._read(200)
+
+        assert workload is not None
+        module.fail_json.assert_not_called()
+
+    @pytest.mark.parametrize("status_code", [400, 404])
+    def test_absence_is_reported_as_none(self, status_code):
+        """400 is what this array returns; 404 is covered so the test does not
+        re-encode a guess about which one it picks"""
+        module, workload = self._read(status_code)
+
+        assert workload is None
+        module.fail_json.assert_not_called()
+
+    @pytest.mark.parametrize("status_code", [401, 403, 500, 502, 503])
+    def test_anything_else_is_surfaced_rather_than_read_as_absence(self, status_code):
+        """The regression guard: a server error must never read as absence.
+
+        check_response is what turns a response into a module failure, so the
+        assertion is that the read hands it over rather than swallowing it - the
+        helper itself is stubbed here, as it is for the rest of this file.
+        """
+        from plugins.modules.purefa_workload import _read_workload
+
+        module = Mock(params=_params())
+        array = _mock_array()
+        response = Mock(status_code=status_code, items=[], errors=[])
+        array.get_workloads.return_value = response
+
+        with patch("plugins.modules.purefa_workload.check_response") as surfaced:
+            _read_workload(module, array, "arrayB")
+
+        # The absence path returns without calling check_response, so this having
+        # been called is exactly what distinguishes "surfaced" from "read as absent"
+        surfaced.assert_called_once()
+        assert surfaced.call_args.args[0] is response
+
+    @patch("plugins.modules.purefa_workload.wait_for")
+    def test_waiting_for_absence_finishes_when_the_read_stops_finding_it(
+        self, mock_wait_for
+    ):
+        """The eradicate path: the poll ends when the workload is gone, and a
+        gone workload is exactly the error case above"""
+        from plugins.modules.purefa_workload import _wait_for_absent
+
+        module = Mock(params=_params())
+        module.check_mode = False
+        array = _mock_array()
+        _wait_for_absent(module, array, "arrayB")
+        is_done = mock_wait_for.call_args.kwargs["is_done"]
+
+        assert is_done(None) is True
+        assert is_done(_mock_workload()) is False
+
+    def test_the_read_asks_the_array_with_allow_errors(self):
+        """Without it the array rejects the read outright on a remote context"""
+        from plugins.modules.purefa_workload import _read_workload
+
+        module = Mock(params=_params())
+        array = _mock_array()
+        array.get_workloads.return_value = Mock(
+            status_code=200, items=[_mock_workload()], errors=[]
+        )
+
+        _read_workload(module, array, "MUCFA22")
+
+        array.get_workloads.assert_called_once_with(
+            names=["test-workload"], context_names=["MUCFA22"], allow_errors=True
+        )
+
+
+class TestPlacementOptionsAreValidated:
+    """Where a task applies is stated and checked, never guessed"""
+
+    def _check(self, state="present", **params):
+        from plugins.modules.purefa_workload import _check_placement_options
+
+        module = Mock(params=_params(**params))
+        module.fail_json.side_effect = SystemExit
+        array = _mock_array()
+        _check_placement_options(module, array, "test-fleet", state)
+        return module
+
+    def test_a_member_is_accepted(self):
+        module = self._check(context="arrayB")
+
+        module.fail_json.assert_not_called()
+
+    def test_placement_alone_is_accepted(self):
+        module = self._check(context="", placement="arrayA")
+
+        module.fail_json.assert_not_called()
+
+    def test_both_naming_the_same_member_is_accepted(self):
+        module = self._check(context="arrayB", placement="arrayB")
+
+        module.fail_json.assert_not_called()
+
+    def test_neither_is_refused(self):
+        """No default: it would otherwise follow fa_url rather than the playbook"""
+        with pytest.raises(SystemExit):
+            self._check(context="")
+
+    def test_neither_is_accepted_for_a_recommendation_create(self):
+        module = self._check(context="", recommendation=True)
+
+        module.fail_json.assert_not_called()
+
+    def test_recommendation_does_not_stand_in_for_a_context_on_a_delete(self):
+        """recommendation decides where a new workload goes and nothing else"""
+        with pytest.raises(SystemExit):
+            self._check(state="absent", context="", recommendation=True)
+
+    def test_disagreeing_context_and_placement_are_refused(self):
+        with pytest.raises(SystemExit) as raised:
+            self._check(context="arrayA", placement="arrayB")
+        assert raised is not None
+
+    def test_a_non_member_is_refused_and_the_members_are_listed(self):
+        module = Mock(params=_params(context="not-in-the-fleet"))
+        module.fail_json.side_effect = SystemExit
+        from plugins.modules.purefa_workload import _check_placement_options
+
+        with pytest.raises(SystemExit):
+            _check_placement_options(module, _mock_array(), "test-fleet", "present")
+
+        message = module.fail_json.call_args.kwargs["msg"]
+        assert "not-in-the-fleet" in message
+        # The point of the listing: the user can see what they could have written
+        for member in FLEET_MEMBERS:
+            assert member in message
+
+    def test_the_fleet_itself_is_accepted(self):
+        """Naming the fleet means "wherever in the fleet this workload is". It is
+        resolved to a member before any lookup, so the bare fleet name never
+        reaches the array as a context."""
+        module = self._check(context="test-fleet")
+
+        module.fail_json.assert_not_called()
+
+    def test_a_non_member_names_the_fleet_among_the_valid_options(self):
+        module = Mock(params=_params(context="not-in-the-fleet"))
+        module.fail_json.side_effect = SystemExit
+        from plugins.modules.purefa_workload import _check_placement_options
+
+        with pytest.raises(SystemExit):
+            _check_placement_options(module, _mock_array(), "test-fleet", "present")
+
+        assert "test-fleet" in module.fail_json.call_args.kwargs["msg"]
+
+
+class TestFindingAWorkloadAcrossTheFleet:
+    """One call spans the fleet, with a per-member sweep behind it
+
+    "<fleet>.arrays" is a context covering every member. It is not in the SDK's
+    documentation, so the sweep stays as a fallback - and not only for older
+    releases: a rejection of the fleet-wide query looks exactly like the workload
+    being absent, and reading that as "not there" would let a create duplicate.
+    """
+
+    FLEET = "test-fleet"
+
+    def _array(self, homes, fleet_wide=True):
+        """homes lists the members reporting the workload.
+
+        fleet_wide=False makes the <fleet>.arrays context fail, so the fallback
+        runs - which is how an array that does not support it would behave.
+        """
+        array = _mock_array()
+
+        def get_workloads(names=None, context_names=None, **kwargs):
+            asked = (context_names or [None])[0]
+            if asked == f"{self.FLEET}.arrays":
+                if not fleet_wide or not homes:
+                    return _mock_not_found_response()
+                return Mock(
+                    status_code=200,
+                    items=[_mock_workload(context=member) for member in homes],
+                )
+            if asked in homes:
+                return _mock_workload_response(context=asked)
+            return _mock_not_found_response()
+
+        array.get_workloads.side_effect = get_workloads
+        return array
+
+    def _find(self, array):
+        from plugins.modules.purefa_workload import _find_across_fleet
+
+        return _find_across_fleet(Mock(params=_params()), array, self.FLEET)
+
+    def test_finds_it_on_the_one_member_that_has_it(self):
+        assert list(self._find(self._array(["arrayB"]))) == ["arrayB"]
+
+    def test_finds_both_when_the_name_is_used_twice(self):
+        """Names are unique per member, not across the fleet, so one query can
+        legitimately answer with two workloads"""
+        found = self._find(self._array(["arrayA", "arrayB"]))
+
+        assert sorted(found) == ["arrayA", "arrayB"]
+
+    def test_one_call_answers_it(self):
+        array = self._array(["arrayA", "arrayB"])
+        self._find(array)
+
+        array.get_workloads.assert_called_once_with(
+            names=["test-workload"],
+            context_names=[f"{self.FLEET}.arrays"],
+            allow_errors=True,
+        )
+
+    def test_finds_nothing_when_no_member_has_it(self):
+        assert self._find(self._array([])) == {}
+
+    def test_falls_back_to_asking_each_member(self):
+        """An array that rejects the fleet-wide context must still be searched,
+        rather than the rejection passing for an empty fleet"""
+        array = self._array(["arrayB"], fleet_wide=False)
+
+        found = self._find(array)
+
+        assert list(found) == ["arrayB"]
+        asked = {
+            call.kwargs["context_names"][0]
+            for call in array.get_workloads.call_args_list
+        }
+        assert set(FLEET_MEMBERS) <= asked
+
+
+class TestRecommendationIsIdempotent:
+    """Fusion picks the placement, so a repeat run must not ask for another
+
+    The existence check in main() runs before Fusion chooses, against a context
+    the user did not name. Without the fleet sweep a second run finds nothing,
+    requests a new placement, and makes a second workload - through no action of
+    the user's.
+    """
+
+    def _array(self, homes):
+        array = _mock_array()
+
+        def get_workloads(names=None, context_names=None, **kwargs):
+            member = (context_names or [None])[0]
+            if member in homes:
+                return _mock_workload_response(context=member)
+            return _mock_not_found_response()
+
+        array.get_workloads.side_effect = get_workloads
+        return array
+
+    def _module(self):
+        module = Mock()
+        module.check_mode = False
+        module.params = _params(preset="test-preset", context="", recommendation=True)
+        module.fail_json.side_effect = SystemExit
+        return module
+
+    @patch("plugins.modules.purefa_workload.check_response")
+    def test_an_existing_workload_is_returned_unchanged(self, mock_check_response):
+        module = self._module()
+        array = self._array(["arrayB"])
+
+        create_workload(module, array, Mock(), Mock(parameters=[]))
+
+        array.post_workloads_placement_recommendations.assert_not_called()
+        array.post_workloads.assert_not_called()
+        assert module.exit_json.call_args.kwargs["changed"] is False
+        assert module.exit_json.call_args.kwargs["workload"]["context"] == "arrayB"
+
+    @patch("plugins.modules.purefa_workload.check_response")
+    def test_the_same_name_on_two_members_is_refused(self, mock_check_response):
+        """Nothing in the task says which one is meant, and choosing would be
+        arbitrary"""
+        module = self._module()
+        array = self._array(["arrayA", "arrayB"])
+
+        with pytest.raises(SystemExit):
+            create_workload(module, array, Mock(), Mock(parameters=[]))
+
+        message = module.fail_json.call_args.kwargs["msg"]
+        assert "arrayA" in message and "arrayB" in message
+        assert "Set context" in message
+        array.post_workloads_placement_recommendations.assert_not_called()
+        array.post_workloads.assert_not_called()
+
+    @patch("plugins.modules.purefa_workload._wait_for_recommendation")
+    @patch("plugins.modules.purefa_workload.check_response")
+    def test_nothing_found_still_asks_fusion(
+        self, mock_check_response, mock_wait_for_recommendation
+    ):
+        module = self._module()
+        module.params["wait"] = False
+        array = self._array([])
+        calculation = Mock()
+        calculation.name = "calc-1"
+        array.post_workloads_placement_recommendations.return_value = Mock(
+            status_code=200, items=[calculation]
+        )
+        mock_wait_for_recommendation.return_value = _mock_recommendation("arrayB")
+        array.post_workloads.return_value = _mock_workload_response(context="arrayB")
+
+        create_workload(module, array, Mock(), Mock(parameters=[]))
+
+        array.post_workloads_placement_recommendations.assert_called_once()
+        array.post_workloads.assert_called_once()
+
+
+class TestDuplicateNameIsReportedNotHidden:
+    """A name is unique per fleet member, so the same one elsewhere is a
+    different workload - worth saying, never worth acting on"""
+
+    def _array(self, homes):
+        array = _mock_array()
+
+        def get_workloads(names=None, context_names=None, **kwargs):
+            member = (context_names or [None])[0]
+            if member in homes:
+                return _mock_workload_response(context=member)
+            return _mock_not_found_response()
+
+        array.get_workloads.side_effect = get_workloads
+        return array
+
+    @patch("plugins.modules.purefa_workload.check_response")
+    def test_creating_warns_when_the_name_exists_elsewhere(self, mock_check_response):
+        module = Mock()
+        module.check_mode = False
+        module.params = _params(preset="test-preset", context="pod1", wait=False)
+        array = self._array(["arrayB"])
+        array.post_workloads.return_value = _mock_workload_response(context="pod1")
+
+        create_workload(module, array, Mock(), Mock(parameters=[]))
+
+        module.warn.assert_called_once()
+        warning = module.warn.call_args[0][0]
+        assert "arrayB" in warning
+        # Warned, not refused - the array permits it and the user named a context
+        array.post_workloads.assert_called_once()
+
+    def test_removing_warns_that_copies_remain(self):
+        from plugins.modules.purefa_workload import _warn_about_copies_elsewhere
+
+        module = Mock(params=_params(context="arrayB"))
+
+        _warn_about_copies_elsewhere(
+            module, self._array(["arrayA", "arrayB"]), "test-fleet"
+        )
+
+        warning = module.warn.call_args[0][0]
+        # The survivor is named, and the one being acted on is described as the
+        # only thing affected rather than listed among the survivors
+        assert "arrayA" in warning
+        assert "Only the one on arrayB" in warning
+
+    def test_removing_says_nothing_when_it_is_the_only_one(self):
+        from plugins.modules.purefa_workload import _warn_about_copies_elsewhere
+
+        module = Mock(params=_params(context="arrayB"))
+
+        _warn_about_copies_elsewhere(module, self._array(["arrayB"]), "test-fleet")
+
+        module.warn.assert_not_called()
+
+
+class TestAbsenceIsReadFromTheArraysExplanation:
+    """The status alone cannot say a workload is missing
+
+    A workload read answers 400 for several different mistakes, and only one of
+    them is absence. Treating the rest as "not there" is how a create duplicates
+    or a delete reports success having done nothing.
+    """
+
+    def _read(self, status_code, messages):
+        from plugins.modules.purefa_workload import _read_workload
+
+        module = Mock(params=_params())
+        array = _mock_array()
+        response = Mock(
+            status_code=status_code,
+            items=[],
+            errors=[Mock(message=message) for message in messages],
+        )
+        array.get_workloads.return_value = response
+        with patch("plugins.modules.purefa_workload.check_response") as surfaced:
+            result = _read_workload(module, array, "arrayB")
+        return result, surfaced, response
+
+    @pytest.mark.parametrize(
+        "message",
+        [
+            "Workload does not exist.",
+            # The match is loose on purpose, so wording and punctuation can drift
+            "workload does not exist",
+            "The workload does not exist on this array",
+        ],
+    )
+    def test_absence_is_recognised(self, message):
+        result, surfaced, _ = self._read(400, [message])
+
+        assert result is None
+        surfaced.assert_not_called()
+
+    def test_absence_is_recognised_on_a_404_too(self):
+        result, surfaced, _ = self._read(404, ["Workload does not exist."])
+
+        assert result is None
+        surfaced.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "message",
+        [
+            "Cannot specify context that is a fleet",
+            "Cannot specify search parameter names without allow_errors.",
+            "Executor not found for [MUCLAB].arrays",
+        ],
+    )
+    def test_the_other_400s_are_surfaced(self, message):
+        """Each of these is this module's own mistake, not a missing workload"""
+        result, surfaced, response = self._read(400, [message])
+
+        surfaced.assert_called_once()
+        assert surfaced.call_args.args[0] is response
+        assert result is None  # only because check_response is stubbed here
+
+    def test_a_400_explaining_nothing_is_surfaced(self):
+        _, surfaced, _ = self._read(400, [])
+
+        surfaced.assert_called_once()
+
+    def test_a_server_error_is_surfaced(self):
+        _, surfaced, _ = self._read(500, ["Workload does not exist."])
+
+        surfaced.assert_called_once()
+
+
+class TestNamingTheFleetFindsItAnywhere:
+    """context: <fleet> means "wherever in the fleet this workload is"
+
+    It is resolved to the member holding the workload before anything looks the
+    workload up, so the bare fleet name is never used as a query context - the
+    array rejects it there with a 400 that reads exactly like absence.
+    """
+
+    FLEET = "test-fleet"
+
+    def _array(self, homes):
+        array = _mock_array()
+
+        def get_workloads(names=None, context_names=None, **kwargs):
+            asked = (context_names or [None])[0]
+            if asked == f"{self.FLEET}.arrays":
+                if not homes:
+                    return _mock_not_found_response()
+                return Mock(
+                    status_code=200,
+                    items=[_mock_workload(context=member) for member in homes],
+                )
+            if asked in homes:
+                return _mock_workload_response(context=asked)
+            return _mock_not_found_response()
+
+        array.get_workloads.side_effect = get_workloads
+        return array
+
+    def _resolve(self, homes, state="present", **params):
+        from plugins.modules.purefa_workload import _resolve_fleet_context
+
+        module = Mock(params=_params(context=self.FLEET, **params))
+        module.fail_json.side_effect = SystemExit
+        module.exit_json.side_effect = SystemExit
+        array = self._array(homes)
+        _resolve_fleet_context(module, array, self.FLEET, state)
+        return module, array
+
+    def test_one_match_resolves_to_that_member(self):
+        module, array = self._resolve(["arrayB"])
+
+        assert module.params["context"] == "arrayB"
+        module.fail_json.assert_not_called()
+
+    def test_the_bare_fleet_name_is_never_used_as_a_query_context(self):
+        """The whole reason accepting it is safe"""
+        _, array = self._resolve(["arrayB"])
+
+        asked = [
+            call.kwargs.get("context_names", [None])[0]
+            for call in array.get_workloads.call_args_list
+        ]
+        assert self.FLEET not in asked
+
+    def test_two_matches_are_refused(self):
+        """A name belongs to a member, not a fleet, so two of them are two
+        workloads and nothing in the task says which is meant"""
+        module = Mock(params=_params(context=self.FLEET))
+        module.fail_json.side_effect = SystemExit
+        from plugins.modules.purefa_workload import _resolve_fleet_context
+
+        with pytest.raises(SystemExit):
+            _resolve_fleet_context(
+                module, self._array(["arrayA", "arrayB"]), self.FLEET, "present"
+            )
+
+        message = module.fail_json.call_args.kwargs["msg"]
+        assert "arrayA" in message and "arrayB" in message
+
+    def test_nothing_found_on_a_create_is_refused(self):
+        """The fleet says where to look, not where to create"""
+        module = Mock(params=_params(context=self.FLEET))
+        module.fail_json.side_effect = SystemExit
+        from plugins.modules.purefa_workload import _resolve_fleet_context
+
+        with pytest.raises(SystemExit):
+            _resolve_fleet_context(module, self._array([]), self.FLEET, "present")
+
+        module.fail_json.assert_called_once()
+
+    def test_nothing_found_with_recommendation_lets_fusion_choose(self):
+        module, _ = self._resolve([], state="present", recommendation=True)
+
+        module.fail_json.assert_not_called()
+        # Left unset, so create_workload asks for a placement
+        assert module.params["context"] == ""
+
+    def test_nothing_found_on_a_delete_is_already_done(self):
+        """Not a failure - absent is the requested end state, and it is already
+        the case. Asserted as exit_json rather than merely "something raised",
+        which a failure would also satisfy."""
+        module = Mock(params=_params(context=self.FLEET))
+        module.exit_json.side_effect = SystemExit
+        from plugins.modules.purefa_workload import _resolve_fleet_context
+
+        with pytest.raises(SystemExit):
+            _resolve_fleet_context(module, self._array([]), self.FLEET, "absent")
+
+        module.fail_json.assert_not_called()
+        assert module.exit_json.call_args.kwargs == {"changed": False, "workload": {}}
+
+    def test_nothing_found_on_an_expand_is_refused(self):
+        """Unlike absent, expand needs something to add volumes to"""
+        module = Mock(params=_params(context=self.FLEET))
+        module.fail_json.side_effect = SystemExit
+        from plugins.modules.purefa_workload import _resolve_fleet_context
+
+        with pytest.raises(SystemExit):
+            _resolve_fleet_context(module, self._array([]), self.FLEET, "expand")
+
+        module.exit_json.assert_not_called()
+        assert "nothing to add volumes to" in module.fail_json.call_args.kwargs["msg"]

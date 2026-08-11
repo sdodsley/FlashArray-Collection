@@ -26,11 +26,20 @@ author:
 options:
   context:
     description:
-    - Name of fleet member on which to perform the workload operation.
-    - This requires the array receiving the request is a member of a fleet
-      and the context name to be a member of the same fleet.
-    - If not specified, defaults to I(placement) when that is set, otherwise
-      to the name of the array receiving the request.
+    - Name of the fleet member on which to perform the workload operation, or
+      the name of the fleet itself.
+    - There is no default. Either this or I(placement) must be given, except on
+      a create with I(recommendation), where Fusion chooses the member. 
+    - A workload is identified by its name B(and) its member. The same name on
+      two fleet members is two separate workloads, so naming a different member
+      creates a second one rather than moving the first.
+    - Naming the B(fleet) instead means "the workload with this name, wherever
+      it is in the fleet". It is resolved to the member holding the workload, so
+      a task is idempotent without having to know which member that is. If two
+      or more members hold the same name it is ambiguous and the task fails.
+    - The fleet says where to look, not where to create. If no such workload
+      exists anywhere, a create fails asking for a member, unless
+      I(recommendation) is set.
     type: str
     default: ""
   host:
@@ -70,10 +79,11 @@ options:
     default: false
   placement:
     description:
-    - name of target on which the workload will be deployed
+    - Name of the fleet member on which the workload will be deployed.
     - A workload is deployed on its I(context), and the API has no separate
-      placement, so this only takes effect when I(context) is not specified.
-      Setting both is warned about and I(context) wins.
+      placement, so the two mean the same thing and this accepts everything
+      I(context) does, including the fleet's own name. Setting both to different
+      members fails; set one, or set both to the same value.
     - Ignored when I(recommendation) is true, as the recommended target
       replaces it.
     type: str
@@ -203,9 +213,9 @@ EXAMPLES = r"""
   ansible.builtin.debug:
     msg: "{{ new_workload.workload.name }} placed on {{ new_workload.workload.context }}"
 
-- name: Report the volumes the host can now see
+- name: Report the volumes the array provisioned
   ansible.builtin.debug:
-    msg: "{{ new_workload.workload.host }} sees {{ new_workload.workload.volumes }}"
+    msg: "{{ new_workload.workload.volumes }}"
 
 - name: Create a workload using preset parameters
   everpure.flasharray.purefa_workload:
@@ -279,9 +289,11 @@ EXAMPLES = r"""
 
 RETURN = r"""
 workload:
-    description: A dictionary describing the workload. Returned on every action
-        that leaves a workload in place, and empty only when no workload remains
-        to describe, as after an eradication.
+    description: Describes what a task did to the workload.
+        Returned on every action that leaves a workload in place, and empty only
+        when no workload remains to describe, as after an eradication. More detail
+        is available from array by M(everpure.flasharray.purefa_info) rather than
+        repeated here.
     type: dict
     returned: success
     contains:
@@ -293,22 +305,19 @@ workload:
         context:
             description: Name of the fleet member the workload is placed on.
                 When I(recommendation) is used this is the target chosen by
-                Fusion, which is not knowable before the task runs.
+                Fusion. Together with I(name) it identifies the workload - 
+                the same name on another fleet member is a different workload.
             type: str
             sample: 'arrayB'
-        preset:
-            description: Fleet-qualified name of the preset the workload was
-                deployed from. The name is null if the preset has since been
-                destroyed.
-            type: str
-            sample: 'fleet1:bar'
         status:
             description: Status of the workload, as reported by the array.
                 Normally one of C(creating), C(ready), C(destroying),
                 C(destroyed), C(eradicating) or C(recovering). Passed through
                 unmodified, so a future Purity release may report a value not in
-                this list. Use I(completed) to test for completion rather than
-                comparing this field.
+                this list, and null when the array reports no status at all. Use
+                I(completed) to test for completion rather than comparing this
+                field - a null or unrecognised status counts as still in flight
+                and raises a warning.
             type: str
             sample: 'ready'
         completed:
@@ -317,23 +326,12 @@ workload:
                 eradication - see I(time_remaining).
             type: bool
             sample: false
-        status_details:
-            description: Human-readable diagnostics from the array, such as
-                which resources are still being created. Free-form, with no
-                stable format. Do not parse.
-            type: list
-            elements: str
-            sample: ['creating volume foo-vol1']
         destroyed:
             description: Whether deletion of the workload has been requested.
                 This says nothing about whether the deletion has finished - see
                 I(completed).
             type: bool
             sample: false
-        created:
-            description: Workload creation time, in UTC.
-            type: str
-            sample: '2025-08-07 17:20:11'
         time_remaining:
             description: Milliseconds until a destroyed workload is eradicated.
                 Null unless I(destroyed) is true, and null in check mode.
@@ -346,14 +344,6 @@ workload:
             type: list
             elements: str
             sample: ['foo-vol1', 'foo-vol2']
-        host:
-            description: The host this task connected or disconnected, or null
-                when I(host) was not set. On a connect this host can see every
-                volume in I(volumes); on a disconnect it can see none of them.
-                Hosts connected to these volumes by other means are neither
-                reported nor changed.
-            type: str
-            sample: 'myhost'
 """
 
 HAS_PURESTORAGE = True
@@ -372,7 +362,6 @@ try:
 except ImportError:
     HAS_PURESTORAGE = False
 
-import time
 from ansible.module_utils.basic import AnsibleModule
 from ansible_collections.everpure.flasharray.plugins.module_utils.purefa import (
     get_array,
@@ -401,6 +390,18 @@ SUPPORTED_PARAMETER_VALUE_TYPES = (
 # is caught by wait_timeout rather than reported as a failure.
 TERMINAL_STATUSES = frozenset({"ready", "destroyed"})
 TRANSIENT_STATUSES = frozenset({"creating", "destroying", "eradicating", "recovering"})
+
+# A read by name reports a missing object as an error rather than as an empty
+# result, so absence has to be recognised from the error itself. These two statuses
+# are the only candidates - every other status, 5xx above all, is surfaced rather
+# than quietly reported as absence.
+NOT_FOUND_STATUSES = frozenset({400, 404})
+
+# ...but the status alone will not do. The array answers with 400 for several
+# different mistakes, only one of which means the workload is not there.
+# so additionally we match on a lowercase substring so wording and punctuation 
+# can drift without breaking.
+NOT_FOUND_TEXT = "does not exist"
 
 
 def _parameter_fail(module, parameter_name, message):
@@ -570,13 +571,11 @@ def _status_completed(module, name, status):
 
 def _workload_completed(module, workload):
     """_status_completed() for an already-read Workload"""
-    return _status_completed(module, workload.name, getattr(workload, "status", None))
-
-
-def _timestamp(milliseconds=None):
-    """Format array epoch milliseconds as UTC, defaulting to now"""
-    seconds = time.time() if milliseconds is None else milliseconds / 1000
-    return time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(seconds))
+    return _status_completed(
+        module,
+        getattr(workload, "name", None),
+        getattr(workload, "status", None),
+    )
 
 
 # Check mode has two rules in this module. An action function decides what to
@@ -610,43 +609,44 @@ def _connected_volume_names(module, array, context, volume_names, host):
         context_names=[context],
     )
     check_response(res, module, f"Failed to get connections for host {host}")
-    return {connection.volume.name for connection in list(res.items)}
+    # The volume, and the name on it, are both optional, so a connection naming no
+    # volume is dropped rather than raising
+    names = {
+        getattr(getattr(connection, "volume", None), "name", None)
+        for connection in list(res.items)
+    }
+    names.discard(None)
+    return names
 
 
 def _facts(
     module,
     context,
     name=None,
-    preset=None,
     status=None,
-    created=None,
     volumes=None,
     destroyed=False,
-    status_details=None,
     time_remaining=None,
 ):
     """The workload contract
 
+    What the task did, rather than everything the array knows about the workload.
+    A workload's own properties - the preset it came from, when it was created, the
+    array's free-form status text - are what purefa_info reports, and repeating
+    them here would only invite the two to disagree.
+
     The defaults are what a workload that does not exist yet can honestly report,
-    so a predicted create only has to name what it knows. name and preset are not
-    among them: both are nullable on a real workload - a destroyed preset reports a
-    null name - so defaulting them to the requested values would report a parameter
-    as though the array had said it.
+    so a predicted create only has to name what it knows.
     """
     return {
         "name": name,
         "context": context,
-        "preset": preset,
         "status": status,
         # Derived here, so it can never disagree with the status beside it
         "completed": _status_completed(module, name, status),
-        "status_details": status_details or [],
         "destroyed": destroyed,
         "time_remaining": time_remaining,
-        # A workload that does not exist yet would be created about now
-        "created": created or _timestamp(),
         "volumes": volumes or [],
-        "host": module.params["host"] or None,
     }
 
 
@@ -663,30 +663,125 @@ def _workload_facts(module, array, workload, context, volume_names=None, **chang
     """
     if not workload:
         return {}
+    # In the SDK every field on a workload is optional, if we try to read one that
+    # is not defined it will raise, so we use getattr()
+    workload_context = getattr(workload, "context", None)
+
+    name = getattr(workload, "name", None) or module.params["name"]
     if volume_names is None:
         # Read under the name the workload still answers to, which for a rename is
         # the old one
-        volume_names = _workload_volume_names(module, array, workload.name, context)
+        volume_names = _workload_volume_names(module, array, name, context)
     values = {
-        "name": workload.name,
-        "context": workload.context.name,
-        "preset": workload.preset.name,
-        "status": workload.status,
-        "created": _timestamp(workload.created),
-        "destroyed": workload.destroyed,
-        "status_details": workload.status_details,
+        "name": name,
+        "context": getattr(workload_context, "name", None) or context,
+        "status": getattr(workload, "status", None),
+        "destroyed": getattr(workload, "destroyed", False),
         "time_remaining": getattr(workload, "time_remaining", None),
     }
     return _facts(module, volumes=volume_names, **{**values, **changes})
 
 
+def _is_absent(response):
+    """A response the array explained as the workload not being there
+
+    Matching on message text is unpleasant, and was avoided for as long as the
+    status code alone could carry it. It cannot: the array answers 400 for several
+    different mistakes, and only one of them means absence. The match is
+    deliberately loose - lowercase substring, across every error rather than the
+    first - and if it ever stops matching, a missing workload surfaces as a task
+    failure quoting the array. That is the safe direction to be wrong in: loud
+    rather than silent.
+
+    A response carrying no errors at all is not absence either, and falls through
+    to be surfaced rather than assumed benign.
+    """
+    if getattr(response, "status_code", None) not in NOT_FOUND_STATUSES:
+        return False
+    return any(
+        NOT_FOUND_TEXT in (getattr(error, "message", "") or "").lower()
+        for error in getattr(response, "errors", None) or []
+    )
+
+
 def _read_workload(module, array, context):
-    """Read the workload in the given context, or None if it does not exist"""
-    res = array.get_workloads(names=[module.params["name"]], context_names=[context])
-    if res.status_code == 404:
+    """Read the workload in the given context, or None if it does not exist
+
+    A workload that is not there is reported as an error rather than as an empty
+    result - with or without allow_errors - so absence is recognised by
+    _is_absent(), which reads the array's own explanation. A server error can
+    therefore never be mistaken for a missing workload and reported as success by
+    a caller waiting for one to go away.
+
+    allow_errors is required whenever the context is a fleet member other than the
+    local array being addressed.
+    """
+    res = array.get_workloads(
+        names=[module.params["name"]],
+        context_names=[context],
+        allow_errors=True,
+    )
+    if res.status_code == 200:
+        return list(res.items)[0]
+    if _is_absent(res):
         return None
     check_response(res, module, f"Failed to read workload {module.params['name']}")
-    return list(res.items)[0]
+
+
+def _find_across_fleet(module, array, fleet):
+    """Every fleet member reporting a workload of this name, as {member: workload}
+
+    Names are not unique across a fleet: the same name on two members is two
+    separate workloads, and both are returned.
+
+    "<fleet>.arrays" is a context that spans every member, and answers this in one
+    call. The bare fleet name does not - the array rejects it with "Cannot specify
+    context that is a fleet" - and the form used here is not in the SDK's
+    documentation, so a member-by-member sweep backs it up. That fallback is not
+    only for old releases: a rejection of the fleet-wide query is indistinguishable
+    from the workload being absent, and reading "unsupported" as "not there" would
+    let a create make a duplicate.
+    """
+    res = array.get_workloads(
+        names=[module.params["name"]],
+        context_names=[f"{fleet}.arrays"],
+        allow_errors=True,
+    )
+    if res.status_code == 200:
+        return {
+            member: workload
+            for workload in list(res.items)
+            for member in [getattr(getattr(workload, "context", None), "name", None)]
+            if member
+        }
+
+    found = {}
+    for member in _fleet_members(module, array):
+        workload = _read_workload(module, array, member)
+        if workload is not None:
+            found[member] = workload
+    return found
+
+
+def _warn_about_copies_elsewhere(module, array, fleet):
+    """Say when a name being removed here also exists on other fleet members
+
+    Reporting only. The module destroys exactly the (name, context) it was given,
+    and this must never widen that: eradication cannot be undone, so a fleet-wide
+    search informs the operator rather than choosing a target for them.
+    """
+    others = sorted(
+        member
+        for member in _find_across_fleet(module, array, fleet)
+        if member != module.params["context"]
+    )
+    if others:
+        module.warn(
+            f"A workload named {module.params['name']} also exists on "
+            f"{', '.join(others)}. Only the one on {module.params['context']} is "
+            "affected here - a name is unique per fleet member, not across the "
+            "fleet."
+        )
 
 
 def _status_detail(workload):
@@ -794,11 +889,13 @@ def _wait_for_recommendation(module, array, context, calculation):
     return wait_for(
         module,
         probe=probe,
-        is_done=lambda result: result.status == "completed",
+        # status is optional, and a calculation reporting none is still in flight as
+        # far as this is concerned, so both tests read it with a default
+        is_done=lambda result: getattr(result, "status", None) == "completed",
         is_failed=lambda result: (
             f"Fusion could not find a placement for preset "
             f"{module.params['preset']}"
-            if result.status == "failed"
+            if getattr(result, "status", None) == "failed"
             else None
         ),
         timeout=module.params["wait_timeout"],
@@ -939,7 +1036,31 @@ def create_workload(module, array, fleet, preset_config):
     """Create fleet workload using existing preset"""
     changed = True
     workload_parameters = _build_workload_parameters(module, preset_config)
+    # This is only reached when the workload was not found on the named context, so
+    # anything the sweep turns up is a copy of the name on some other member
+    elsewhere = _find_across_fleet(module, array, fleet)
     if module.params["recommendation"]:
+        if len(elsewhere) > 1:
+            # Nothing in the task says which of them is meant, and picking one
+            # would be arbitrary and wrong about half the time
+            module.fail_json(
+                msg=f"Workload {module.params['name']} already exists on more than "
+                f"one fleet member: {', '.join(sorted(elsewhere))}. recommendation "
+                "cannot choose between them. Set context to the one you mean."
+            )
+        if elsewhere:
+            # Fusion chose the placement last time and may choose differently now,
+            # so a second run must find what the first one made rather than ask for
+            # another placement
+            member, existing = next(iter(elsewhere.items()))
+            module.exit_json(
+                changed=False,
+                workload=_workload_facts(module, array, existing, member),
+            )
+            # exit_json ends the module by raising, but this is the one place it is
+            # not the last statement - the return says so rather than leaving the
+            # rest of the function looking reachable
+            return
         # Start the workload calculation for the preset being used
         res = array.post_workloads_placement_recommendations(
             inputs=WorkloadPlacementRecommendation(parameters=workload_parameters),
@@ -947,29 +1068,46 @@ def create_workload(module, array, fleet, preset_config):
             context_names=[module.params["context"]],
         )
         check_response(res, module, "Recommendation calculation failure")
-        workload_calc = list(res.items)[0].name
+        workload_calc = getattr(list(res.items)[0], "name", None)
         # A calculation, not a change, so this runs in check mode too - it is what
         # lets a check-mode run report the target Fusion would have chosen
         result = _wait_for_recommendation(
             module, array, module.params["context"], workload_calc
         )
-        # Replace any defined placement with the result from the recommendation
-        module.params["placement"] = result.results[0].placements[0].targets[0].name
+        # Replace any defined placement with the result from the recommendation.
+        # Every link on the way to the target is optional and every list can come
+        # back empty, so the walk is guarded as a whole and a gap is reported as the
+        # missing recommendation it is, rather than as an error further downstream.
+        try:
+            target = result.results[0].placements[0].targets[0].name
+        except (AttributeError, IndexError):
+            target = None
+        if not target:
+            module.fail_json(
+                msg="Fusion reported a completed placement recommendation for preset "
+                f"{module.params['preset']} but named no target to deploy on."
+            )
+        module.params["placement"] = target
         module.params["context"] = module.params["placement"]
+    elif elsewhere:
+        # The user named a context, so this is a different workload that happens to
+        # share a name - which the array permits. Reported rather than refused.
+        module.warn(
+            f"A workload named {module.params['name']} already exists on "
+            f"{', '.join(sorted(elsewhere))}. Creating on "
+            f"{module.params['context']} makes a separate workload: a name is "
+            "unique per fleet member, not across the fleet."
+        )
     context = module.params["context"]
     if module.check_mode:
         # Nothing exists to read, so everything reported is predicted. The context
-        # is the resolved one, which for a recommendation is Fusion's choice.
-        # Only what a create can know is named here. created and volumes are left
-        # to _facts() to default, because the array generates the volume names and
-        # the workload would come into existence about now. name and preset have to
-        # be passed, since _facts() cannot tell a value that was not supplied from
-        # one the array reports as null.
+        # is the resolved one, which for a recommendation is Fusion's choice. Only
+        # what a create can know is named here; volumes are left to _facts() to
+        # default, because the array generates their names.
         workload_facts = _facts(
             module,
             name=module.params["name"],
             context=context,
-            preset=module.params["preset"],
             status="ready" if module.params["wait"] else "creating",
         )
     else:
@@ -1033,7 +1171,9 @@ def expand_workload(module, array, fleet, volume_configs, workload):
             workload,
             context,
             all_volume_names,
-            status="ready" if module.params["wait"] else workload.status,
+            status=(
+                "ready" if module.params["wait"] else getattr(workload, "status", None)
+            ),
         )
     else:
         # Without a wait this is still main()'s pre-expand read, which is accurate
@@ -1182,6 +1322,116 @@ def connect_or_disconnect_volumes(module, array, mode, workload):
     )
 
 
+def _fleet_members(module, array):
+    """Names of every member of the fleet this array belongs to"""
+    res = array.get_fleets_members()
+    check_response(res, module, "Failed to list fleet members")
+    members = []
+    for member in list(res.items):
+        name = getattr(getattr(member, "member", None), "name", None)
+        if name:
+            members.append(name)
+    return members
+
+
+def _check_placement_options(module, array, fleet, state):
+    """Settle where this task applies before anything is read or written.
+
+    There is deliberately no default. A workload belongs to a fleet member, and
+    falling back to whichever array the request happened to reach makes the same
+    playbook mean different things depending on fa_url - which is how a re-run ends
+    up creating a second workload rather than finding the first.
+    """
+    chosen = [option for option in ("context", "placement") if module.params[option]]
+
+    # recommendation only decides where a *new* workload goes, so it stands in for
+    # a context on a create and nowhere else. Naming an existing workload to
+    # delete, expand or rename always needs the member it is on.
+    may_recommend = state == "present" and module.params["recommendation"]
+    if not chosen and not may_recommend:
+        module.fail_json(
+            msg="Name which fleet member this applies to by setting context or "
+            "placement"
+            + (
+                ", or set recommendation to let Fusion choose"
+                if state == "present"
+                else ""
+            )
+            + ". There is no default: it would otherwise fall to whichever array "
+            "the request was sent to, which changes with fa_url."
+        )
+
+    if len(chosen) == 2 and module.params["context"] != module.params["placement"]:
+        module.fail_json(
+            msg=f"context '{module.params['context']}' and placement "
+            f"'{module.params['placement']}' name different fleet members. They "
+            "are the same thing to the array, so set one of them, or set both to "
+            "the same member."
+        )
+
+    if not chosen:
+        return
+    # The fleet itself is allowed and means "wherever in the fleet this workload
+    # is" - _resolve_fleet_context() turns it into the member holding it before
+    # anything looks the workload up.
+    allowed = set(_fleet_members(module, array)) | {fleet}
+    for option in chosen:
+        value = module.params[option]
+        if value not in allowed:
+            module.fail_json(
+                msg=f"{option} '{value}' is not a member of fleet {fleet}, nor the "
+                f"fleet itself. Valid: {', '.join(sorted(allowed))}."
+            )
+
+
+def _resolve_fleet_context(module, array, fleet, state):
+    """Turn a context of the fleet into the member the workload is actually on
+
+    Naming the fleet says where to look, not where to put things. A single match
+    is resolved and everything downstream then works on that member as though it
+    had been named directly, which is what makes a task idempotent across the
+    fleet - including a delete.
+
+    More than one match is refused rather than guessed at. A name is unique to a
+    member, not to a fleet, so two of them are two workloads and nothing in the
+    task says which is meant.
+
+    This runs before any lookup, so the bare fleet name is never used as a query
+    context - the array rejects it there with a 400 that reads exactly like the
+    workload being absent.
+    """
+    found = _find_across_fleet(module, array, fleet)
+    if len(found) > 1:
+        module.fail_json(
+            msg=f"Workload {module.params['name']} exists on more than one member "
+            f"of {fleet}: {', '.join(sorted(found))}. Set context to the one you "
+            "mean."
+        )
+    if found:
+        module.params["context"] = next(iter(found))
+        return
+
+    if state == "expand":
+        module.fail_json(
+            msg=f"Workload {module.params['name']} was not found anywhere in "
+            f"{fleet}, so there is nothing to add volumes to."
+        )
+    if state == "present":
+        if module.params["recommendation"]:
+            # Nothing to update and Fusion was asked to choose, so leave the
+            # context unset and let create_workload() get a placement
+            module.params["context"] = ""
+            return
+        module.fail_json(
+            msg=f"Workload {module.params['name']} was not found anywhere in "
+            f"{fleet}, and {fleet} names the fleet rather than a member, so there "
+            "is nowhere to create it. Set context or placement to a member, or set "
+            "recommendation to let Fusion choose."
+        )
+    # state=absent with nothing anywhere in the fleet: already the desired end
+    module.exit_json(changed=False, workload={})
+
+
 def main():
     argument_spec = purefa_argument_spec()
     argument_spec.update(
@@ -1251,20 +1501,6 @@ def main():
             "settled first, which only happens when waiting."
         )
 
-    # A workload is created on its context, and the API has no separate placement
-    # to send, so the two are the same thing. When they disagree the context wins,
-    # which is worth saying out loud rather than dropping the placement silently.
-    if (
-        module.params["context"]
-        and module.params["placement"]
-        and module.params["context"] != module.params["placement"]
-    ):
-        module.warn(
-            f"placement {module.params['placement']} is ignored because context "
-            f"{module.params['context']} was given. A workload is created on its "
-            f"context, which the API has no separate placement for."
-        )
-
     array = get_array(module)
     api_version = array.get_rest_version()
     if LooseVersion(MIN_REQUIRED_API_VERSION) > LooseVersion(api_version):
@@ -1283,14 +1519,13 @@ def main():
             "array is not a member of a fleet."
         )
     fleet = fleet_items[0].name
-    if not module.params["context"]:
-        # No context given: route the request via the placement target if one was
-        # named, otherwise via the local array. This module already requires a
-        # fleet, so the local array is always a valid fleet context. An empty
-        # context is rejected by the array with an internal error.
-        module.params["context"] = (
-            module.params["placement"] or list(array.get_arrays().items)[0].name
-        )
+    _check_placement_options(module, array, fleet, state)
+    # context and placement mean the same thing to the API - a workload is created
+    # on its context, and there is no separate placement to send - and they have
+    # been checked to agree, so either may stand for both
+    module.params["context"] = module.params["context"] or module.params["placement"]
+    if module.params["context"] == fleet:
+        _resolve_fleet_context(module, array, fleet, state)
 
     workload_destroyed = False
     workload_exists = False
@@ -1298,13 +1533,23 @@ def main():
     preset_config = {}
     # Update preset name with fleet prefix
     module.params["preset"] = fleet + ":" + module.params["preset"]
-    res = array.get_workloads(
-        names=[module.params["name"]], context_names=[module.params["context"]]
-    )
-    if res.status_code == 200:
-        workload_exists = True
-        workload = list(res.items)[0]
-        workload_destroyed = workload.destroyed
+    # allow_errors, as in _read_workload: without it the array rejects a read by
+    # name outright when the context is a fleet member other than this one, and a
+    # workload that already exists there would be reported as absent and created
+    # a second time
+    if module.params["context"]:
+        res = array.get_workloads(
+            names=[module.params["name"]],
+            context_names=[module.params["context"]],
+            allow_errors=True,
+        )
+        if res.status_code == 200:
+            workload_exists = True
+            workload = list(res.items)[0]
+            workload_destroyed = getattr(workload, "destroyed", False)
+    # Otherwise this is a recommendation-led create with no context yet, so there is
+    # nowhere to look. create_workload() sweeps the fleet instead, which is also what
+    # stops a second run asking Fusion for another placement.
 
     if (state == "present" and not workload_destroyed and not workload_exists) or (
         state == "expand" and not workload_destroyed
@@ -1348,10 +1593,25 @@ def main():
     ):
         connect_or_disconnect_volumes(module, array, "disconnect", workload)
     elif state == "absent" and workload_exists and not workload_destroyed:
+        _warn_about_copies_elsewhere(module, array, fleet)
         delete_workload(module, array, workload)
     elif state == "absent" and workload_destroyed and module.params["eradicate"]:
+        _warn_about_copies_elsewhere(module, array, fleet)
         eradicate_workload(module, array)
+    elif state == "expand" and not workload_exists:
+        # Unlike absent, where not being there is the requested end state, expand
+        # asks to add volumes to something that has to exist. Reporting no change
+        # would read as "already expanded".
+        module.fail_json(
+            msg=f"Workload {module.params['name']} does not exist on "
+            f"{module.params['context']}, so there is nothing to add volumes to."
+        )
     else:
+        # Nothing to do. If this was a removal, the workload not being on the named
+        # context reads as "already gone" - so say when it is in fact sitting on
+        # another member, untouched, rather than letting ok imply it was removed.
+        if state == "absent" and not workload_exists:
+            _warn_about_copies_elsewhere(module, array, fleet)
         module.exit_json(
             changed=False,
             workload=_workload_facts(module, array, workload, module.params["context"]),

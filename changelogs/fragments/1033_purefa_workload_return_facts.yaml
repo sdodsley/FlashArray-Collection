@@ -1,11 +1,16 @@
 minor_changes:
-  - purefa_workload - Return a ``workload`` dict describing what the task left behind, covering the fleet member it was on, its volumes, the host connected to them, and whether the array has finished
-  - purefa_workload - Add ``wait`` and ``wait_timeout`` so a task waits for the array to finish, replacing the ``purefa_info`` with ``until`` idiom. On by default, and required when ``host`` is set
-  - module_utils/api_helpers - Add a generic ``wait_for`` polling helper, with backoff and timeout, for modules that need to wait on an asynchronous array operation
+  - purefa_workload - Return a ``workload`` dict on every action describing the resulting fleet member, status, and volumes, instead of only ``changed``
+  - purefa_workload - Add ``wait`` and ``wait_timeout`` so a task waits for the array to finish before returning, on by default and required whenever ``host`` is set
+  - purefa_workload - ``context``/``placement`` must now name a fleet member or the fleet itself, with no default
+  - purefa_workload - Naming the fleet in ``context``/``placement`` means "wherever this workload is", resolved automatically so a task does not need to know which member holds it
+  - purefa_workload - Warn when a workload name already exists on another fleet member, since a name is unique per member, not per fleet
+  - module_utils/api_helpers - Add a generic ``wait_for`` polling helper, with backoff and timeout, for modules that wait on an asynchronous array operation
+
 bugfixes:
-  - purefa_workload - Connect and disconnect a ``host`` only where needed, so naming a host that already sees some of the workload's volumes no longer fails, and ``state=expand`` works when attached
-  - purefa_workload - Leave alone any volumes outside the workload that the named ``host`` is connected to, rather than including them when disconnecting
-  - purefa_workload - Fail with a clear message, rather than a traceback, when the workload's volumes cannot be listed while connecting or disconnecting a host
-  - purefa_workload - Stop ``state=expand`` from creating volumes when running in check mode, where it previously added them for real
-  - purefa_workload - Give up on a placement recommendation once ``wait_timeout`` is reached, and fail clearly when Fusion reports that it cannot find a placement, rather than polling forever
-  - purefa_workload - Warn when ``placement`` is given alongside a different ``context``, rather than silently using the context. 
+  - purefa_workload - ``placement`` is now an alias for ``context`` as such it now takes effect on every action; it was previously ignored outside of a ``recommendation``-based create
+  - purefa_workload - Stop ``state=expand`` from creating volumes for real while running in check mode
+  - purefa_workload - Fixed idempotency with ``recommendation``, re-running found a new placement each time and created a duplicate workload instead of recognising the one already there
+  - purefa_workload - Fixed fleet-wide idempotency for create, delete, and eradicate, which previously only checked the named member rather than the whole fleet
+  - purefa_workload - Connect or disconnect ``host`` only where needed, so naming a host already connected to some of the workload's volumes no longer fails
+  - purefa_workload - Fail with a clear message instead of a traceback or crash when a workload cannot be found, its volumes cannot be listed, or Fusion cannot find a placement
+  - purefa_workload - Fail, rather than reporting no change, when ``state=expand`` targets a workload that does not exist
