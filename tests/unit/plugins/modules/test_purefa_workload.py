@@ -1858,6 +1858,220 @@ class TestMain:
             changed=False, workload=_expected_facts(context="local-array")
         )
 
+    @patch("plugins.modules.purefa_workload.create_workload")
+    @patch("plugins.modules.purefa_workload.LooseVersion")
+    @patch("plugins.modules.purefa_workload.check_response")
+    @patch("plugins.modules.purefa_workload.get_array")
+    @patch("plugins.modules.purefa_workload.AnsibleModule")
+    @patch("plugins.modules.purefa_workload.HAS_PURESTORAGE", True)
+    def test_main_rename_missing_workload_fails(
+        self,
+        mock_ansible_module,
+        mock_get_array,
+        mock_check_response,
+        mock_loose_version,
+        mock_create_workload,
+    ):
+        """Renaming a workload that is not there fails, rather than creating one
+        under the old name - the repeat-rename trap"""
+        from plugins.modules.purefa_workload import main
+
+        mock_loose_version.side_effect = lambda x: float(x) if x else 0.0
+
+        mock_module = Mock()
+        mock_module.fail_json.side_effect = SystemExit(1)
+        mock_module.params = {
+            "volume_count": None,
+            "state": "present",
+            "preset": "test-preset",
+            "context": "arrayB",
+            "name": "test-workload",
+            "host": "",
+            "placement": None,
+            "recommendation": False,
+            "eradicate": False,
+            "rename": "new-workload",
+        }
+        mock_ansible_module.return_value = mock_module
+        mock_array = _mock_array()
+        mock_array.get_rest_version.return_value = "2.40"
+        mock_fleet_response = Mock(status_code=200)
+        mock_fleet = Mock()
+        mock_fleet.name = "test-fleet"
+        mock_fleet_response.items = [mock_fleet]
+        mock_array.get_fleets.return_value = mock_fleet_response
+        mock_array.get_arrays.return_value = _mock_get_arrays()
+        # The old name is not there to rename
+        mock_array.get_workloads.return_value = _mock_not_found_response(404)
+        mock_get_array.return_value = mock_array
+
+        with pytest.raises(SystemExit):
+            main()
+
+        assert "nothing to rename" in mock_module.fail_json.call_args.kwargs["msg"]
+        mock_create_workload.assert_not_called()
+        mock_array.get_presets_workload.assert_not_called()
+
+    @patch("plugins.modules.purefa_workload.recover_workload")
+    @patch("plugins.modules.purefa_workload.LooseVersion")
+    @patch("plugins.modules.purefa_workload.check_response")
+    @patch("plugins.modules.purefa_workload.get_array")
+    @patch("plugins.modules.purefa_workload.AnsibleModule")
+    @patch("plugins.modules.purefa_workload.HAS_PURESTORAGE", True)
+    def test_main_rename_destroyed_workload_fails(
+        self,
+        mock_ansible_module,
+        mock_get_array,
+        mock_check_response,
+        mock_loose_version,
+        mock_recover_workload,
+    ):
+        """Renaming a destroyed workload fails, rather than silently recovering it
+        under the old name and dropping the rename"""
+        from plugins.modules.purefa_workload import main
+
+        mock_loose_version.side_effect = lambda x: float(x) if x else 0.0
+
+        mock_module = Mock()
+        mock_module.fail_json.side_effect = SystemExit(1)
+        mock_module.params = {
+            "volume_count": None,
+            "state": "present",
+            "preset": "test-preset",
+            "context": "arrayB",
+            "name": "test-workload",
+            "host": "",
+            "placement": None,
+            "recommendation": False,
+            "eradicate": False,
+            "rename": "new-workload",
+        }
+        mock_ansible_module.return_value = mock_module
+        mock_array = _mock_array()
+        mock_array.get_rest_version.return_value = "2.40"
+        mock_fleet_response = Mock(status_code=200)
+        mock_fleet = Mock()
+        mock_fleet.name = "test-fleet"
+        mock_fleet_response.items = [mock_fleet]
+        mock_array.get_fleets.return_value = mock_fleet_response
+        mock_array.get_arrays.return_value = _mock_get_arrays()
+        mock_workload = _mock_workload(context="arrayB", destroyed=True)
+        mock_array.get_workloads.return_value = Mock(
+            status_code=200, items=[mock_workload]
+        )
+        mock_get_array.return_value = mock_array
+
+        with pytest.raises(SystemExit):
+            main()
+
+        assert "nothing to rename" in mock_module.fail_json.call_args.kwargs["msg"]
+        mock_recover_workload.assert_not_called()
+
+    @patch("plugins.modules.purefa_workload.recover_workload")
+    @patch("plugins.modules.purefa_workload.LooseVersion")
+    @patch("plugins.modules.purefa_workload.check_response")
+    @patch("plugins.modules.purefa_workload.get_array")
+    @patch("plugins.modules.purefa_workload.AnsibleModule")
+    @patch("plugins.modules.purefa_workload.HAS_PURESTORAGE", True)
+    def test_main_state_present_destroyed_recovers_without_rename(
+        self,
+        mock_ansible_module,
+        mock_get_array,
+        mock_check_response,
+        mock_loose_version,
+        mock_recover_workload,
+    ):
+        """A destroyed workload is still recovered when no rename is requested -
+        the new destroyed+rename branch must not swallow the ordinary recover path"""
+        from plugins.modules.purefa_workload import main
+
+        mock_loose_version.side_effect = lambda x: float(x) if x else 0.0
+
+        mock_module = Mock()
+        mock_module.params = {
+            "volume_count": None,
+            "state": "present",
+            "preset": "test-preset",
+            "context": "arrayB",
+            "name": "test-workload",
+            "host": "",
+            "placement": None,
+            "recommendation": False,
+            "eradicate": False,
+            "rename": None,
+        }
+        mock_ansible_module.return_value = mock_module
+        mock_array = _mock_array()
+        mock_array.get_rest_version.return_value = "2.40"
+        mock_fleet_response = Mock(status_code=200)
+        mock_fleet = Mock()
+        mock_fleet.name = "test-fleet"
+        mock_fleet_response.items = [mock_fleet]
+        mock_array.get_fleets.return_value = mock_fleet_response
+        mock_array.get_arrays.return_value = _mock_get_arrays()
+        mock_workload = _mock_workload(context="arrayB", destroyed=True)
+        mock_array.get_workloads.return_value = Mock(
+            status_code=200, items=[mock_workload]
+        )
+        mock_get_array.return_value = mock_array
+
+        main()
+
+        mock_recover_workload.assert_called_once()
+
+    @patch("plugins.modules.purefa_workload.create_workload")
+    @patch("plugins.modules.purefa_workload.LooseVersion")
+    @patch("plugins.modules.purefa_workload.check_response")
+    @patch("plugins.modules.purefa_workload.get_array")
+    @patch("plugins.modules.purefa_workload.AnsibleModule")
+    @patch("plugins.modules.purefa_workload.HAS_PURESTORAGE", True)
+    def test_main_state_present_not_found_creates_without_rename(
+        self,
+        mock_ansible_module,
+        mock_get_array,
+        mock_check_response,
+        mock_loose_version,
+        mock_create_workload,
+    ):
+        """A missing workload is still created when no rename is requested - the
+        new not-found+rename branch must not swallow the ordinary create path"""
+        from plugins.modules.purefa_workload import main
+
+        mock_loose_version.side_effect = lambda x: float(x) if x else 0.0
+
+        mock_module = Mock()
+        mock_module.params = {
+            "volume_count": None,
+            "state": "present",
+            "preset": "test-preset",
+            "context": "arrayB",
+            "name": "test-workload",
+            "host": "",
+            "placement": None,
+            "recommendation": False,
+            "eradicate": False,
+            "rename": None,
+        }
+        mock_ansible_module.return_value = mock_module
+        mock_array = _mock_array()
+        mock_array.get_rest_version.return_value = "2.40"
+        mock_fleet_response = Mock(status_code=200)
+        mock_fleet = Mock()
+        mock_fleet.name = "test-fleet"
+        mock_fleet_response.items = [mock_fleet]
+        mock_array.get_fleets.return_value = mock_fleet_response
+        mock_array.get_arrays.return_value = _mock_get_arrays()
+        mock_array.get_workloads.return_value = _mock_not_found_response(404)
+        mock_preset_config = Mock()
+        mock_array.get_presets_workload.return_value = Mock(
+            status_code=200, items=[mock_preset_config]
+        )
+        mock_get_array.return_value = mock_array
+
+        main()
+
+        mock_create_workload.assert_called_once()
+
 
 class TestMainContextDefault:
     """Where a task applies is stated, never guessed

@@ -245,7 +245,7 @@ EXAMPLES = r"""
   everpure.flasharray.purefa_workload:
     name: foo
     rename: bar
-    state: rename
+    context: arr1
     fa_url: 10.10.10.2
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
 
@@ -1551,9 +1551,12 @@ def main():
     # nowhere to look. create_workload() sweeps the fleet instead, which is also what
     # stops a second run asking Fusion for another placement.
 
-    if (state == "present" and not workload_destroyed and not workload_exists) or (
-        state == "expand" and not workload_destroyed
-    ):
+    if (
+        state == "present"
+        and not workload_destroyed
+        and not workload_exists
+        and not module.params["rename"]
+    ) or (state == "expand" and not workload_destroyed):
         res = array.get_presets_workload(
             names=[module.params["preset"]],
         )
@@ -1570,6 +1573,19 @@ def main():
         and not workload_destroyed
     ):
         rename_workload(module, array, workload)
+    elif state == "present" and not workload_exists and module.params["rename"]:
+        module.fail_json(
+            msg=f"Workload {module.params['name']} does not exist on "
+            f"{module.params['context']}, so there is nothing to rename to "
+            f"{module.params['rename']}."
+        )
+    elif state == "present" and workload_destroyed and module.params["rename"]:
+        module.fail_json(
+            msg=f"Workload {module.params['name']} on {module.params['context']} is "
+            f"destroyed, so there is nothing to rename to {module.params['rename']}. "
+            "Recover it first with a separate task (state: present, no rename), "
+            "then rename it."
+        )
     elif state == "present" and not workload_exists:
         create_workload(module, array, fleet, preset_config)
     elif state == "expand" and workload_exists and not workload_destroyed:
