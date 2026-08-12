@@ -1,0 +1,7 @@
+bugfixes:
+  - purefa_workload - Fix ``state=expand`` creating volumes for real when running in check mode
+  - purefa_workload - Do not request a placement recommendation in check mode, as this creates an object on the array
+  - purefa_workload - Bound the wait for a placement recommendation with a timeout, and fail on a recommendation that ends in a failed state, instead of polling forever
+  - purefa_workload - Fix a traceback when ``preset`` is not specified, such as when deleting, eradicating, recovering or renaming a workload
+  - purefa_workload - Require ``preset`` for ``state=expand`` and report a clear error when it is missing on workload creation
+  - purefa_workload - Correct the rename example in the module documentation, which used a non-existent ``state=rename``

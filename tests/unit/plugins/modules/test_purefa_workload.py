@@ -44,6 +44,7 @@ sys.modules[
 
 from plugins.modules.purefa_workload import (
     _build_workload_parameters,
+    _wait_for_recommendation,
     delete_workload,
     eradicate_workload,
     recover_workload,
@@ -1296,3 +1297,262 @@ class TestMainContextDefault:
 
         assert mock_module.params["context"] == "arrayC"
         mock_array.get_arrays.assert_not_called()
+
+
+class TestExpandWorkloadCheckMode:
+    """Test cases for expand_workload in check mode
+
+    Check mode must not provision volumes on the array.
+    """
+
+    @patch("plugins.modules.purefa_workload._connect_volumes")
+    @patch("plugins.modules.purefa_workload._create_volume")
+    def test_expand_workload_check_mode(self, mock_create_vol, mock_connect_vols):
+        """Test expand_workload creates nothing in check mode"""
+        mock_module = Mock()
+        mock_module.check_mode = True
+        mock_module.params = {
+            "name": "test-workload",
+            "preset": "test-preset",
+            "context": "pod1",
+            "volume_configuration": "vol-config1",
+            "volume_count": 2,
+            "host": "host1",
+        }
+        mock_array = Mock()
+        mock_vol_config = Mock()
+        mock_vol_config.name = "vol-config1"
+
+        expand_workload(mock_module, mock_array, Mock(), [mock_vol_config])
+
+        mock_create_vol.assert_not_called()
+        mock_connect_vols.assert_not_called()
+        mock_module.exit_json.assert_called_once_with(changed=True)
+
+    @patch("plugins.modules.purefa_workload._create_volume")
+    def test_expand_workload_check_mode_no_match_fails(self, mock_create_vol):
+        """Test expand_workload still validates the volume configuration"""
+        import pytest
+
+        mock_module = Mock()
+        mock_module.check_mode = True
+        mock_module.params = {
+            "name": "test-workload",
+            "preset": "test-preset",
+            "context": "pod1",
+            "volume_configuration": "nonexistent-config",
+            "volume_count": 2,
+            "host": "",
+        }
+        mock_module.fail_json.side_effect = SystemExit(1)
+        mock_array = Mock()
+        mock_vol_config = Mock()
+        mock_vol_config.name = "other-config"
+
+        with pytest.raises(SystemExit):
+            expand_workload(mock_module, mock_array, Mock(), [mock_vol_config])
+
+        mock_create_vol.assert_not_called()
+        mock_module.fail_json.assert_called_once()
+
+
+class TestCreateWorkloadCheckModeRecommendation:
+    """Test cases for placement recommendations in check mode
+
+    Requesting a recommendation creates an object on the array, so it must not
+    happen in check mode.
+    """
+
+    def test_recommendation_not_requested_in_check_mode(self):
+        """Test create_workload skips the recommendation in check mode"""
+        mock_module = Mock()
+        mock_module.check_mode = True
+        mock_module.params = {
+            "name": "test-workload",
+            "preset": "test-preset",
+            "context": "pod1",
+            "recommendation": True,
+            "host": "",
+        }
+        mock_array = Mock()
+        mock_preset_config = Mock()
+
+        create_workload(mock_module, mock_array, Mock(), mock_preset_config)
+
+        mock_array.post_workloads_placement_recommendations.assert_not_called()
+        mock_array.post_workloads.assert_not_called()
+        mock_module.exit_json.assert_called_once_with(changed=True)
+
+
+class TestWaitForRecommendation:
+    """Test cases for the placement recommendation wait
+
+    The wait must end on a failed recommendation or a timeout, rather than
+    polling forever.
+    """
+
+    def _mock_module(self):
+        mock_module = Mock()
+        mock_module.params = {"context": "pod1"}
+        mock_module.fail_json.side_effect = SystemExit(1)
+        return mock_module
+
+    @patch("plugins.modules.purefa_workload.time")
+    def test_wait_returns_completed_recommendation(self, mock_time):
+        """Test the wait polls until the recommendation is completed"""
+        mock_module = self._mock_module()
+        mock_array = Mock()
+        in_progress = Mock(status="in-progress")
+        completed = Mock(status="completed")
+        mock_array.get_workloads_placement_recommendations.side_effect = [
+            Mock(status_code=200, items=[in_progress]),
+            Mock(status_code=200, items=[completed]),
+        ]
+
+        result = _wait_for_recommendation(mock_module, mock_array, "calc-1")
+
+        assert result is completed
+        mock_module.fail_json.assert_not_called()
+
+    @patch("plugins.modules.purefa_workload.time")
+    def test_wait_fails_on_failed_recommendation(self, mock_time):
+        """Test the wait fails when the recommendation cannot complete"""
+        import pytest
+
+        mock_module = self._mock_module()
+        mock_array = Mock()
+        mock_array.get_workloads_placement_recommendations.return_value = Mock(
+            status_code=200, items=[Mock(status="failed")]
+        )
+
+        with pytest.raises(SystemExit):
+            _wait_for_recommendation(mock_module, mock_array, "calc-1")
+
+        mock_module.fail_json.assert_called_once()
+
+    @patch("plugins.modules.purefa_workload.time")
+    def test_wait_times_out(self, mock_time):
+        """Test the wait gives up rather than polling forever"""
+        import pytest
+
+        mock_module = self._mock_module()
+        mock_array = Mock()
+        mock_array.get_workloads_placement_recommendations.return_value = Mock(
+            status_code=200, items=[Mock(status="in-progress")]
+        )
+
+        with pytest.raises(SystemExit):
+            _wait_for_recommendation(mock_module, mock_array, "calc-1")
+
+        mock_module.fail_json.assert_called_once()
+        assert "Timed out" in mock_module.fail_json.call_args.kwargs["msg"]
+
+    @patch("plugins.modules.purefa_workload.time")
+    def test_wait_fails_on_missing_recommendation(self, mock_time):
+        """Test the wait fails when the recommendation has disappeared"""
+        import pytest
+
+        mock_module = self._mock_module()
+        mock_array = Mock()
+        mock_array.get_workloads_placement_recommendations.return_value = Mock(
+            status_code=200, items=[]
+        )
+
+        with pytest.raises(SystemExit):
+            _wait_for_recommendation(mock_module, mock_array, "calc-1")
+
+        mock_module.fail_json.assert_called_once()
+
+
+class TestMainPresetHandling:
+    """Test cases for an unset preset in main()
+
+    A preset is only needed to create or expand a workload. Every other state
+    used to fail while prefixing the unset preset with the fleet name.
+    """
+
+    def _mock_array(self, workloads_response):
+        mock_array = Mock()
+        mock_array.get_rest_version.return_value = "2.40"
+        mock_fleet = Mock()
+        mock_fleet.name = "test-fleet"
+        mock_array.get_fleets.return_value = Mock(status_code=200, items=[mock_fleet])
+        mock_array.get_arrays.return_value = _mock_get_arrays()
+        mock_array.get_workloads.return_value = workloads_response
+        return mock_array
+
+    @patch("plugins.modules.purefa_workload.delete_workload")
+    @patch("plugins.modules.purefa_workload.LooseVersion")
+    @patch("plugins.modules.purefa_workload.get_array")
+    @patch("plugins.modules.purefa_workload.AnsibleModule")
+    @patch("plugins.modules.purefa_workload.HAS_PURESTORAGE", True)
+    def test_delete_without_preset(
+        self,
+        mock_ansible_module,
+        mock_get_array,
+        mock_loose_version,
+        mock_delete_workload,
+    ):
+        """Test main() deletes a workload when no preset is supplied"""
+        from plugins.modules.purefa_workload import main
+
+        mock_loose_version.side_effect = lambda x: float(x) if x else 0.0
+
+        mock_module = Mock()
+        mock_module.params = {
+            "volume_count": None,
+            "state": "absent",
+            "preset": None,
+            "context": "pod1",
+            "name": "test-workload",
+            "host": "",
+            "placement": None,
+            "eradicate": False,
+        }
+        mock_ansible_module.return_value = mock_module
+        mock_workload = Mock()
+        mock_workload.destroyed = False
+        mock_get_array.return_value = self._mock_array(
+            Mock(status_code=200, items=[mock_workload])
+        )
+
+        main()
+
+        assert mock_module.params["preset"] is None
+        mock_delete_workload.assert_called_once()
+
+    @patch("plugins.modules.purefa_workload.LooseVersion")
+    @patch("plugins.modules.purefa_workload.get_array")
+    @patch("plugins.modules.purefa_workload.AnsibleModule")
+    @patch("plugins.modules.purefa_workload.HAS_PURESTORAGE", True)
+    def test_create_without_preset_fails(
+        self, mock_ansible_module, mock_get_array, mock_loose_version
+    ):
+        """Test main() reports a missing preset when creating a workload"""
+        import pytest
+
+        from plugins.modules.purefa_workload import main
+
+        mock_loose_version.side_effect = lambda x: float(x) if x else 0.0
+
+        mock_module = Mock()
+        mock_module.params = {
+            "volume_count": None,
+            "state": "present",
+            "preset": None,
+            "context": "pod1",
+            "name": "test-workload",
+            "rename": None,
+            "host": "",
+            "recommendation": False,
+            "placement": None,
+            "eradicate": False,
+        }
+        mock_module.fail_json.side_effect = SystemExit(1)
+        mock_ansible_module.return_value = mock_module
+        mock_get_array.return_value = self._mock_array(Mock(status_code=404))
+
+        with pytest.raises(SystemExit):
+            main()
+
+        assert "preset is required" in mock_module.fail_json.call_args.kwargs["msg"]

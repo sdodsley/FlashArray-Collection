@@ -54,6 +54,7 @@ options:
   preset:
     description:
     - name of existing preset to use as the basis of the workload
+    - Required when creating a new workload, and when using I(state=expand).
     type: str
   rename:
     description:
@@ -77,6 +78,8 @@ options:
       on the workload preset definitions.
     - This will use the first recommended placement if more than
       one is available
+    - No recommendation is requested in check mode, as asking for one
+      creates an object on the array.
     default: false
     type: bool
   parameters:
@@ -189,7 +192,7 @@ EXAMPLES = r"""
   everpure.flasharray.purefa_workload:
     name: foo
     rename: bar
-    state: rename
+    state: present
     fa_url: 10.10.10.2
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
 
@@ -271,6 +274,17 @@ SUPPORTED_PARAMETER_VALUE_TYPES = (
     "integer",
     "boolean",
     "resource_reference",
+)
+# Maximum time, in seconds, to wait for a placement recommendation to complete
+RECOMMENDATION_TIMEOUT = 300
+RECOMMENDATION_POLL_INTERVAL = 1
+# Statuses that mean a recommendation will never reach `completed`
+RECOMMENDATION_FAILED_STATUSES = (
+    "aborted",
+    "cancelled",
+    "canceled",
+    "error",
+    "failed",
 )
 
 
@@ -474,11 +488,51 @@ def _connect_volumes(module, array):
     check_response(res, module, "Failed to connect volumes to host")
 
 
+def _get_recommendation(module, array, workload_calc):
+    """Return the current state of a placement recommendation calculation"""
+    res = array.get_workloads_placement_recommendations(
+        names=[workload_calc], context_names=[module.params["context"]]
+    )
+    check_response(res, module, "Failed to read placement recommendation")
+    results = list(res.items)
+    if not results:
+        module.fail_json(
+            msg="Placement recommendation {0} no longer exists".format(workload_calc)
+        )
+    return results[0]
+
+
+def _wait_for_recommendation(module, array, workload_calc):
+    """Poll a placement recommendation until it completes, fails or times out"""
+    waited = 0
+    result = _get_recommendation(module, array, workload_calc)
+    while result.status != "completed":
+        if str(result.status).lower() in RECOMMENDATION_FAILED_STATUSES:
+            module.fail_json(
+                msg="Placement recommendation failed with status {0}".format(
+                    result.status
+                )
+            )
+        if waited >= RECOMMENDATION_TIMEOUT:
+            module.fail_json(
+                msg="Timed out after {0} seconds waiting for placement "
+                "recommendation to complete. Last status: {1}".format(
+                    RECOMMENDATION_TIMEOUT, result.status
+                )
+            )
+        time.sleep(RECOMMENDATION_POLL_INTERVAL)
+        waited += RECOMMENDATION_POLL_INTERVAL
+        result = _get_recommendation(module, array, workload_calc)
+    return result
+
+
 def create_workload(module, array, fleet, preset_config):
     """Create fleet workload using existing preset"""
     changed = True
     workload_parameters = _build_workload_parameters(module, preset_config)
-    if module.params["recommendation"]:
+    if module.params["recommendation"] and not module.check_mode:
+        # Requesting a recommendation creates an object on the array, so it is
+        # only done outside of check mode.
         # Start the workload calculation for the preset being used
         res = array.post_workloads_placement_recommendations(
             inputs=WorkloadPlacementRecommendation(parameters=workload_parameters),
@@ -486,20 +540,12 @@ def create_workload(module, array, fleet, preset_config):
             context_names=[module.params["context"]],
         )
         check_response(res, module, "Recommendation calculation failure")
-        workload_calc = list(res.items)[0].name
+        recommendations = list(res.items)
+        if not recommendations:
+            module.fail_json(msg="No placement recommendation was returned")
+        workload_calc = recommendations[0].name
         # Wait for the workload calculation to complete
-        result = list(
-            array.get_workloads_placement_recommendations(
-                names=[workload_calc], context_names=[module.params["context"]]
-            ).items
-        )[0]
-        while result.status != "completed":
-            time.sleep(1)
-            result = list(
-                array.get_workloads_placement_recommendations(
-                    names=[workload_calc], context_names=[module.params["context"]]
-                ).items
-            )[0]
+        result = _wait_for_recommendation(module, array, workload_calc)
         # Replace any defined placement with the result from the recommendation
         module.params["placement"] = result.results[0].placements[0].targets[0].name
         module.params["context"] = module.params["placement"]
@@ -524,11 +570,12 @@ def expand_workload(module, array, fleet, volume_configs):
     changed = False
     for vol_config in volume_configs:
         if vol_config.name == module.params["volume_configuration"]:
-            for x in range(module.params["volume_count"]):
-                changed = True
-                _create_volume(module, array)
+            changed = True
+            if not module.check_mode:
+                for x in range(module.params["volume_count"]):
+                    _create_volume(module, array)
     if changed:
-        if module.params["host"] != "":
+        if not module.check_mode and module.params["host"] != "":
             _connect_volumes(module, array)
     else:
         module.fail_json(
@@ -682,7 +729,9 @@ def main():
         )
     )
 
-    required_if = [["state", "expand", ["volume_count", "volume_configuration"]]]
+    required_if = [
+        ["state", "expand", ["preset", "volume_count", "volume_configuration"]]
+    ]
 
     module = AnsibleModule(
         argument_spec, supports_check_mode=True, required_if=required_if
@@ -721,8 +770,11 @@ def main():
     workload_destroyed = False
     workload_exists = False
     preset_config = {}
-    # Update preset name with fleet prefix
-    module.params["preset"] = fleet + ":" + module.params["preset"]
+    # Update preset name with fleet prefix. A preset is only needed when
+    # creating or expanding a workload, so leave it unset otherwise rather
+    # than failing on the concatenation.
+    if module.params["preset"]:
+        module.params["preset"] = fleet + ":" + module.params["preset"]
     res = array.get_workloads(
         names=[module.params["name"]], context_names=[module.params["context"]]
     )
@@ -733,6 +785,12 @@ def main():
     if (state == "present" and not workload_destroyed and not workload_exists) or (
         state == "expand" and not workload_destroyed
     ):
+        if not module.params["preset"]:
+            module.fail_json(
+                msg="preset is required to create or expand workload {0}".format(
+                    module.params["name"]
+                )
+            )
         res = array.get_presets_workload(
             names=[module.params["preset"]],
         )
