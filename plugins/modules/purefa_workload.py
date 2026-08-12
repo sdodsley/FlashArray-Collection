@@ -66,7 +66,10 @@ options:
     type: str
   preset:
     description:
-    - name of existing preset to use as the basis of the workload
+    - Name of an existing workload preset to build the workload from.
+    - Required to create a workload, and to expand one
+    - Presets are fleet objects, named C(<fleet>:<preset>) by the API. Give the
+      bare name; the fleet is prefixed automatically.
     type: str
   rename:
     description:
@@ -148,6 +151,8 @@ options:
   volume_count:
     description:
     - Number of additional volumes to add to an existing workload
+    - Only used with I(state=expand), where it is required.
+    - Must be a positive integer. Zero is rejected.
     type: int
   volume_configuration:
     description:
@@ -1146,9 +1151,11 @@ def create_workload(module, array, fleet, preset_config):
 def expand_workload(module, array, fleet, volume_configs, workload):
     """Add new volumes to workload"""
     changed = False
+    matched = False
     volume_names = []
     for vol_config in volume_configs:
         if vol_config.name == module.params["volume_configuration"]:
+            matched = True
             for _volume in range(module.params["volume_count"]):
                 changed = True
                 # Creating storage is the costliest thing this module does, so it
@@ -1156,7 +1163,7 @@ def expand_workload(module, array, fleet, volume_configs, workload):
                 if module.check_mode:
                     continue
                 volume_names.append(_create_volume(module, array))
-    if not changed:
+    if not matched:
         module.fail_json(
             msg="Volume Configuration {0} does not exist for preset {1}.".format(
                 module.params["volume_configuration"], module.params["preset"]
@@ -1496,7 +1503,9 @@ def main():
         )
     )
 
-    required_if = [["state", "expand", ["volume_count", "volume_configuration"]]]
+    required_if = [
+        ["state", "expand", ["volume_count", "volume_configuration", "preset"]]
+    ]
 
     module = AnsibleModule(
         argument_spec, supports_check_mode=True, required_if=required_if
@@ -1515,6 +1524,10 @@ def main():
             "settled first, which only happens when waiting."
         )
 
+    volume_count = module.params["volume_count"]
+    if volume_count is not None and volume_count <= 0:
+        module.fail_json(msg="volume_count must be a positive integer.")
+
     array = get_array(module)
     api_version = array.get_rest_version()
     if LooseVersion(MIN_REQUIRED_API_VERSION) > LooseVersion(api_version):
@@ -1523,8 +1536,6 @@ def main():
             "Minimum version required: {0}".format(MIN_REQUIRED_API_VERSION)
         )
     state = module.params["state"]
-    if module.params["volume_count"] and module.params["volume_count"] <= 0:
-        module.fail_json(msg="volume_count must be a positive integer.")
     fleet_res = array.get_fleets()
     fleet_items = list(fleet_res.items) if fleet_res.status_code == 200 else []
     if not fleet_items:
@@ -1550,8 +1561,6 @@ def main():
     workload_exists = False
     workload = None
     preset_config = {}
-    # Update preset name with fleet prefix
-    module.params["preset"] = fleet + ":" + module.params["preset"]
     # allow_errors, as in _read_workload: without it the array rejects a read by
     # name outright when the context is a fleet member other than this one, and a
     # workload that already exists there would be reported as absent and created
@@ -1576,6 +1585,20 @@ def main():
         and not workload_exists
         and not module.params["rename"]
     ) or (state == "expand" and not workload_destroyed):
+        # preset is only read here, and by the create and expand paths this gates.
+        # Every other outcome - delete, eradicate, rename, recover, host connect or
+        # disconnect - works from the workload the array already has, so a task that
+        # does not name a preset is not incomplete. required_if cannot express this:
+        # whether a create is happening is only known from the read above.
+        if not module.params["preset"]:
+            module.fail_json(
+                msg="preset required to create a new workload or to expand an "
+                "existing one."
+            )
+        # Presets are fleet objects, and the API names them "<fleet>:<preset>", so
+        # qualify it here rather than at the top of main(): it is meaningless on
+        # every path that does not reach this block.
+        module.params["preset"] = fleet + ":" + module.params["preset"]
         res = array.get_presets_workload(
             names=[module.params["preset"]],
         )

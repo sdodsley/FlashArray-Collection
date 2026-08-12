@@ -278,11 +278,12 @@ def _params(**overrides):
     params = {
         "name": "test-workload",
         "context": "arrayB",
-        # Fleet-qualified by main() before any action runs
+
         "preset": None,
         "placement": None,
         "rename": None,
         "host": "",
+        "volume_count": None,
         "eradicate": False,
         "recommendation": False,
         # wait is on by default, and host cannot be used without it
@@ -1076,6 +1077,42 @@ class TestExpandWorkloadSuccess:
 
         mock_create_vol.assert_not_called()
         mock_module.fail_json.assert_called_once()
+        msg = mock_module.fail_json.call_args.kwargs["msg"]
+        assert "does not exist for preset" in msg
+        assert "nonexistent-config" in msg
+
+    @patch("plugins.modules.purefa_workload._wait_for_volumes")
+    @patch("plugins.modules.purefa_workload._create_volume")
+    def test_expand_workload_zero_count_does_not_blame_the_configuration(
+        self, mock_create_vol, mock_wait_for_volumes
+    ):
+        """A count of zero is not evidence that the configuration is missing
+
+        main() rejects volume_count: 0 before this is reached. This pins the other
+        half of that fix: the "does not exist for preset" failure is driven by
+        whether the configuration matched, not by whether a volume was created.
+        """
+        mock_module = Mock()
+        mock_module.check_mode = False
+        mock_module.params = _params(
+            preset="test-preset",
+            context="pod1",
+            volume_configuration="vol-config1",
+            volume_count=0,
+        )
+        mock_module.fail_json.side_effect = SystemExit
+        mock_array = _mock_array()
+        mock_wait_for_volumes.return_value = _mock_workload()
+        vol_config = Mock()
+        vol_config.name = "vol-config1"
+
+        expand_workload(mock_module, mock_array, Mock(), [vol_config], _mock_workload())
+
+        mock_module.fail_json.assert_not_called()
+        mock_create_vol.assert_not_called()
+        mock_module.exit_json.assert_called_once_with(
+            changed=False, workload=_expected_facts()
+        )
 
 
 class TestDeleteWorkloadWithEradicate:
@@ -1568,40 +1605,33 @@ class TestMain:
 
         mock_module.fail_json.assert_called()
 
-    @patch("plugins.modules.purefa_workload.LooseVersion")
+    @pytest.mark.parametrize("volume_count", [0, -1])
     @patch("plugins.modules.purefa_workload.get_array")
     @patch("plugins.modules.purefa_workload.AnsibleModule")
     @patch("plugins.modules.purefa_workload.HAS_PURESTORAGE", True)
     def test_main_invalid_volume_count(
-        self, mock_ansible_module, mock_get_array, mock_loose_version
+        self, mock_ansible_module, mock_get_array, volume_count
     ):
-        """Test main() fails when volume_count is not positive"""
-        import pytest
+        """Test main() fails when volume_count is not positive
+
+        0 is the regression: the guard tested truthiness, so the one value it
+        exists to reject short-circuited past it and surfaced as a claim that the
+        volume configuration did not exist for the preset.
+        """
         from plugins.modules.purefa_workload import main
 
-        mock_loose_version.side_effect = lambda x: float(x) if x else 0.0
-
         mock_module = Mock()
-        mock_module.params = {
-            "volume_count": -1,
-            "host": "",
-            "wait": True,
-            "placement": None,
-            "state": "present",
-            "preset": "test-preset",
-            "context": "",
-            "name": "test-workload",
-        }
-        mock_module.fail_json.side_effect = SystemExit(1)
+        mock_module.params = _params(state="expand", volume_count=volume_count)
+        mock_module.fail_json.side_effect = SystemExit
         mock_ansible_module.return_value = mock_module
-        mock_array = _mock_array()
-        mock_array.get_rest_version.return_value = "2.40"
-        mock_get_array.return_value = mock_array
 
         with pytest.raises(SystemExit):
             main()
 
-        mock_module.fail_json.assert_called()
+        mock_module.fail_json.assert_called_once()
+        assert "volume_count" in mock_module.fail_json.call_args.kwargs["msg"]
+        # Fails before any API call, so nothing was asked of the array
+        mock_get_array.assert_not_called()
 
     @patch("plugins.modules.purefa_workload.create_workload")
     @patch("plugins.modules.purefa_workload.LooseVersion")
@@ -2762,6 +2792,209 @@ class TestHostRequiresWait:
         source = open(module_under_test.__file__).read()
         assert 'wait=dict(type="bool", default=True)' in source
         assert 'wait_timeout=dict(type="int", default=300)' in source
+
+
+class TestPresetIsOnlyNeededWhereItIsRead:
+    """preset is required to create or expand, and ignored everywhere else
+
+    It was qualified with the fleet name before any state was consulted, so a
+    delete - which has no reason to name a preset - died in string concatenation
+    with a raw TypeError rather than doing the one thing it was asked to do.
+    """
+
+    def _array(self, workload=None):
+        """A fleet member that either holds a workload of that name, or does not"""
+        array = _mock_array()
+        array.get_rest_version.return_value = "2.40"
+        fleet = Mock()
+        fleet.name = "test-fleet"
+        array.get_fleets.return_value = Mock(status_code=200, items=[fleet])
+        array.get_arrays.return_value = _mock_get_arrays()
+        array.get_workloads.return_value = (
+            _mock_not_found_response(404)
+            if workload is None
+            else Mock(status_code=200, items=[workload])
+        )
+        return array
+
+    @patch("plugins.modules.purefa_workload.delete_workload")
+    @patch("plugins.modules.purefa_workload.check_response")
+    @patch("plugins.modules.purefa_workload.LooseVersion")
+    @patch("plugins.modules.purefa_workload.get_array")
+    @patch("plugins.modules.purefa_workload.AnsibleModule")
+    @patch("plugins.modules.purefa_workload.HAS_PURESTORAGE", True)
+    def test_delete_without_a_preset_reaches_delete_workload(
+        self,
+        mock_ansible_module,
+        mock_get_array,
+        mock_loose_version,
+        mock_check_response,
+        mock_delete_workload,
+    ):
+        """A delete names no preset, and does not need one"""
+        from plugins.modules.purefa_workload import main
+
+        mock_loose_version.side_effect = lambda x: float(x) if x else 0.0
+        mock_module = Mock()
+        # preset is left at the _params() default of None, which is the point
+        mock_module.params = _params(state="absent")
+        mock_ansible_module.return_value = mock_module
+        mock_array = self._array(_mock_workload(context="arrayB", destroyed=False))
+        mock_get_array.return_value = mock_array
+
+        main()
+
+        mock_delete_workload.assert_called_once()
+        mock_module.fail_json.assert_not_called()
+        # Nothing was asked about a preset the task never named
+        mock_array.get_presets_workload.assert_not_called()
+
+    @patch("plugins.modules.purefa_workload.create_workload")
+    @patch("plugins.modules.purefa_workload.LooseVersion")
+    @patch("plugins.modules.purefa_workload.get_array")
+    @patch("plugins.modules.purefa_workload.AnsibleModule")
+    @patch("plugins.modules.purefa_workload.HAS_PURESTORAGE", True)
+    def test_create_without_a_preset_names_the_option(
+        self,
+        mock_ansible_module,
+        mock_get_array,
+        mock_loose_version,
+        mock_create_workload,
+    ):
+        """The failure names preset rather than blaming the array for a null one"""
+        from plugins.modules.purefa_workload import main
+
+        mock_loose_version.side_effect = lambda x: float(x) if x else 0.0
+        mock_module = Mock()
+        mock_module.params = _params(state="present")
+        mock_module.fail_json.side_effect = SystemExit
+        mock_ansible_module.return_value = mock_module
+        mock_array = self._array()
+        mock_get_array.return_value = mock_array
+
+        with pytest.raises(SystemExit):
+            main()
+
+        assert "preset" in mock_module.fail_json.call_args.kwargs["msg"]
+        # The operator is told what they left out, rather than that the array has
+        # no preset called None
+        mock_array.get_presets_workload.assert_not_called()
+        mock_create_workload.assert_not_called()
+
+    @patch("plugins.modules.purefa_workload.expand_workload")
+    @patch("plugins.modules.purefa_workload.LooseVersion")
+    @patch("plugins.modules.purefa_workload.get_array")
+    @patch("plugins.modules.purefa_workload.AnsibleModule")
+    @patch("plugins.modules.purefa_workload.HAS_PURESTORAGE", True)
+    def test_expand_with_a_null_preset_names_the_option(
+        self,
+        mock_ansible_module,
+        mock_get_array,
+        mock_loose_version,
+        mock_expand_workload,
+    ):
+        """required_if cannot catch this one, so the guard in main() has to
+
+        check_required_if counts whether the key is present, not whether it holds a
+        value, so an explicit preset: null arrives looking supplied.
+        """
+        from plugins.modules.purefa_workload import main
+
+        mock_loose_version.side_effect = lambda x: float(x) if x else 0.0
+        mock_module = Mock()
+        mock_module.params = _params(
+            state="expand", volume_count=1, volume_configuration="vol-config"
+        )
+        mock_module.fail_json.side_effect = SystemExit
+        mock_ansible_module.return_value = mock_module
+        mock_array = self._array(_mock_workload(context="arrayB", destroyed=False))
+        mock_get_array.return_value = mock_array
+
+        with pytest.raises(SystemExit):
+            main()
+
+        assert "preset" in mock_module.fail_json.call_args.kwargs["msg"]
+        mock_expand_workload.assert_not_called()
+
+    @patch("plugins.modules.purefa_workload.create_workload")
+    @patch("plugins.modules.purefa_workload.check_response")
+    @patch("plugins.modules.purefa_workload.LooseVersion")
+    @patch("plugins.modules.purefa_workload.get_array")
+    @patch("plugins.modules.purefa_workload.AnsibleModule")
+    @patch("plugins.modules.purefa_workload.HAS_PURESTORAGE", True)
+    def test_the_preset_is_fleet_qualified_where_it_is_read(
+        self,
+        mock_ansible_module,
+        mock_get_array,
+        mock_loose_version,
+        mock_check_response,
+        mock_create_workload,
+    ):
+        """Presets are fleet objects, so the read has to name <fleet>:<preset>"""
+        from plugins.modules.purefa_workload import main
+
+        mock_loose_version.side_effect = lambda x: float(x) if x else 0.0
+        mock_module = Mock()
+        mock_module.params = _params(state="present", preset="test-preset")
+        mock_ansible_module.return_value = mock_module
+        mock_array = self._array()
+        mock_array.get_presets_workload.return_value = Mock(
+            status_code=200, items=[Mock()]
+        )
+        mock_get_array.return_value = mock_array
+
+        main()
+
+        mock_array.get_presets_workload.assert_called_once_with(
+            names=["test-fleet:test-preset"]
+        )
+        # create_workload reads it from params again, so the qualified name has to
+        # still be there afterwards
+        assert mock_module.params["preset"] == "test-fleet:test-preset"
+
+    @patch("plugins.modules.purefa_workload.rename_workload")
+    @patch("plugins.modules.purefa_workload.LooseVersion")
+    @patch("plugins.modules.purefa_workload.get_array")
+    @patch("plugins.modules.purefa_workload.AnsibleModule")
+    @patch("plugins.modules.purefa_workload.HAS_PURESTORAGE", True)
+    def test_a_rename_never_qualifies_the_preset(
+        self,
+        mock_ansible_module,
+        mock_get_array,
+        mock_loose_version,
+        mock_rename_workload,
+    ):
+        """A rename works from the workload the array has, and reads no preset"""
+        from plugins.modules.purefa_workload import main
+
+        mock_loose_version.side_effect = lambda x: float(x) if x else 0.0
+        mock_module = Mock()
+        mock_module.params = _params(
+            state="present", name="old-workload", rename="new-workload"
+        )
+        mock_ansible_module.return_value = mock_module
+        mock_array = self._array(
+            _mock_workload(name="old-workload", context="arrayB", destroyed=False)
+        )
+        mock_get_array.return_value = mock_array
+
+        main()
+
+        mock_rename_workload.assert_called_once()
+        mock_array.get_presets_workload.assert_not_called()
+        # Left as it arrived, on a path that has no use for it
+        assert mock_module.params["preset"] is None
+
+    def test_expand_requires_a_preset_in_the_argument_spec(self):
+        """An omitted preset on an expand is refused before any API call
+
+        AnsibleModule is mocked in these tests, so required_if never runs and the
+        declaration itself is the only thing left to assert.
+        """
+        import plugins.modules.purefa_workload as module_under_test
+
+        source = open(module_under_test.__file__).read()
+        assert '"volume_count", "volume_configuration", "preset"' in source
 
 
 class TestWaitForConnections:

@@ -15,3 +15,6 @@ bugfixes:
   - purefa_workload - Fail with a clear message instead of a traceback or crash when a workload cannot be found, its volumes cannot be listed, or Fusion cannot find a placement
   - purefa_workload - Fail, rather than reporting no change, when ``state=expand`` targets a workload that does not exist
   - purefa_workload - Fixed a bug which caused imposible renames to create or recover a workload
+  - purefa_workload - Reject ``volume_count: 0`` during an expand operation. This is a bugfix for a regression introduced in 1.0.34.
+  - purefa_workload - ``preset`` is only read when creating or expanding a workload, so omitting it on a delete, rename, recover, or host operation no longer raises a TypeError
+  - purefa_workload - Require ``preset`` for ``state=expand``, and fail with a message naming the option, rather than reporting that preset ``None`` does not exist
