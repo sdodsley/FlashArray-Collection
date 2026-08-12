@@ -5,7 +5,6 @@ minor_changes:
   - purefa_workload - Naming the fleet in ``context``/``placement`` means "wherever this workload is", resolved automatically so a task does not need to know which member holds it
   - purefa_workload - Warn when a workload name already exists on another fleet member, since a name is unique per member, not per fleet
   - module_utils/api_helpers - Add a generic ``wait_for`` polling helper, with backoff and timeout, for modules that wait on an asynchronous array operation
-
 bugfixes:
   - purefa_workload - ``placement`` is now an alias for ``context`` as such it now takes effect on every action; it was previously ignored outside of a ``recommendation``-based create
   - purefa_workload - Stop ``state=expand`` from creating volumes for real while running in check mode
