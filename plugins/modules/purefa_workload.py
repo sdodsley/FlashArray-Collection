@@ -372,6 +372,7 @@ from ansible_collections.everpure.flasharray.plugins.module_utils.version import
 )
 from ansible_collections.everpure.flasharray.plugins.module_utils.api_helpers import (
     check_response,
+    get_local_array_name,
     wait_for,
 )
 
@@ -399,7 +400,7 @@ NOT_FOUND_STATUSES = frozenset({400, 404})
 
 # ...but the status alone will not do. The array answers with 400 for several
 # different mistakes, only one of which means the workload is not there.
-# so additionally we match on a lowercase substring so wording and punctuation 
+# so additionally we match on a lowercase substring so wording and punctuation
 # can drift without breaking.
 NOT_FOUND_TEXT = "does not exist"
 
@@ -1061,18 +1062,27 @@ def create_workload(module, array, fleet, preset_config):
             # not the last statement - the return says so rather than leaving the
             # rest of the function looking reachable
             return
+        # Asking Fusion where to put a workload is the one call with no member for
+        # its context to name: it is the route the question travels, not the answer,
+        # which is why falling back to the array addressed is safe here and is not a
+        # default placement - Fusion's choice replaces it a few lines down. Without
+        # the fallback a task that named neither context nor placement sends an empty
+        # context, which the array rejects with an internal error.
+        recommendation_context = module.params["context"] or get_local_array_name(
+            array, module
+        )
         # Start the workload calculation for the preset being used
         res = array.post_workloads_placement_recommendations(
             inputs=WorkloadPlacementRecommendation(parameters=workload_parameters),
             preset_names=[module.params["preset"]],
-            context_names=[module.params["context"]],
+            context_names=[recommendation_context],
         )
         check_response(res, module, "Recommendation calculation failure")
         workload_calc = getattr(list(res.items)[0], "name", None)
         # A calculation, not a change, so this runs in check mode too - it is what
         # lets a check-mode run report the target Fusion would have chosen
         result = _wait_for_recommendation(
-            module, array, module.params["context"], workload_calc
+            module, array, recommendation_context, workload_calc
         )
         # Replace any defined placement with the result from the recommendation.
         # Every link on the way to the target is optional and every list can come
@@ -1347,7 +1357,11 @@ def _check_placement_options(module, array, fleet, state):
     # recommendation only decides where a *new* workload goes, so it stands in for
     # a context on a create and nowhere else. Naming an existing workload to
     # delete, expand or rename always needs the member it is on.
-    may_recommend = state == "present" and module.params["recommendation"]
+    may_recommend = (
+        state == "present"
+        and module.params["recommendation"]
+        and not module.params["rename"]
+    )
     if not chosen and not may_recommend:
         module.fail_json(
             msg="Name which fleet member this applies to by setting context or "
@@ -1522,8 +1536,13 @@ def main():
     _check_placement_options(module, array, fleet, state)
     # context and placement mean the same thing to the API - a workload is created
     # on its context, and there is no separate placement to send - and they have
-    # been checked to agree, so either may stand for both
-    module.params["context"] = module.params["context"] or module.params["placement"]
+    # been checked to agree, so either may stand for both. The trailing "" keeps an
+    # unset one as the empty string the argument spec declares and
+    # _resolve_fleet_context() writes, so "no context yet" has one spelling rather
+    # than two - placement defaults to None, and "" or None is None.
+    module.params["context"] = (
+        module.params["context"] or module.params["placement"] or ""
+    )
     if module.params["context"] == fleet:
         _resolve_fleet_context(module, array, fleet, state)
 

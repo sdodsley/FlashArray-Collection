@@ -61,6 +61,7 @@ from plugins.module_utils.api_helpers import (
     check_response,
     get_cached_api_version,
     check_api_version,
+    get_local_array_name,
     get_with_context,
     wait_for,
 )
@@ -117,6 +118,56 @@ class TestCheckResponse:
 
         call_kwargs = mock_module.fail_json.call_args[1]
         assert "Create volume 'test-vol' failed" in call_kwargs["msg"]
+
+
+def _mock_arrays_response(name="local-array", status_code=200):
+    """Response for get_arrays(), which returns only the array being addressed."""
+    array = Mock()
+    # Assigned rather than passed to Mock(), where name is the mock's own name
+    array.name = name
+    return Mock(status_code=status_code, items=[array], errors=[])
+
+
+class TestGetLocalArrayName:
+    """Tests for get_local_array_name function."""
+
+    def test_returns_the_array_name(self, mock_module):
+        """Test that the name of the array being addressed is returned."""
+        client = Mock()
+        client.get_arrays.return_value = _mock_arrays_response("MUCFA21")
+
+        assert get_local_array_name(client, mock_module) == "MUCFA21"
+        mock_module.fail_json.assert_not_called()
+
+    def test_error_response_fails_the_module(self, mock_module):
+        """Test that a failed read is reported rather than returning nothing."""
+        client = Mock()
+        client.get_arrays.return_value = _mock_arrays_response(status_code=400)
+
+        with pytest.raises(Exception):
+            get_local_array_name(client, mock_module)
+
+        assert "local array name" in mock_module.fail_json.call_args[1]["msg"]
+
+    def test_empty_response_fails_the_module(self, mock_module):
+        """Test that no array at all fails rather than raising IndexError."""
+        client = Mock()
+        client.get_arrays.return_value = Mock(status_code=200, items=[])
+
+        with pytest.raises(Exception):
+            get_local_array_name(client, mock_module)
+
+        mock_module.fail_json.assert_called_once()
+
+    def test_missing_name_fails_the_module(self, mock_module):
+        """Test that an array reporting no name fails rather than returning None."""
+        client = Mock()
+        client.get_arrays.return_value = _mock_arrays_response(None)
+
+        with pytest.raises(Exception):
+            get_local_array_name(client, mock_module)
+
+        mock_module.fail_json.assert_called_once()
 
 
 class TestGetCachedApiVersion:

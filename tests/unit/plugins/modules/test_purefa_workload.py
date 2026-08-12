@@ -281,6 +281,7 @@ def _params(**overrides):
         # Fleet-qualified by main() before any action runs
         "preset": None,
         "placement": None,
+        "rename": None,
         "host": "",
         "eradicate": False,
         "recommendation": False,
@@ -4023,6 +4024,12 @@ class TestPlacementOptionsAreValidated:
         with pytest.raises(SystemExit):
             self._check(state="absent", context="", recommendation=True)
 
+    def test_recommendation_does_not_stand_in_for_a_context_on_a_rename(self):
+        """A rename needs the workload that is already there, so it needs the
+        member holding it - there is nothing for Fusion to choose"""
+        with pytest.raises(SystemExit):
+            self._check(context="", recommendation=True, rename="new-workload")
+
     def test_disagreeing_context_and_placement_are_refused(self):
         with pytest.raises(SystemExit) as raised:
             self._check(context="arrayA", placement="arrayB")
@@ -4215,6 +4222,161 @@ class TestRecommendationIsIdempotent:
 
         array.post_workloads_placement_recommendations.assert_called_once()
         array.post_workloads.assert_called_once()
+
+
+class TestRecommendationWithoutAContext:
+    """Asking Fusion to choose still needs a route to ask through
+
+    Naming neither context nor placement is the documented way to let Fusion pick
+    the member, and both spellings of that - "" and the None main() used to leave
+    behind - went into context_names as an empty context, which the array answers
+    with an internal error.
+
+    The array addressed is only the route the question travels. It is never a
+    default placement: that is what _check_placement_options() exists to refuse,
+    and these tests pin the difference.
+    """
+
+    def _module(self, context=""):
+        module = Mock()
+        module.check_mode = False
+        module.params = _params(
+            preset="test-preset", context=context, recommendation=True, wait=False
+        )
+        module.fail_json.side_effect = SystemExit
+        return module
+
+    def _array(self):
+        array = _mock_array()
+        # Nothing of this name anywhere, so the fleet sweep finds no earlier
+        # placement and create_workload() goes on to ask for one
+        array.get_workloads.return_value = _mock_not_found_response()
+        calculation = Mock()
+        calculation.name = "calc-1"
+        array.post_workloads_placement_recommendations.return_value = Mock(
+            status_code=200, items=[calculation]
+        )
+        array.post_workloads.return_value = _mock_workload_response(context="arrayB")
+        return array
+
+    @pytest.mark.parametrize("context", ["", None])
+    @patch(
+        "plugins.modules.purefa_workload.get_local_array_name",
+        return_value="MUCFA21",
+    )
+    @patch("plugins.modules.purefa_workload._wait_for_recommendation")
+    @patch("plugins.modules.purefa_workload.check_response")
+    def test_the_array_addressed_is_the_route_when_none_was_named(
+        self, mock_check_response, mock_wait, mock_local_array_name, context
+    ):
+        module = self._module(context)
+        array = self._array()
+        mock_wait.return_value = _mock_recommendation("arrayB")
+
+        create_workload(module, array, Mock(), Mock(parameters=[]))
+
+        asked = array.post_workloads_placement_recommendations.call_args.kwargs
+        assert asked["context_names"] == ["MUCFA21"]
+
+    @patch(
+        "plugins.modules.purefa_workload.get_local_array_name",
+        return_value="MUCFA21",
+    )
+    @patch("plugins.modules.purefa_workload._wait_for_recommendation")
+    @patch("plugins.modules.purefa_workload.check_response")
+    def test_the_poll_follows_the_same_route(
+        self, mock_check_response, mock_wait, mock_local_array_name
+    ):
+        """The calculation lives in the context it was started in, so reading it
+        back through a different one finds nothing"""
+        module = self._module()
+        array = self._array()
+        mock_wait.return_value = _mock_recommendation("arrayB")
+
+        create_workload(module, array, Mock(), Mock(parameters=[]))
+
+        assert mock_wait.call_args.args[2] == "MUCFA21"
+
+    @patch(
+        "plugins.modules.purefa_workload.get_local_array_name",
+        return_value="MUCFA21",
+    )
+    @patch("plugins.modules.purefa_workload._wait_for_recommendation")
+    @patch("plugins.modules.purefa_workload.check_response")
+    def test_a_named_context_is_asked_through_as_given(
+        self, mock_check_response, mock_wait, mock_local_array_name
+    ):
+        """No default: a context the task named is the one the question travels"""
+        module = self._module(context="pod1")
+        array = self._array()
+        mock_wait.return_value = _mock_recommendation("arrayB")
+
+        create_workload(module, array, Mock(), Mock(parameters=[]))
+
+        asked = array.post_workloads_placement_recommendations.call_args.kwargs
+        assert asked["context_names"] == ["pod1"]
+        mock_local_array_name.assert_not_called()
+
+    @patch(
+        "plugins.modules.purefa_workload.get_local_array_name",
+        return_value="MUCFA21",
+    )
+    @patch("plugins.modules.purefa_workload._wait_for_recommendation")
+    @patch("plugins.modules.purefa_workload.check_response")
+    def test_the_route_is_not_a_placement(
+        self, mock_check_response, mock_wait, mock_local_array_name
+    ):
+        """The workload lands where Fusion said, never on the array asked"""
+        module = self._module()
+        array = self._array()
+        mock_wait.return_value = _mock_recommendation("arrayB")
+
+        create_workload(module, array, Mock(), Mock(parameters=[]))
+
+        assert array.post_workloads.call_args.kwargs["context_names"] == ["arrayB"]
+        assert module.exit_json.call_args.kwargs["workload"]["context"] == "arrayB"
+
+    @patch(
+        "plugins.modules.purefa_workload.get_local_array_name",
+        return_value="MUCFA21",
+    )
+    @patch("plugins.modules.purefa_workload.check_response")
+    def test_nothing_is_asked_when_the_workload_is_already_there(
+        self, mock_check_response, mock_local_array_name
+    ):
+        """The fallback sits after the idempotency sweep, so a repeat run reads
+        nothing extra"""
+        module = self._module()
+        array = _mock_array()
+        array.get_workloads.return_value = _mock_workload_response(context="arrayB")
+
+        create_workload(module, array, Mock(), Mock(parameters=[]))
+
+        mock_local_array_name.assert_not_called()
+        array.post_workloads_placement_recommendations.assert_not_called()
+
+    @patch(
+        "plugins.modules.purefa_workload.get_local_array_name",
+        return_value="MUCFA21",
+    )
+    @patch("plugins.modules.purefa_workload._wait_for_recommendation")
+    @patch("plugins.modules.purefa_workload.check_response")
+    def test_check_mode_asks_fusion_through_the_array_addressed(
+        self, mock_check_response, mock_wait, mock_local_array_name
+    ):
+        """A calculation changes nothing, which is what lets --check report the
+        target Fusion would have chosen - including with no context named"""
+        module = self._module()
+        module.check_mode = True
+        array = self._array()
+        mock_wait.return_value = _mock_recommendation("arrayB")
+
+        create_workload(module, array, Mock(), Mock(parameters=[]))
+
+        asked = array.post_workloads_placement_recommendations.call_args.kwargs
+        assert asked["context_names"] == ["MUCFA21"]
+        array.post_workloads.assert_not_called()
+        assert module.exit_json.call_args.kwargs["workload"]["context"] == "arrayB"
 
 
 class TestDuplicateNameIsReportedNotHidden:

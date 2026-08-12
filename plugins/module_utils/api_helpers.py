@@ -199,6 +199,27 @@ def check_response(response, module, operation="Operation"):
         )
 
 
+def get_local_array_name(client, module):
+    """Get the name of the array the connection is addressed to.
+
+    Args:
+        client: FlashArray client instance
+        module: AnsibleModule instance
+
+    Returns:
+        str: Name of the array being addressed
+
+    Raises:
+        Fails module if the array cannot be read or reports no name
+    """
+    res = client.get_arrays()
+    check_response(res, module, "Reading the local array name")
+    name = getattr(next(iter(list(res.items)), None), "name", None)
+    if not name:
+        module.fail_json(msg="The array did not report its own name.")
+    return name
+
+
 def wait_for(
     module,
     probe,
