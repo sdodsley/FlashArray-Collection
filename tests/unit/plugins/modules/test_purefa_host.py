@@ -1923,6 +1923,131 @@ class TestUpdateHostInitiatorsExtended:
 
         assert result is True
 
+    @patch("plugins.modules.purefa_host.check_response")
+    @patch("plugins.modules.purefa_host.get_with_context")
+    @patch("plugins.modules.purefa_host.HostPatch")
+    def test_update_wwns_remove_specific(self, mock_host_patch, mock_get, mock_check):
+        """Dropping one WWN keeps the rest and only disassociates the dropped one"""
+        mock_module = Mock()
+        mock_module.check_mode = False
+        mock_module.params = {
+            "name": "test-host",
+            "nqn": None,
+            "iqn": None,
+            "wwns": ["5000000000000001"],
+        }
+        mock_array = Mock()
+
+        mock_host = Mock()
+        mock_host.nqns = []
+        mock_host.iqns = []
+        mock_host.wwns = ["5000000000000001", "5000000000000002"]
+        mock_get.side_effect = [
+            Mock(status_code=200, items=[mock_host]),
+            Mock(status_code=200),
+        ]
+
+        result = _update_host_initiators(mock_module, mock_array)
+
+        assert result is True
+        assert mock_get.call_count == 2
+        assert mock_host_patch.call_args.kwargs == {"remove_wwns": ["5000000000000002"]}
+
+    @patch("plugins.modules.purefa_host.check_response")
+    @patch("plugins.modules.purefa_host.get_with_context")
+    @patch("plugins.modules.purefa_host.HostPatch")
+    def test_update_wwns_add_keeps_existing(
+        self, mock_host_patch, mock_get, mock_check
+    ):
+        """Adding a WWN only associates the missing one, leaving current ones"""
+        mock_module = Mock()
+        mock_module.check_mode = False
+        mock_module.params = {
+            "name": "test-host",
+            "nqn": None,
+            "iqn": None,
+            "wwns": ["5000000000000001", "5000000000000002"],
+        }
+        mock_array = Mock()
+
+        mock_host = Mock()
+        mock_host.nqns = []
+        mock_host.iqns = []
+        mock_host.wwns = ["5000000000000001"]
+        mock_get.side_effect = [
+            Mock(status_code=200, items=[mock_host]),
+            Mock(status_code=200),
+        ]
+
+        result = _update_host_initiators(mock_module, mock_array)
+
+        assert result is True
+        assert mock_host_patch.call_args.kwargs == {"add_wwns": ["5000000000000002"]}
+
+    @patch("plugins.modules.purefa_host.check_response")
+    @patch("plugins.modules.purefa_host.get_with_context")
+    @patch("plugins.modules.purefa_host.HostPatch")
+    def test_update_wwns_add_and_remove(self, mock_host_patch, mock_get, mock_check):
+        """Adding and removing in one call uses add_wwns/remove_wwns, not wwns.
+
+        Host has wwn1+wwn2; requesting wwn2+wwn3 must add wwn3 and remove wwn1
+        while leaving wwn2 untouched (the reported audit-trail regression).
+        """
+        mock_module = Mock()
+        mock_module.check_mode = False
+        mock_module.params = {
+            "name": "test-host",
+            "nqn": None,
+            "iqn": None,
+            "wwns": ["1000000000000002", "1000000000000003"],
+        }
+        mock_array = Mock()
+
+        mock_host = Mock()
+        mock_host.nqns = []
+        mock_host.iqns = []
+        mock_host.wwns = ["1000000000000001", "1000000000000002"]
+        mock_get.side_effect = [
+            Mock(status_code=200, items=[mock_host]),
+            Mock(status_code=200),
+        ]
+
+        result = _update_host_initiators(mock_module, mock_array)
+
+        assert result is True
+        assert mock_host_patch.call_args.kwargs == {
+            "add_wwns": ["1000000000000003"],
+            "remove_wwns": ["1000000000000001"],
+        }
+        assert "wwns" not in mock_host_patch.call_args.kwargs
+
+    @patch("plugins.modules.purefa_host.check_response")
+    @patch("plugins.modules.purefa_host.get_with_context")
+    @patch("plugins.modules.purefa_host.HostPatch")
+    def test_update_wwns_no_change(self, mock_host_patch, mock_get, mock_check):
+        """No patch is issued when the WWN set already matches (colon/case aware)"""
+        mock_module = Mock()
+        mock_module.check_mode = False
+        mock_module.params = {
+            "name": "test-host",
+            "nqn": None,
+            "iqn": None,
+            "wwns": ["50:00:00:00:00:00:00:01"],
+        }
+        mock_array = Mock()
+
+        mock_host = Mock()
+        mock_host.nqns = []
+        mock_host.iqns = []
+        mock_host.wwns = ["5000000000000001"]
+        mock_get.side_effect = [Mock(status_code=200, items=[mock_host])]
+
+        result = _update_host_initiators(mock_module, mock_array)
+
+        assert result is False
+        assert mock_get.call_count == 1
+        mock_host_patch.assert_not_called()
+
 
 class TestUpdateHostPersonalityExtended:
     """Extended test cases for _update_host_personality function"""

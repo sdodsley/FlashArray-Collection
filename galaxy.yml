@@ -18,3 +18,18 @@ dependencies: {}
 repository: https://github.com/Everpure-Ansible/FlashArray-Collection
 documentation: https://github.com/Everpure-Ansible/FlashArray-Collection
 issues: https://github.com/Everpure-Ansible/FlashArray-Collection/issues
+build_ignore:
+  - tests/integration
+  - tests/unit
+  - extensions/molecule
+  - changelogs
+  - docs
+  - collections
+  - .github
+  - .ansible
+  - .tox
+  - .venv
+  - .vscode
+  - .pytest_cache
+  - .pre-commit-config.yaml
+  - settings.json
