@@ -45,6 +45,7 @@ sys.modules[
 ] = MagicMock()
 
 from plugins.modules.purefa_workload import (
+    SEARCH_WHOLE_FLEET,
     _build_workload_parameters,
     _workload_completed,
     _workload_facts,
@@ -4855,6 +4856,312 @@ class TestLookingUpTheWorkload:
 
         with pytest.raises(Exception):
             lookup.swept = True
+
+
+class TestDecidingWhatToDo:
+    """Step 4: the whole decision, in one pure function
+
+    Every row of the three state tables appears here once. _decide_action takes a
+    plain params dict, a member name, a lookup and a fleet name - no module, no
+    array, no I/O - so the table is tested by calling it, with nothing mocked. That
+    is the point of the signature: today's decision is spread over ten elif arms
+    reading a mutated module.params, and cannot be tested without an array.
+
+    It is also the only step that reads state. Nothing here has to guess what the
+    task will do, because by the time it runs, it is known.
+    """
+
+    FLEET = "test-fleet"
+
+    def _lookup(self, presence, member="arrayB"):
+        """A lookup in the given presence, built from workloads as the array sends
+        them - nulls and all, and no Mock in sight"""
+        from plugins.modules.purefa_workload import WorkloadLookup
+
+        if presence == "absent":
+            return WorkloadLookup(matches={}, swept=False)
+        if presence == "ambiguous":
+            return WorkloadLookup(
+                matches={
+                    "arrayA": _api_workload(context=_ApiObject(name="arrayA")),
+                    "arrayB": _api_workload(context=_ApiObject(name="arrayB")),
+                },
+                swept=True,
+            )
+        return WorkloadLookup(
+            matches={
+                member: _api_workload(
+                    context=_ApiObject(name=member), destroyed=presence == "destroyed"
+                )
+            },
+            swept=False,
+        )
+
+    def _decide(self, presence, member="arrayB", holder="arrayB", **params):
+        from plugins.modules.purefa_workload import _decide_action
+
+        return _decide_action(
+            _params(**params), member, self._lookup(presence, holder), self.FLEET
+        )
+
+    # --- state: present --------------------------------------------------------
+
+    @pytest.mark.parametrize(
+        "presence,member,params,expected",
+        [
+            # A name on two members is two workloads, whatever the task asked for
+            ("ambiguous", SEARCH_WHOLE_FLEET, {}, "fail"),
+            ("ambiguous", "arrayB", {"rename": "new-workload"}, "fail"),
+            ("ambiguous", SEARCH_WHOLE_FLEET, {"recommendation": True}, "fail"),
+            ("ambiguous", SEARCH_WHOLE_FLEET, {"host": "host1"}, "fail"),
+            # Nothing there
+            ("absent", "arrayB", {"rename": "new-workload"}, "fail"),
+            ("absent", "arrayB", {}, "create"),
+            ("absent", "arrayB", {"host": "host1"}, "create"),
+            ("absent", SEARCH_WHOLE_FLEET, {}, "fail"),
+            ("absent", SEARCH_WHOLE_FLEET, {"recommendation": True}, "create"),
+            # Fusion is placing, so the member was widened away deliberately
+            (
+                "absent",
+                SEARCH_WHOLE_FLEET,
+                {"recommendation": True, "host": "h"},
+                "create",
+            ),
+            # There and usable
+            ("live", "arrayB", {"rename": "new-workload"}, "rename"),
+            ("live", "arrayB", {"host": "host1"}, "connect"),
+            ("live", "arrayB", {}, "nothing"),
+            ("live", "arrayB", {"recommendation": True}, "nothing"),
+            # There and destroyed
+            ("destroyed", "arrayB", {"rename": "new-workload"}, "fail"),
+            ("destroyed", "arrayB", {"host": "host1"}, "recover"),
+            ("destroyed", "arrayB", {}, "recover"),
+        ],
+    )
+    def test_state_present(self, presence, member, params, expected):
+        assert self._decide(presence, member, state="present", **params).action == (
+            expected
+        )
+
+    def test_a_destroyed_workload_is_recovered_whether_or_not_a_host_is_named(self):
+        """host is the mode selector everywhere else in this module, and here it is
+        not: recovery happens either way, and the host is connected afterwards.
+        Refusing when it is set would let the option decide whether recovery is
+        allowed, which is not what it means anywhere."""
+        assert self._decide("destroyed").action == "recover"
+        assert self._decide("destroyed", host="host1").action == "recover"
+
+    def test_an_existing_live_workload_is_left_alone(self):
+        """The idempotent success path, which the old chain reached only by falling
+        off the end of its elif chain into a bare else"""
+        decision = self._decide("live")
+
+        assert decision == ("nothing", None)
+
+    # --- state: absent ---------------------------------------------------------
+
+    @pytest.mark.parametrize(
+        "presence,params,expected",
+        [
+            ("ambiguous", {}, "fail"),
+            ("ambiguous", {"eradicate": True}, "fail"),
+            ("ambiguous", {"host": "host1"}, "fail"),
+            # Not there: already the requested end state
+            ("absent", {}, "nothing"),
+            ("absent", {"eradicate": True}, "nothing"),
+            ("absent", {"host": "host1"}, "nothing"),
+            # There and live
+            ("live", {"host": "host1"}, "disconnect"),
+            ("live", {"host": "host1", "eradicate": True}, "disconnect"),
+            ("live", {}, "delete"),
+            ("live", {"eradicate": True}, "delete"),
+            # There and already destroyed
+            ("destroyed", {"host": "host1"}, "nothing"),
+            ("destroyed", {"host": "host1", "eradicate": True}, "nothing"),
+            ("destroyed", {"eradicate": True}, "eradicate"),
+            ("destroyed", {}, "nothing"),
+        ],
+    )
+    def test_state_absent(self, presence, params, expected):
+        assert self._decide(presence, state="absent", **params).action == expected
+
+    def test_eradicate_is_never_silently_ignored_on_a_live_disconnect(self):
+        """Naming a host makes the task a disconnect, so eradicate does not apply.
+        Today that is silent."""
+        decision = self._decide("live", state="absent", host="host1", eradicate=True)
+
+        assert decision.action == "disconnect"
+        assert "eradicate is ignored" in decision.message
+
+    def test_a_destroyed_workload_with_a_host_is_not_eradicated(self):
+        """The trap this closes: adding eradicate: true to a disconnect task
+        eradicates the workload today, ignoring the host entirely"""
+        decision = self._decide(
+            "destroyed", state="absent", host="host1", eradicate=True
+        )
+
+        assert decision.action == "nothing"
+        assert "eradicate is not applied" in decision.message
+
+    def test_a_destroyed_workload_with_a_host_says_why_nothing_happened(self):
+        """The volumes went with the workload, so the host is already disconnected.
+        Failing would break idempotency - but it must not be silent either."""
+        decision = self._decide("destroyed", state="absent", host="host1")
+
+        assert decision.action == "nothing"
+        assert "already disconnected" in decision.message
+        # Only mentioned when it was actually set
+        assert "eradicate" not in decision.message
+
+    def test_a_destroyed_workload_pending_eradication_is_reported_not_refused(self):
+        """It is absent in the sense state: absent asks for, and the facts carry
+        time_remaining"""
+        assert self._decide("destroyed", state="absent") == ("nothing", None)
+
+    # --- state: expand ---------------------------------------------------------
+
+    @pytest.mark.parametrize(
+        "presence,expected",
+        [
+            ("ambiguous", "fail"),
+            ("absent", "fail"),
+            ("live", "expand"),
+            # Reports changed: false, ok today, having added nothing
+            ("destroyed", "fail"),
+        ],
+    )
+    def test_state_expand(self, presence, expected):
+        assert self._decide(presence, state="expand").action == expected
+
+    def test_expanding_a_destroyed_workload_is_refused_rather_than_reported_ok(self):
+        """A silent success where the operator's storage did not grow"""
+        decision = self._decide("destroyed", state="expand")
+
+        assert decision.action == "fail"
+        assert "destroyed" in decision.message
+        assert "nothing to add volumes to" in decision.message
+
+    # --- the messages ----------------------------------------------------------
+
+    @pytest.mark.parametrize("state", ["present", "absent", "expand"])
+    def test_ambiguity_names_every_member_holding_the_name(self, state):
+        decision = self._decide("ambiguous", SEARCH_WHOLE_FLEET, state=state)
+
+        assert decision.action == "fail"
+        assert "arrayA" in decision.message and "arrayB" in decision.message
+        # And says what to do about it
+        assert "context" in decision.message
+
+    def test_a_create_with_no_member_quotes_the_one_refusal_left(self):
+        from plugins.modules.purefa_workload import _CREATE_NEEDS_A_MEMBER
+
+        decision = self._decide("absent", SEARCH_WHOLE_FLEET)
+
+        assert decision.action == "fail"
+        assert decision.message == _CREATE_NEEDS_A_MEMBER.format(
+            name="test-workload", fleet=self.FLEET
+        )
+        # What cannot be done, then every way to say where
+        assert "context or placement" in decision.message
+        assert "recommendation" in decision.message
+
+    def test_the_create_refusal_cannot_fire_when_there_is_something_to_act_on(self):
+        """It means exactly "you asked me to invent a placement", so it is reachable
+        only from absent - which is what makes defaulting to the fleet safe for
+        everything else"""
+        for presence in ("live", "destroyed"):
+            decision = self._decide(presence, SEARCH_WHOLE_FLEET)
+
+            assert decision.action != "fail"
+
+    @pytest.mark.parametrize(
+        "state,params",
+        [
+            ("present", {"rename": "new-workload"}),
+            ("expand", {}),
+        ],
+    )
+    def test_a_message_about_a_fleet_wide_search_names_the_fleet_not_a_member(
+        self, state, params
+    ):
+        """It must not report a context the operator never wrote, nor an empty one -
+        which is what "does not exist on , so there is nothing to rename" does
+        today"""
+        decision = self._decide("absent", SEARCH_WHOLE_FLEET, state=state, **params)
+
+        assert f"anywhere in fleet {self.FLEET}" in decision.message
+
+    @pytest.mark.parametrize(
+        "state,params",
+        [
+            ("present", {"rename": "new-workload"}),
+            ("expand", {}),
+        ],
+    )
+    def test_a_message_about_a_member_scoped_search_names_the_member(
+        self, state, params
+    ):
+        decision = self._decide("absent", "pod1", state=state, **params)
+
+        assert "on pod1" in decision.message
+
+    def test_a_message_names_the_member_the_workload_was_actually_found_on(self):
+        """Not the one asked for. A fleet-wide search names no member, and the
+        answer is where the message has to come from."""
+        decision = self._decide(
+            "destroyed",
+            SEARCH_WHOLE_FLEET,
+            holder="MUCFA22",
+            state="expand",
+        )
+
+        assert "on MUCFA22" in decision.message
+
+    # --- the contract main() dispatches on -------------------------------------
+
+    def test_every_decision_is_one_of_the_declared_actions(self):
+        """main() has one arm per action and fails loudly on anything else, so an
+        action invented here without a handler must be impossible"""
+        from plugins.modules.purefa_workload import ACTIONS
+
+        for state in ("present", "absent", "expand"):
+            for presence in ("absent", "live", "destroyed", "ambiguous"):
+                for member in (SEARCH_WHOLE_FLEET, "arrayB"):
+                    for extra in (
+                        {},
+                        {"host": "host1"},
+                        {"rename": "new-workload"},
+                        {"eradicate": True},
+                        {"recommendation": True},
+                    ):
+                        decision = self._decide(presence, member, state=state, **extra)
+
+                        assert decision.action in ACTIONS
+
+    def test_a_refusal_always_explains_itself(self):
+        """fail is raised by main() as the task's message, so an empty one would be
+        a task failing with nothing to read"""
+        for state in ("present", "absent", "expand"):
+            for presence in ("absent", "live", "destroyed", "ambiguous"):
+                for extra in ({}, {"rename": "new-workload"}, {"eradicate": True}):
+                    decision = self._decide(
+                        presence, SEARCH_WHOLE_FLEET, state=state, **extra
+                    )
+
+                    if decision.action == "fail":
+                        assert decision.message
+
+    def test_deciding_reads_nothing_and_writes_nothing(self):
+        """The params dict is an input, not a working register: today's chain reads
+        a module.params["context"] that four other places have written"""
+        from plugins.modules.purefa_workload import _decide_action
+
+        params = _params(state="absent", eradicate=True)
+        before = dict(params)
+
+        _decide_action(params, "arrayB", self._lookup("destroyed"), self.FLEET)
+
+        assert params == before
 
 
 class TestCopiesElsewhereAreCounted:

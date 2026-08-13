@@ -352,6 +352,7 @@ workload:
 """
 
 from dataclasses import dataclass
+from typing import NamedTuple
 
 HAS_PURESTORAGE = True
 try:
@@ -1590,6 +1591,180 @@ def _copies_elsewhere(module, array, fleet, lookup):
     here = lookup.member or _requested_member(module.params)
     found = lookup.matches if lookup.swept else _find_across_fleet(module, array, fleet)
     return sorted(member for member in found if member != here)
+
+
+class Decision(NamedTuple):
+    """What to do, and anything the operator needs told while it happens"""
+
+    action: str  # one of ACTIONS
+    message: str = None  # the refusal on a "fail", an optional warning otherwise
+
+
+#: Every action _decide_action can ask for. main() handles exactly these, and
+#: handles an unknown one loudly rather than as a silent no-op - which is how the
+#: chain this replaces lost expand-on-a-destroyed-workload.
+ACTIONS = (
+    "create",
+    "expand",
+    "recover",
+    "rename",
+    "connect",
+    "disconnect",
+    "delete",
+    "eradicate",
+    "nothing",
+    "fail",
+)
+
+#: The only refusal left for a task that named no member. It cannot fire when there
+#: is anything to act on, so it means exactly "you asked me to invent a placement" -
+#: what cannot be done, then what to set. The reasoning belongs in the module
+#: documentation, not in an error read by an operator who is already blocked.
+_CREATE_NEEDS_A_MEMBER = (
+    "Workload {name} was not found in fleet {fleet} and cannot be created without a "
+    "target array. Set context or placement to a fleet member, or set "
+    "recommendation: true to let Fusion choose one."
+)
+
+
+def _describe_search_area(lookup, member, fleet):
+    """Where a message should say it looked: "on arrayB" or "anywhere in fleet F"
+
+    The array's own answer wins where there is one, so no message ever reports a
+    context the workload was not actually on.
+    """
+    where = lookup.member or member
+    if where is SEARCH_WHOLE_FLEET:
+        return f"anywhere in fleet {fleet}"
+    return f"on {where}"
+
+
+def _decide_action(params, member, lookup, fleet):
+    """What to do about what was found - the only place that decides, and pure
+
+    Takes the params rather than the module, and never touches the array: every
+    array-dependent refusal is expressed as Decision("fail", ...) for main() to
+    raise. That is what makes the whole table testable without mocking anything, and
+    it is why this is the only step allowed to read state - nothing here has to guess
+    what the task will do, because by now it is known.
+    """
+    state = params["state"]
+    presence = lookup.presence
+    area = _describe_search_area(lookup, member, fleet)
+
+    # Before any state branch: there is no action for which "which of these two did
+    # you mean" has an answer. Every match counts, destroyed or not - a leftover
+    # destroyed copy blocks an otherwise obvious delete until it is eradicated or a
+    # context is named, which is a knowing trade for never guessing a target.
+    if presence == "ambiguous":
+        return Decision(
+            "fail",
+            f"Workload {params['name']} exists on more than one member of {fleet}: "
+            f"{', '.join(lookup.members)}. Set context to the one you mean.",
+        )
+
+    if state == "present":
+        if presence == "absent":
+            if params["rename"]:
+                return Decision(
+                    "fail",
+                    f"Workload {params['name']} does not exist {area}, so there is "
+                    f"nothing to rename to {params['rename']}.",
+                )
+            # Nothing to act on and no member named. A create is the one operation
+            # that cannot look its target up, because there is nothing there yet.
+            if member is SEARCH_WHOLE_FLEET and not _fusion_will_choose_placement(
+                params
+            ):
+                return Decision(
+                    "fail",
+                    _CREATE_NEEDS_A_MEMBER.format(name=params["name"], fleet=fleet),
+                )
+            return Decision("create")
+        if presence == "destroyed":
+            if params["rename"]:
+                return Decision(
+                    "fail",
+                    f"Workload {params['name']} {area} is destroyed, so there is "
+                    f"nothing to rename to {params['rename']}. Recover it first with "
+                    "a separate task (state: present, no rename), then rename it.",
+                )
+            # host does not decide whether recovery is allowed - it is the mode
+            # selector everywhere else in this module, and here it is not. Recovery
+            # happens either way; a host is connected afterwards.
+            return Decision("recover")
+        if params["rename"]:
+            return Decision("rename")
+        if params["host"]:
+            return Decision("connect")
+        # state: present and it is present. The idempotent success path.
+        return Decision("nothing")
+
+    if state == "absent":
+        if presence == "absent":
+            # Already the requested end state. Whether a copy on another member
+            # deserves a word is main()'s question, and it asks it for every action.
+            return Decision("nothing")
+        if presence == "live":
+            if params["host"]:
+                if params["eradicate"]:
+                    return Decision(
+                        "disconnect",
+                        f"eradicate is ignored: {params['host']} is named, which "
+                        f"makes this a disconnect from the volumes of "
+                        f"{params['name']} {area} rather than a removal of the "
+                        "workload.",
+                    )
+                return Decision("disconnect")
+            # delete_workload eradicates afterwards when asked to
+            return Decision("delete")
+        if params["host"]:
+            # The volumes went with the workload, so the host is already
+            # disconnected. Failing would break idempotency - but silence here is
+            # what let eradicate turn a disconnect task into an eradication.
+            message = (
+                f"Workload {params['name']} {area} is destroyed, so {params['host']} "
+                "is already disconnected from its volumes and there is nothing to do."
+            )
+            if params["eradicate"]:
+                message += (
+                    " eradicate is not applied: this task names a host, which makes "
+                    "it a disconnect rather than a removal."
+                )
+            return Decision("nothing", message)
+        if params["eradicate"]:
+            return Decision("eradicate")
+        # It is absent, in the sense state: absent asks for - destroyed and pending
+        # eradication. The facts carry time_remaining, which is worth reporting.
+        return Decision("nothing")
+
+    if state == "expand":
+        if presence == "absent":
+            # Unlike absent, where not being there is the requested end state, expand
+            # asks to add volumes to something that has to exist. Reporting no change
+            # would read as "already expanded".
+            return Decision(
+                "fail",
+                f"Workload {params['name']} does not exist {area}, so there is "
+                "nothing to add volumes to.",
+            )
+        if presence == "destroyed":
+            return Decision(
+                "fail",
+                f"Workload {params['name']} {area} is destroyed, so there is nothing "
+                "to add volumes to. Recover it first with a separate task "
+                "(state: present), then expand it.",
+            )
+        return Decision("expand")
+
+    # Not reachable: the argument spec allows exactly the three states above. Named
+    # rather than left to fall off the end returning None, which is the failure mode
+    # this whole table exists to remove.
+    return Decision(
+        "fail",
+        f"purefa_workload does not handle state {state!r}. This is a bug in the "
+        "module.",
+    )
 
 
 def _check_placement_options(module, array, fleet, state):
