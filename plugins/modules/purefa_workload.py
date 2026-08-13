@@ -799,29 +799,36 @@ def _find_across_fleet(module, array, fleet, name=None):
     return found
 
 
-def _warn_about_copies_elsewhere(module, array, fleet, name=None):
+def _warn_about_copies_elsewhere(module, array, fleet, lookup, name=None):
     """Say when a name being acted on here also exists on other fleet members
 
     Reporting only. The module acts on exactly the (name, context) it was given, and
     this must never widen that: eradication cannot be undone, so a fleet-wide search
     informs the operator rather than choosing a target for them.
 
+    Asked for every action rather than only for the destructive ones: the rule is
+    about the state of the fleet, not about the category of action, and an operator
+    acting on "the" workload needs to know there are two whether or not this task is
+    what made that true.
+
     name defaults to the workload the task is about. A rename asks twice - once for
     the name it is leaving, once for the name it is taking, since renaming foo to bar
     where bar already exists on another member produces two bars.
+
+    On a fleet-wide search this can never fire: two matches were already refused as
+    ambiguous, so exactly one member holds the name and there is nothing to report.
+    That path is told which member was chosen instead - see
+    _warn_which_member_was_chosen. Named a context, "it also exists over there";
+    named nothing, "I picked this one". Complementary, never both.
     """
     name = name or module.params["name"]
-    others = sorted(
-        member
-        for member in _find_across_fleet(module, array, fleet, name)
-        if member != module.params["context"]
-    )
+    others = _copies_elsewhere(module, array, fleet, lookup, name)
     if others:
         module.warn(
             f"A workload named {name} also exists on "
-            f"{', '.join(others)}. Only the one on {module.params['context']} is "
-            "affected here - a name is unique per fleet member, not across the "
-            "fleet."
+            f"{', '.join(others)}. Only the one on "
+            f"{_member_being_acted_on(module.params, lookup)} is affected here - a "
+            "name is unique per fleet member, not across the fleet."
         )
 
 
@@ -1641,6 +1648,17 @@ def _look_up_workload(module, array, fleet, member):
     return WorkloadLookup(matches={home: workload}, swept=False)
 
 
+def _member_being_acted_on(params, lookup):
+    """The member this task acts on: the one holding the workload, or the one asked
+
+    The array's own answer wins wherever there is one, as everywhere else in this
+    module. Falling back to what was asked for covers a task aimed at a member that
+    turned out not to hold the name - a delete against arrayB where the workload only
+    exists on arrayA - which is still the member the task was aimed at.
+    """
+    return lookup.member or _requested_member(params)
+
+
 def _copies_elsewhere(module, array, fleet, lookup, name=None):
     """Every other fleet member holding this workload name, sorted
 
@@ -1656,7 +1674,7 @@ def _copies_elsewhere(module, array, fleet, lookup, name=None):
     other name a rename involves.
     """
     name = name or module.params["name"]
-    here = lookup.member or _requested_member(module.params)
+    here = _member_being_acted_on(module.params, lookup)
     # A sweep already done answers only for the name it was made about, so a rename
     # asking about its target pays for its own
     reuse = lookup.swept and name == module.params["name"]
@@ -1875,106 +1893,38 @@ def _read_preset(module, array, fleet, action):
     return list(res.items)[0]
 
 
-def _check_placement_options(module, array, fleet, state):
-    """Settle where this task applies before anything is read or written.
+#: The actions that remove something. Which array they landed on is worth saying
+#: whenever the task did not say it, because nothing else in the output will.
+DESTRUCTIVE_ACTIONS = frozenset({"delete", "eradicate"})
 
-    There is deliberately no default. A workload belongs to a fleet member, and
-    falling back to whichever array the request happened to reach makes the same
-    playbook mean different things depending on fa_url - which is how a re-run ends
-    up creating a second workload rather than finding the first.
+
+def _warn_which_member_was_chosen(module, fleet, member, lookup, action):
+    """Name the array a destructive action resolved to, when the task did not
+
+    The copies-elsewhere warning cannot fire on a fleet-wide search - two matches
+    were already refused as ambiguous, so exactly one member holds the name - and its
+    wording ("only the one on X is affected") names a context the operator never
+    wrote, which reads as confirmation of something they typed. What they lack is the
+    one fact the search decided for them: which array is about to lose a workload.
     """
-    chosen = [option for option in ("context", "placement") if module.params[option]]
-
-    # recommendation only decides where a *new* workload goes, so it stands in for
-    # a context on a create and nowhere else. Naming an existing workload to
-    # delete, expand or rename always needs the member it is on.
-    may_recommend = (
-        state == "present"
-        and module.params["recommendation"]
-        and not module.params["rename"]
+    if member is not SEARCH_WHOLE_FLEET or action not in DESTRUCTIVE_ACTIONS:
+        return
+    requested = _requested_member(module.params)
+    scope = (
+        f"context {requested} names fleet {fleet} rather than one of its members"
+        if requested
+        else "No context was named"
     )
-    if not chosen and not may_recommend:
-        module.fail_json(
-            msg="Name which fleet member this applies to by setting context or "
-            "placement"
-            + (
-                ", or set recommendation to let Fusion choose"
-                if state == "present"
-                else ""
-            )
-            + ". There is no default: it would otherwise fall to whichever array "
-            "the request was sent to, which changes with fa_url."
-        )
-
-    if len(chosen) == 2 and module.params["context"] != module.params["placement"]:
-        module.fail_json(
-            msg=f"context '{module.params['context']}' and placement "
-            f"'{module.params['placement']}' name different fleet members. They "
-            "are the same thing to the array, so set one of them, or set both to "
-            "the same member."
-        )
-
-    if not chosen:
-        return
-    # The fleet itself is allowed and means "wherever in the fleet this workload
-    # is" - _resolve_fleet_context() turns it into the member holding it before
-    # anything looks the workload up.
-    allowed = set(_fleet_members(module, array, fleet)) | {fleet}
-    for option in chosen:
-        value = module.params[option]
-        if value not in allowed:
-            module.fail_json(
-                msg=f"{option} '{value}' is not a member of fleet {fleet}, nor the "
-                f"fleet itself. Valid: {', '.join(sorted(allowed))}."
-            )
-
-
-def _resolve_fleet_context(module, array, fleet, state):
-    """Turn a context of the fleet into the member the workload is actually on
-
-    Naming the fleet says where to look, not where to put things. A single match
-    is resolved and everything downstream then works on that member as though it
-    had been named directly, which is what makes a task idempotent across the
-    fleet - including a delete.
-
-    More than one match is refused rather than guessed at. A name is unique to a
-    member, not to a fleet, so two of them are two workloads and nothing in the
-    task says which is meant.
-
-    This runs before any lookup, so the bare fleet name is never used as a query
-    context - the array rejects it there with a 400 that reads exactly like the
-    workload being absent.
-    """
-    found = _find_across_fleet(module, array, fleet)
-    if len(found) > 1:
-        module.fail_json(
-            msg=f"Workload {module.params['name']} exists on more than one member "
-            f"of {fleet}: {', '.join(sorted(found))}. Set context to the one you "
-            "mean."
-        )
-    if found:
-        module.params["context"] = next(iter(found))
-        return
-
-    if state == "expand":
-        module.fail_json(
-            msg=f"Workload {module.params['name']} was not found anywhere in "
-            f"{fleet}, so there is nothing to add volumes to."
-        )
-    if state == "present":
-        if module.params["recommendation"]:
-            # Nothing to update and Fusion was asked to choose, so leave the
-            # context unset and let create_workload() get a placement
-            module.params["context"] = ""
-            return
-        module.fail_json(
-            msg=f"Workload {module.params['name']} was not found anywhere in "
-            f"{fleet}, and {fleet} names the fleet rather than a member, so there "
-            "is nowhere to create it. Set context or placement to a member, or set "
-            "recommendation to let Fusion choose."
-        )
-    # state=absent with nothing anywhere in the fleet: already the desired end
-    module.exit_json(changed=False, workload={})
+    # A delete asked to eradicate does both, so say the one that cannot be undone
+    removal = (
+        "eradicated"
+        if action == "eradicate" or module.params["eradicate"]
+        else "destroyed"
+    )
+    module.warn(
+        f"{scope}; workload {module.params['name']} was found on {lookup.member} and "
+        f"that is what will be {removal}."
+    )
 
 
 def main():
@@ -2051,144 +2001,83 @@ def main():
             msg="FlashArray REST version not supported. "
             "Minimum version required: {0}".format(MIN_REQUIRED_API_VERSION)
         )
-    state = module.params["state"]
     fleet = _read_fleet_name(module, array)
-    _check_placement_options(module, array, fleet, state)
-    # context and placement mean the same thing to the API - a workload is created
-    # on its context, and there is no separate placement to send - and they have
-    # been checked to agree, so either may stand for both. The trailing "" keeps an
-    # unset one as the empty string the argument spec declares and
-    # _resolve_fleet_context() writes, so "no context yet" has one spelling rather
-    # than two - placement defaults to None, and "" or None is None.
-    module.params["context"] = (
-        module.params["context"] or module.params["placement"] or ""
-    )
-    if module.params["context"] == fleet:
-        _resolve_fleet_context(module, array, fleet, state)
 
-    workload_destroyed = False
-    workload_exists = False
-    workload = None
-    preset_config = {}
-    # allow_errors, as in _read_workload: without it the array rejects a read by
-    # name outright when the context is a fleet member other than this one, and a
-    # workload that already exists there would be reported as absent and created
-    # a second time
-    if module.params["context"]:
-        res = array.get_workloads(
-            names=[module.params["name"]],
-            context_names=[module.params["context"]],
-            allow_errors=True,
-        )
-        if res.status_code == 200:
-            workload_exists = True
-            workload = list(res.items)[0]
-            workload_destroyed = getattr(workload, "destroyed", False)
-    # Otherwise this is a recommendation-led create with no context yet, so there is
-    # nowhere to look. create_workload() sweeps the fleet instead, which is also what
-    # stops a second run asking Fusion for another placement.
+    # Four questions, in order, each answering one thing and nothing else: are the
+    # options coherent, which array do we address, what is there, what to do.
+    member = _resolve_member_to_search(module, array, fleet)
+    lookup = _look_up_workload(module, array, fleet, member)
+    decision = _decide_action(module.params, member, lookup, fleet)
 
-    if (
-        state == "present"
-        and not workload_destroyed
-        and not workload_exists
-        and not module.params["rename"]
-    ) or (state == "expand" and not workload_destroyed):
-        # preset is only read here, and by the create and expand paths this gates.
-        # Every other outcome - delete, eradicate, rename, recover, host connect or
-        # disconnect - works from the workload the array already has, so a task that
-        # does not name a preset is not incomplete. required_if cannot express this:
-        # whether a create is happening is only known from the read above.
-        if not module.params["preset"]:
-            module.fail_json(
-                msg="preset required to create a new workload or to expand an "
-                "existing one."
-            )
-        # Presets are fleet objects, and the API names them "<fleet>:<preset>", so
-        # qualify it here rather than at the top of main(): it is meaningless on
-        # every path that does not reach this block.
-        module.params["preset"] = fleet + ":" + module.params["preset"]
-        res = array.get_presets_workload(
-            names=[module.params["preset"]],
-        )
-        check_response(
-            res,
-            module,
-            f"Preset {module.params['preset']} does not exist in fleet {fleet}",
-        )
-        preset_config = list(res.items)[0]
+    if decision.action == "fail":
+        module.fail_json(msg=decision.message)
+    if decision.message:
+        module.warn(decision.message)
 
-    # The array every action below acts on, settled by everything above and read
-    # here once. It is handed to each action explicitly so that none of them has to
-    # re-derive its own target from module.params - which is how "what array are we
-    # on" ends up with a different answer depending on when it is asked.
-    context = module.params["context"]
+    preset_config = _read_preset(module, array, fleet, decision.action)
 
-    if (
-        state == "present"
-        and workload_exists
-        and module.params["rename"]
-        and not workload_destroyed
-    ):
-        rename_workload(module, array, workload, context)
-    elif state == "present" and not workload_exists and module.params["rename"]:
-        module.fail_json(
-            msg=f"Workload {module.params['name']} does not exist on "
-            f"{module.params['context']}, so there is nothing to rename to "
-            f"{module.params['rename']}."
+    # One name on two arrays is this module's central hazard, so it is reported
+    # wherever it is true - not only where this task is what makes it true. A create
+    # says it in its own words, so it is left to say it. A rename asks twice: once
+    # for the name it is leaving, once for the name it is taking.
+    if decision.action != "create":
+        _warn_about_copies_elsewhere(module, array, fleet, lookup)
+    if decision.action == "rename":
+        _warn_about_copies_elsewhere(
+            module, array, fleet, lookup, name=module.params["rename"]
         )
-    elif state == "present" and workload_destroyed and module.params["rename"]:
-        module.fail_json(
-            msg=f"Workload {module.params['name']} on {module.params['context']} is "
-            f"destroyed, so there is nothing to rename to {module.params['rename']}. "
-            "Recover it first with a separate task (state: present, no rename), "
-            "then rename it."
+    # The complement, for the one path where that warning cannot fire: which member
+    # the search settled on, before anything is removed from it.
+    _warn_which_member_was_chosen(module, fleet, member, lookup, decision.action)
+
+    # Every action except a create works on lookup.member - the array the workload
+    # was actually found on. A create has nothing to have found, so it is the one arm
+    # that has to be told where to go. There is deliberately no shared "context"
+    # variable falling back from one to the other: that fallback is itself a
+    # placement decision, and it belongs where it can be seen.
+    if decision.action == "create":
+        # create_workload still settles its own placement, including asking Fusion.
+        # What it is handed is the member the task named - and nothing when the task
+        # named the fleet, which is not a member and which the array rejects as a
+        # context.
+        named = _requested_member(module.params)
+        create_workload(
+            module, array, fleet, preset_config, "" if named == fleet else named
         )
-    elif state == "present" and not workload_exists:
-        create_workload(module, array, fleet, preset_config, context)
-    elif state == "expand" and workload_exists and not workload_destroyed:
+    elif decision.action == "expand":
         expand_workload(
-            module, array, fleet, preset_config.volume_configurations, workload, context
+            module,
+            array,
+            fleet,
+            preset_config.volume_configurations,
+            lookup.workload,
+            lookup.member,
         )
-    elif state == "present" and workload_exists and workload_destroyed:
-        recover_workload(module, array, workload, context)
-    elif (
-        state == "present"
-        and workload_exists
-        and not workload_destroyed
-        and module.params["host"] != ""
-    ):
-        connect_or_disconnect_volumes(module, array, "connect", workload, context)
-    elif (
-        state == "absent"
-        and workload_exists
-        and not workload_destroyed
-        and module.params["host"] != ""
-    ):
-        connect_or_disconnect_volumes(module, array, "disconnect", workload, context)
-    elif state == "absent" and workload_exists and not workload_destroyed:
-        _warn_about_copies_elsewhere(module, array, fleet)
-        delete_workload(module, array, workload, context)
-    elif state == "absent" and workload_destroyed and module.params["eradicate"]:
-        _warn_about_copies_elsewhere(module, array, fleet)
-        eradicate_workload(module, array, context)
-    elif state == "expand" and not workload_exists:
-        # Unlike absent, where not being there is the requested end state, expand
-        # asks to add volumes to something that has to exist. Reporting no change
-        # would read as "already expanded".
-        module.fail_json(
-            msg=f"Workload {module.params['name']} does not exist on "
-            f"{module.params['context']}, so there is nothing to add volumes to."
+    elif decision.action == "recover":
+        recover_workload(module, array, lookup.workload, lookup.member)
+    elif decision.action == "rename":
+        rename_workload(module, array, lookup.workload, lookup.member)
+    elif decision.action in ("connect", "disconnect"):
+        connect_or_disconnect_volumes(
+            module, array, decision.action, lookup.workload, lookup.member
         )
-    else:
-        # Nothing to do. If this was a removal, the workload not being on the named
-        # context reads as "already gone" - so say when it is in fact sitting on
-        # another member, untouched, rather than letting ok imply it was removed.
-        if state == "absent" and not workload_exists:
-            _warn_about_copies_elsewhere(module, array, fleet)
+    elif decision.action == "delete":
+        delete_workload(module, array, lookup.workload, lookup.member)
+    elif decision.action == "eradicate":
+        eradicate_workload(module, array, lookup.member)
+    elif decision.action == "nothing":
         module.exit_json(
             changed=False,
-            workload=_workload_facts(module, array, workload, context),
+            workload=_workload_facts(module, array, lookup.workload, lookup.member),
+        )
+    else:
+        # Not reachable: _decide_action returns nothing else. Named rather than left
+        # as a fall-through, so an action added there and not here fails loudly
+        # instead of quietly reporting no change - which is exactly how the old chain
+        # lost expand-on-a-destroyed-workload.
+        module.fail_json(
+            msg=f"purefa_workload has no handler for action {decision.action!r}. "
+            "This is a bug in the module."
         )
 
 
