@@ -326,8 +326,8 @@ class TestDeleteWorkload:
             changed=True, workload=_expected_facts(status="destroying", destroyed=True)
         )
 
-    def test_delete_with_eradicate_check_mode_predicts_nothing_left(self):
-        """An eradicate leaves no workload, which is what a real run reports"""
+    def test_delete_with_eradicate_check_mode_names_what_would_be_destroyed(self):
+        """An eradicate leaves no facts to read, so only the target is named"""
         mock_module = Mock()
         mock_module.check_mode = True
         mock_module.params = _params(eradicate=True)
@@ -337,14 +337,20 @@ class TestDeleteWorkload:
 
         mock_array.patch_workloads.assert_not_called()
         mock_array.delete_workloads.assert_not_called()
-        mock_module.exit_json.assert_called_once_with(changed=True, workload={})
+        mock_module.exit_json.assert_called_once_with(
+            changed=True, workload={"name": "test-workload", "context": "arrayB"}
+        )
 
 
 class TestEradicateWorkload:
     """Test cases for eradicate_workload function"""
 
     def test_eradicate_workload_check_mode(self):
-        """Test eradicate_workload in check mode"""
+        """A dry run names the workload and the array it would be eradicated on
+
+        There are no facts to read off something that will not exist, but "which
+        array" is the whole question a --check on an eradicate is asking.
+        """
         mock_module = Mock()
         mock_module.check_mode = True
         mock_module.params = _params()
@@ -353,7 +359,9 @@ class TestEradicateWorkload:
         eradicate_workload(mock_module, mock_array)
 
         mock_array.delete_workloads.assert_not_called()
-        mock_module.exit_json.assert_called_once_with(changed=True, workload={})
+        mock_module.exit_json.assert_called_once_with(
+            changed=True, workload={"name": "test-workload", "context": "arrayB"}
+        )
 
 
 class TestRecoverWorkload:
@@ -849,7 +857,9 @@ class TestEradicateWorkloadSuccess:
         eradicate_workload(mock_module, mock_array)
 
         mock_array.delete_workloads.assert_called_once()
-        mock_module.exit_json.assert_called_once_with(changed=True, workload={})
+        mock_module.exit_json.assert_called_once_with(
+            changed=True, workload={"name": "test-workload", "context": "pod1"}
+        )
 
 
 class TestRecoverWorkloadSuccess:
@@ -1136,13 +1146,14 @@ class TestDeleteWorkloadWithEradicate:
         delete_workload(mock_module, mock_array)
 
         mock_array.patch_workloads.assert_called_once()
-        mock_eradicate_workload.assert_called_once_with(mock_module, mock_array)
+        # The array delete_workload acted on is handed on, not looked up again
+        mock_eradicate_workload.assert_called_once_with(mock_module, mock_array, "pod1")
 
     @patch("plugins.modules.purefa_workload.check_response")
-    def test_delete_workload_with_eradicate_returns_empty_fact(
+    def test_delete_workload_with_eradicate_reports_only_the_target(
         self, mock_check_response
     ):
-        """delete+eradicate exits via eradicate_workload, so nothing is described"""
+        """delete+eradicate exits via eradicate_workload, so that is what reports"""
         import pytest
 
         mock_module = Mock()
@@ -1161,7 +1172,9 @@ class TestDeleteWorkloadWithEradicate:
             delete_workload(mock_module, mock_array)
 
         mock_array.delete_workloads.assert_called_once()
-        mock_module.exit_json.assert_called_once_with(changed=True, workload={})
+        mock_module.exit_json.assert_called_once_with(
+            changed=True, workload={"name": "test-workload", "context": "pod1"}
+        )
 
     @patch("plugins.modules.purefa_workload.check_response")
     def test_delete_workload_without_eradicate(self, mock_check_response):
@@ -2572,8 +2585,10 @@ class TestWaitForEradicate:
         is_done = mock_wait_for.call_args.kwargs["is_done"]
         assert is_done(None) is True
         assert is_done(_mock_workload(status="eradicating")) is False
-        # Nothing remains to describe either way
-        mock_module.exit_json.assert_called_once_with(changed=True, workload={})
+        # Nothing remains to read, so only the target is named
+        mock_module.exit_json.assert_called_once_with(
+            changed=True, workload={"name": "test-workload", "context": "pod1"}
+        )
 
     @patch("plugins.modules.purefa_workload.wait_for")
     @patch("plugins.modules.purefa_workload.check_response")
@@ -3214,7 +3229,7 @@ class TestVolumeReadsHappenOnce:
 
     @patch("plugins.modules.purefa_workload.check_response")
     def test_eradicate_reads_no_volumes(self, mock_check_response):
-        """There is no workload left, so there is nothing to describe or read"""
+        """There is no workload left to read, so only the target is named"""
         mock_module = Mock()
         mock_module.check_mode = False
         mock_module.params = _params(context="pod1", wait=False)
@@ -3224,7 +3239,9 @@ class TestVolumeReadsHappenOnce:
         eradicate_workload(mock_module, mock_array)
 
         mock_array.get_volumes.assert_not_called()
-        mock_module.exit_json.assert_called_once_with(changed=True, workload={})
+        mock_module.exit_json.assert_called_once_with(
+            changed=True, workload={"name": "test-workload", "context": "pod1"}
+        )
 
 
 #: Every way this module can change the array. Asserted as a set so a future
@@ -3565,10 +3582,14 @@ class TestCheckModePredictsTheRealRun:
 
     @patch("plugins.modules.purefa_workload.WorkloadPatch")
     @patch("plugins.modules.purefa_workload.check_response")
-    def test_delete_with_eradicate_is_empty_either_way(
+    def test_delete_with_eradicate_names_the_target_either_way(
         self, mock_check_response, mock_workload_patch
     ):
-        """The divergence this fixes: --check used to return facts, a real run {}"""
+        """The divergence this fixes: --check used to return facts, a real run {}
+
+        Both now report the one thing still true of an eradicated workload - which
+        name, on which array - so the dry run says what the real run will say.
+        """
         checked = Mock()
         checked.check_mode = True
         checked.params = _params(context="pod1", eradicate=True)
@@ -3587,8 +3608,9 @@ class TestCheckModePredictsTheRealRun:
         with pytest.raises(SystemExit):
             delete_workload(real, real_array, _mock_workload())
 
-        assert checked.exit_json.call_args.kwargs["workload"] == {}
-        assert real.exit_json.call_args.kwargs["workload"] == {}
+        eradicated = {"name": "test-workload", "context": "pod1"}
+        assert checked.exit_json.call_args.kwargs["workload"] == eradicated
+        assert real.exit_json.call_args.kwargs["workload"] == eradicated
 
     @pytest.mark.parametrize(
         "wait,expected_status",

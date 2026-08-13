@@ -959,7 +959,19 @@ def _wait_for_volumes(module, array, context, volume_names, workload):
     return state["workload"] if state else workload
 
 
-def _create_volume(module, array):
+# Eight functions below act on a workload on a particular array - _create_volume and
+# the seven actions main() dispatches to - and each takes that array as a trailing
+# context argument, defaulting to module.params["context"] when the caller does not
+# name one. That generalises what the waiters already do deliberately (see
+# _wait_for_status), and it is what stops each of them re-deriving its own target
+# after the caller has already settled it.
+#
+# The argument is trailing rather than third positional purely so that every
+# existing positional call site keeps binding while the callers are converted; it
+# moves into place, and the fallback goes away, once main() is the only caller.
+
+
+def _create_volume(module, array, context=None):
     """Create an actual volume in a workload
 
     Returns the array-generated volume name, so that a later wait can target
@@ -970,6 +982,7 @@ def _create_volume(module, array):
     this at all in check mode. It is kept rather than removed as unreachable so
     that no future caller can create a volume by forgetting to guard.
     """
+    context = module.params["context"] if context is None else context
     if module.check_mode:
         return None
     res = array.post_volumes(
@@ -979,7 +992,7 @@ def _create_volume(module, array):
                 configuration=module.params["volume_configuration"],
             ),
         ),
-        context_names=[module.params["context"]],
+        context_names=[context],
     )
     check_response(res, module, "Workload volume creation failed")
     return list(res.items)[0].name
@@ -1038,9 +1051,10 @@ def _disconnect_host(module, array, name, context, volume_names):
     return bool(attached)
 
 
-def create_workload(module, array, fleet, preset_config):
+def create_workload(module, array, fleet, preset_config, context=None):
     """Create fleet workload using existing preset"""
     changed = True
+    context = module.params["context"] if context is None else context
     workload_parameters = _build_workload_parameters(module, preset_config)
     # This is only reached when the workload was not found on the named context, so
     # anything the sweep turns up is a copy of the name on some other member
@@ -1073,9 +1087,7 @@ def create_workload(module, array, fleet, preset_config):
         # default placement - Fusion's choice replaces it a few lines down. Without
         # the fallback a task that named neither context nor placement sends an empty
         # context, which the array rejects with an internal error.
-        recommendation_context = module.params["context"] or get_local_array_name(
-            array, module
-        )
+        recommendation_context = context or get_local_array_name(array, module)
         # Start the workload calculation for the preset being used
         res = array.post_workloads_placement_recommendations(
             inputs=WorkloadPlacementRecommendation(parameters=workload_parameters),
@@ -1104,16 +1116,18 @@ def create_workload(module, array, fleet, preset_config):
             )
         module.params["placement"] = target
         module.params["context"] = module.params["placement"]
+        # Fusion's answer is the array this create acts on, so it replaces whatever
+        # the caller routed the question through
+        context = target
     elif elsewhere:
         # The user named a context, so this is a different workload that happens to
         # share a name - which the array permits. Reported rather than refused.
         module.warn(
             f"A workload named {module.params['name']} already exists on "
-            f"{', '.join(sorted(elsewhere))}. Creating on "
-            f"{module.params['context']} makes a separate workload: a name is "
-            "unique per fleet member, not across the fleet."
+            f"{', '.join(sorted(elsewhere))}. Creating on {context} makes a "
+            "separate workload: a name is unique per fleet member, not across "
+            "the fleet."
         )
-    context = module.params["context"]
     if module.check_mode:
         # Nothing exists to read, so everything reported is predicted. The context
         # is the resolved one, which for a recommendation is Fusion's choice. Only
@@ -1148,10 +1162,11 @@ def create_workload(module, array, fleet, preset_config):
     module.exit_json(changed=changed, workload=workload_facts)
 
 
-def expand_workload(module, array, fleet, volume_configs, workload):
+def expand_workload(module, array, fleet, volume_configs, workload, context=None):
     """Add new volumes to workload"""
     changed = False
     matched = False
+    context = module.params["context"] if context is None else context
     volume_names = []
     for vol_config in volume_configs:
         if vol_config.name == module.params["volume_configuration"]:
@@ -1162,14 +1177,13 @@ def expand_workload(module, array, fleet, volume_configs, workload):
                 # is guarded here as well as inside _create_volume
                 if module.check_mode:
                     continue
-                volume_names.append(_create_volume(module, array))
+                volume_names.append(_create_volume(module, array, context))
     if not matched:
         module.fail_json(
             msg="Volume Configuration {0} does not exist for preset {1}.".format(
                 module.params["volume_configuration"], module.params["preset"]
             )
         )
-    context = module.params["context"]
     if module.params["wait"]:
         # Re-read rather than reuse main()'s workload, which predates the volumes
         workload = _wait_for_volumes(module, array, context, volume_names, workload)
@@ -1201,15 +1215,20 @@ def expand_workload(module, array, fleet, volume_configs, workload):
     module.exit_json(changed=changed, workload=workload_facts)
 
 
-def delete_workload(module, array, workload=None):
+def delete_workload(module, array, workload=None, context=None):
     """Delete the workload"""
     changed = True
-    context = module.params["context"]
+    context = module.params["context"] if context is None else context
     if module.check_mode:
         # Nothing is sent, so report the state this run would have produced
         if module.params["eradicate"]:
-            # An eradicate leaves nothing behind, as the real run also reports
-            workload_facts = {}
+            # An eradicate leaves nothing behind to describe, so this reports what
+            # eradicate_workload reports - the workload and the array it is on, and
+            # nothing else - which is what the real run this predicts would say
+            workload_facts = {
+                "name": module.params["name"],
+                "context": context,
+            }
         else:
             workload_facts = _workload_facts(
                 module,
@@ -1233,30 +1252,38 @@ def delete_workload(module, array, workload=None):
             deleted = _wait_for_status(module, array, context, "destroyed")
         workload_facts = _workload_facts(module, array, deleted, context)
         if module.params["eradicate"]:
-            eradicate_workload(module, array)
+            eradicate_workload(module, array, context)
     module.exit_json(changed=changed, workload=workload_facts)
 
 
-def eradicate_workload(module, array):
+def eradicate_workload(module, array, context=None):
     """Eradicate the workload"""
     changed = True
+    context = module.params["context"] if context is None else context
     if not module.check_mode:
         res = array.delete_workloads(
             names=[module.params["name"]],
-            context_names=[module.params["context"]],
+            context_names=[context],
         )
         check_response(res, module, "Workload eradication failed")
         if module.params["wait"]:
-            _wait_for_absent(module, array, module.params["context"])
-    # The workload no longer exists, so there is nothing to describe. The same is
-    # true of the run this predicts, so check mode reports it identically.
-    module.exit_json(changed=changed, workload={})
+            _wait_for_absent(module, array, context)
+    # The workload no longer exists, so there are no facts left to read off it - but
+    # which one, and on which array, is exactly what an operator dry-running an
+    # eradicate is asking, and the more so when the context was resolved for them
+    # rather than written in the task. So name that much and nothing more, and name
+    # it identically in check mode and on a real run: check mode has to predict the
+    # run it stands in for.
+    module.exit_json(
+        changed=changed,
+        workload={"name": module.params["name"], "context": context},
+    )
 
 
-def recover_workload(module, array, workload=None):
+def recover_workload(module, array, workload=None, context=None):
     """Recover the workload and optionally reconnect to host"""
     changed = True
-    context = module.params["context"]
+    context = module.params["context"] if context is None else context
     if module.check_mode:
         # Nothing is sent, so report the state this run would have produced
         workload_facts = _workload_facts(
@@ -1289,7 +1316,7 @@ def recover_workload(module, array, workload=None):
     module.exit_json(changed=changed, workload=workload_facts)
 
 
-def rename_workload(module, array, workload=None):
+def rename_workload(module, array, workload=None, context=None):
     """Rename the workload
 
     Nothing about a rename is asynchronous, so wait does not apply, and a rename
@@ -1297,7 +1324,7 @@ def rename_workload(module, array, workload=None):
     and host are still reported, read under whichever name is current.
     """
     changed = True
-    context = module.params["context"]
+    context = module.params["context"] if context is None else context
     if module.check_mode:
         # Nothing is sent, so report the name this run would have given it
         workload_facts = _workload_facts(
@@ -1315,13 +1342,13 @@ def rename_workload(module, array, workload=None):
     module.exit_json(changed=changed, workload=workload_facts)
 
 
-def connect_or_disconnect_volumes(module, array, mode, workload):
+def connect_or_disconnect_volumes(module, array, mode, workload, context=None):
     """Connect the host to the workload's volumes, or disconnect it from them
 
     Both directions are scoped to this workload's volumes. The host keeps every
     connection it has outside the workload either way.
     """
-    context = module.params["context"]
+    context = module.params["context"] if context is None else context
     if mode == "connect" and module.params["wait"]:
         # "All connected" only means something once the volume set has settled
         workload = _wait_for_status(module, array, context, "ready") or workload
@@ -1608,13 +1635,20 @@ def main():
             f"Preset {module.params['preset']} does not exist in fleet {fleet}",
         )
         preset_config = list(res.items)[0]
+
+    # The array every action below acts on, settled by everything above and read
+    # here once. It is handed to each action explicitly so that none of them has to
+    # re-derive its own target from module.params - which is how "what array are we
+    # on" ends up with a different answer depending on when it is asked.
+    context = module.params["context"]
+
     if (
         state == "present"
         and workload_exists
         and module.params["rename"]
         and not workload_destroyed
     ):
-        rename_workload(module, array, workload)
+        rename_workload(module, array, workload, context)
     elif state == "present" and not workload_exists and module.params["rename"]:
         module.fail_json(
             msg=f"Workload {module.params['name']} does not exist on "
@@ -1629,33 +1663,33 @@ def main():
             "then rename it."
         )
     elif state == "present" and not workload_exists:
-        create_workload(module, array, fleet, preset_config)
+        create_workload(module, array, fleet, preset_config, context)
     elif state == "expand" and workload_exists and not workload_destroyed:
         expand_workload(
-            module, array, fleet, preset_config.volume_configurations, workload
+            module, array, fleet, preset_config.volume_configurations, workload, context
         )
     elif state == "present" and workload_exists and workload_destroyed:
-        recover_workload(module, array, workload)
+        recover_workload(module, array, workload, context)
     elif (
         state == "present"
         and workload_exists
         and not workload_destroyed
         and module.params["host"] != ""
     ):
-        connect_or_disconnect_volumes(module, array, "connect", workload)
+        connect_or_disconnect_volumes(module, array, "connect", workload, context)
     elif (
         state == "absent"
         and workload_exists
         and not workload_destroyed
         and module.params["host"] != ""
     ):
-        connect_or_disconnect_volumes(module, array, "disconnect", workload)
+        connect_or_disconnect_volumes(module, array, "disconnect", workload, context)
     elif state == "absent" and workload_exists and not workload_destroyed:
         _warn_about_copies_elsewhere(module, array, fleet)
-        delete_workload(module, array, workload)
+        delete_workload(module, array, workload, context)
     elif state == "absent" and workload_destroyed and module.params["eradicate"]:
         _warn_about_copies_elsewhere(module, array, fleet)
-        eradicate_workload(module, array)
+        eradicate_workload(module, array, context)
     elif state == "expand" and not workload_exists:
         # Unlike absent, where not being there is the requested end state, expand
         # asks to add volumes to something that has to exist. Reporting no change
@@ -1672,7 +1706,7 @@ def main():
             _warn_about_copies_elsewhere(module, array, fleet)
         module.exit_json(
             changed=False,
-            workload=_workload_facts(module, array, workload, module.params["context"]),
+            workload=_workload_facts(module, array, workload, context),
         )
 
 
