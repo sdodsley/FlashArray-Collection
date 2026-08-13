@@ -351,6 +351,8 @@ workload:
             sample: ['foo-vol1', 'foo-vol2']
 """
 
+from dataclasses import dataclass
+
 HAS_PURESTORAGE = True
 try:
     from pypureclient.flasharray import (
@@ -747,6 +749,9 @@ def _find_across_fleet(module, array, fleet):
     only for old releases: a rejection of the fleet-wide query is indistinguishable
     from the workload being absent, and reading "unsupported" as "not there" would
     let a create make a duplicate.
+
+    A 200 is only trusted when it is a complete answer, for the same reason - see
+    below.
     """
     res = array.get_workloads(
         names=[module.params["name"]],
@@ -754,15 +759,29 @@ def _find_across_fleet(module, array, fleet):
         allow_errors=True,
     )
     if res.status_code == 200:
-        return {
+        items = list(res.items)
+        reported = {
             member: workload
-            for workload in list(res.items)
+            for workload in items
             for member in [getattr(getattr(workload, "context", None), "name", None)]
             if member
         }
+        # A 200 is not the same as a complete answer. allow_errors is what turns a
+        # member that could not be reached into a partial result carrying an errors
+        # list rather than a failed call, and every field the SDK returns is
+        # optional, so an item can arrive with no context to attribute it to. Both
+        # mean "I did not see it", which must never be recorded as "it is not
+        # there": a create would then duplicate, and a delete would report success
+        # having touched nothing. Ask each member individually instead.
+        if len(reported) == len(items) and not (hasattr(res, "errors") and res.errors):
+            return reported
 
     found = {}
-    for member in _fleet_members(module, array):
+    # Every member, and deliberately not stopping at the first hit: the same name on
+    # two members is two workloads, and only a complete list can say so. Returning
+    # early would defeat the ambiguity check and turn a duplicate name into a
+    # silently wrong target.
+    for member in _fleet_members(module, array, fleet):
         workload = _read_workload(module, array, member)
         if workload is not None:
             found[member] = workload
@@ -1366,9 +1385,16 @@ def connect_or_disconnect_volumes(module, array, mode, workload, context=None):
     )
 
 
-def _fleet_members(module, array):
-    """Names of every member of the fleet this array belongs to"""
-    res = array.get_fleets_members()
+def _fleet_members(module, array, fleet):
+    """Names of every member of the given fleet
+
+    Filtered by name rather than taking whatever the array lists: an array may
+    belong to more than one fleet, and the rest of the module works from a single
+    fleet name. Without the filter the two halves of _find_across_fleet would search
+    different sets - and what that set is decides which arrays are candidates for an
+    eradication.
+    """
+    res = array.get_fleets_members(fleet_names=[fleet])
     check_response(res, module, "Failed to list fleet members")
     members = []
     for member in list(res.items):
@@ -1453,7 +1479,7 @@ def _resolve_member_to_search(module, array, fleet):
         return SEARCH_WHOLE_FLEET
 
     # The fleet itself is allowed and means "wherever in the fleet this workload is"
-    allowed = set(_fleet_members(module, array)) | {fleet}
+    allowed = set(_fleet_members(module, array, fleet)) | {fleet}
     for option in ("context", "placement"):
         value = module.params[option]
         if value and value not in allowed:
@@ -1472,6 +1498,98 @@ def _resolve_member_to_search(module, array, fleet):
     if _fusion_will_choose_placement(module.params):
         return SEARCH_WHOLE_FLEET
     return requested
+
+
+@dataclass(frozen=True)
+class WorkloadLookup:
+    """What the fleet says about this name, and how widely we asked
+
+    Stores only what was read. Everything else is derived from matches, so nothing
+    can disagree with it - which is the failure this module already has, with
+    module.params["context"] saying one thing and the workload another.
+    """
+
+    matches: dict  # {member: workload} - every member reporting this name.
+    # More than one is a legitimate answer: a name belongs to a
+    # member, not to a fleet, so two of them are two workloads.
+    swept: bool  # whether the whole fleet was searched, so a later question
+    # about copies elsewhere costs nothing
+
+    @property
+    def presence(self):
+        """absent, live, destroyed or ambiguous - what _decide_action turns on
+
+        ambiguous is a presence in its own right rather than a length check in front
+        of the table, so that "several" can never be read as "none" - which under
+        state: present would be a create. destroyed is optional on the SDK model and
+        raises rather than returning None, so it is read with a default, as
+        everywhere else in this module.
+        """
+        if len(self.matches) > 1:
+            return "ambiguous"
+        if not self.matches:
+            return "absent"
+        return "destroyed" if getattr(self.workload, "destroyed", False) else "live"
+
+    @property
+    def members(self):
+        """Every array holding this name, sorted - for the ambiguity message"""
+        return sorted(self.matches)
+
+    @property
+    def member(self):
+        """The one array holding it, or None when there is no single answer
+
+        None on both "nothing found" and "found on several", which is safe only
+        because presence distinguishes them and _decide_action refuses "ambiguous"
+        outright. The array's own answer wins over whatever we asked for, as in
+        _workload_facts.
+        """
+        return next(iter(self.matches)) if len(self.matches) == 1 else None
+
+    @property
+    def workload(self):
+        return next(iter(self.matches.values())) if len(self.matches) == 1 else None
+
+
+def _look_up_workload(module, array, fleet, member):
+    """What is actually there, as a WorkloadLookup - the only lookup in the module
+
+    Reports and never decides: absence is a result, and so are two matches. Neither
+    is refused here, because what they mean depends on the state, and this step does
+    not read it.
+
+    Which array the workload is on comes from the array's own answer,
+    workload.context.name, rather than from what was asked for - a member-scoped read
+    falls back to the member asked only when the answer carries no context at all.
+    That single source is what stops "which array are we on" having a different
+    answer depending on when it is asked.
+    """
+    if member is SEARCH_WHOLE_FLEET:
+        return WorkloadLookup(
+            matches=_find_across_fleet(module, array, fleet), swept=True
+        )
+    workload = _read_workload(module, array, member)
+    if workload is None:
+        return WorkloadLookup(matches={}, swept=False)
+    home = getattr(getattr(workload, "context", None), "name", None) or member
+    return WorkloadLookup(matches={home: workload}, swept=False)
+
+
+def _copies_elsewhere(module, array, fleet, lookup):
+    """Every other fleet member holding this workload name, sorted
+
+    The same name on two members is two separate workloads, and an operator acting
+    on "the" one needs to know that - so this answers the question, and the caller
+    decides how to say it. A sweep already done is reused rather than repeated: on a
+    fleet-wide lookup the answer is the lookup itself, and the question is then free.
+
+    Reporting only. Nothing here widens what a task acts on: it destroys exactly the
+    (name, context) it was given, and eradication cannot be undone.
+    """
+    here = lookup.member or _requested_member(module.params)
+    found = lookup.matches if lookup.swept else _find_across_fleet(module, array, fleet)
+    return sorted(member for member in found if member != here)
 
 
 def _check_placement_options(module, array, fleet, state):
@@ -1518,7 +1636,7 @@ def _check_placement_options(module, array, fleet, state):
     # The fleet itself is allowed and means "wherever in the fleet this workload
     # is" - _resolve_fleet_context() turns it into the member holding it before
     # anything looks the workload up.
-    allowed = set(_fleet_members(module, array)) | {fleet}
+    allowed = set(_fleet_members(module, array, fleet)) | {fleet}
     for option in chosen:
         value = module.params[option]
         if value not in allowed:

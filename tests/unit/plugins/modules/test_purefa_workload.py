@@ -149,8 +149,14 @@ def _mock_workload(
 
 
 def _mock_workload_response(status_code=200, **kwargs):
-    """Response wrapping a single Workload, as post/patch_workloads return"""
-    return Mock(status_code=status_code, items=[_mock_workload(**kwargs)])
+    """Response wrapping a single Workload, as post/patch_workloads return
+
+    errors is empty rather than left to Mock. A real response only carries the
+    attribute when something went wrong (responses.py: it is set only when not
+    None), and a reader that asks whether this answer is complete must not be told
+    "yes, and here are some errors" by a fixture that never had any.
+    """
+    return Mock(status_code=status_code, items=[_mock_workload(**kwargs)], errors=[])
 
 
 #: Volume names _mock_volumes_response() reports for the workload by default
@@ -4520,22 +4526,29 @@ class TestFindingAWorkloadAcrossTheFleet:
 
     FLEET = "test-fleet"
 
-    def _array(self, homes, fleet_wide=True):
+    def _array(self, homes, fleet_wide=True, errors=(), unattributed=0):
         """homes lists the members reporting the workload.
 
         fleet_wide=False makes the <fleet>.arrays context fail, so the fallback
         runs - which is how an array that does not support it would behave.
+
+        errors and unattributed make the fleet-wide call answer 200 with a partial
+        result: errors is what allow_errors puts there for a member it could not
+        reach, and unattributed adds that many items whose context came back null,
+        which the SDK permits for every field.
         """
         array = _mock_array()
 
         def get_workloads(names=None, context_names=None, **kwargs):
             asked = (context_names or [None])[0]
             if asked == f"{self.FLEET}.arrays":
-                if not fleet_wide or not homes:
+                if not fleet_wide or not (homes or errors or unattributed):
                     return _mock_not_found_response()
                 return Mock(
                     status_code=200,
-                    items=[_mock_workload(context=member) for member in homes],
+                    items=[_mock_workload(context=member) for member in homes]
+                    + [_mock_workload(context=None) for _ in range(unattributed)],
+                    errors=[Mock(message=message) for message in errors],
                 )
             if asked in homes:
                 return _mock_workload_response(context=asked)
@@ -4585,6 +4598,352 @@ class TestFindingAWorkloadAcrossTheFleet:
             for call in array.get_workloads.call_args_list
         }
         assert set(FLEET_MEMBERS) <= asked
+
+    def test_the_sweep_asks_only_about_this_fleet(self):
+        """Which arrays are searched decides which are candidates for a delete or
+        an eradication, so it is not left to whatever the array happens to list"""
+        array = self._array(["arrayB"], fleet_wide=False)
+
+        self._find(array)
+
+        array.get_fleets_members.assert_called_once_with(fleet_names=[self.FLEET])
+
+    def test_a_partial_answer_is_swept_rather_than_trusted(self):
+        """allow_errors turns a member that could not be reached into a 200 with an
+        errors list. Trusting it would report a workload as absent because the
+        member holding it errored - and absent drives a create, or a delete
+        reporting success having touched nothing."""
+        array = self._array(["arrayA"], errors=["Executor not found for arrayB"])
+
+        found = self._find(array)
+
+        # arrayB was never in the fleet-wide answer, and the sweep is what finds it
+        asked = {
+            call.kwargs["context_names"][0]
+            for call in array.get_workloads.call_args_list
+        }
+        assert set(FLEET_MEMBERS) <= asked
+        assert list(found) == ["arrayA"]
+
+    def test_an_item_with_no_context_is_swept_rather_than_dropped(self):
+        """Every SDK field is optional, so an item can arrive with nothing to
+        attribute it to. It cannot be counted, and it cannot be discarded either -
+        something of this name is out there."""
+        array = self._array(["arrayA"], unattributed=1)
+
+        self._find(array)
+
+        asked = {
+            call.kwargs["context_names"][0]
+            for call in array.get_workloads.call_args_list
+        }
+        assert set(FLEET_MEMBERS) <= asked
+
+    def test_an_answer_carrying_only_an_unattributed_item_still_sweeps(self):
+        """The dangerous shape: one item, no context, so the fleet-wide answer
+        looks empty once it is dropped"""
+        array = self._array([], unattributed=1)
+
+        found = self._find(self._array_that_finds_it_on_a_sweep(array))
+
+        assert list(found) == ["arrayB"]
+
+    def _array_that_finds_it_on_a_sweep(self, array):
+        """The same array, but with arrayB answering a member-scoped read
+
+        The fleet-wide call still returns its unusable answer; only the per-member
+        reads behind it can see the workload.
+        """
+        fleet_wide = array.get_workloads.side_effect
+
+        def get_workloads(names=None, context_names=None, **kwargs):
+            asked = (context_names or [None])[0]
+            if asked == "arrayB":
+                return _mock_workload_response(context="arrayB")
+            return fleet_wide(names=names, context_names=context_names, **kwargs)
+
+        array.get_workloads.side_effect = get_workloads
+        return array
+
+    def test_a_complete_answer_is_trusted_and_costs_one_call(self):
+        """The check must not make every fleet-wide read pay for a sweep"""
+        array = self._array(["arrayA", "arrayB"], errors=[])
+
+        found = self._find(array)
+
+        assert sorted(found) == ["arrayA", "arrayB"]
+        array.get_workloads.assert_called_once()
+        array.get_fleets_members.assert_not_called()
+
+
+class TestLookingUpTheWorkload:
+    """Step 3 of the pipeline: what is there, reported and never judged
+
+    Absence is a result, and so are two matches. Neither is refused here - what they
+    mean depends on the state, which this step does not read - and which array the
+    workload is on comes from the array's own answer rather than from what was asked
+    for.
+    """
+
+    FLEET = "test-fleet"
+
+    def _array(self, homes, fleet_wide=True):
+        array = _mock_array()
+
+        def get_workloads(names=None, context_names=None, **kwargs):
+            asked = (context_names or [None])[0]
+            if asked == f"{self.FLEET}.arrays":
+                if not fleet_wide or not homes:
+                    return _mock_not_found_response()
+                return Mock(
+                    status_code=200,
+                    items=[_mock_workload(context=member) for member in homes],
+                    errors=[],
+                )
+            if asked in homes:
+                return _mock_workload_response(**{"context": asked, **homes[asked]})
+            return _mock_not_found_response()
+
+        array.get_workloads.side_effect = get_workloads
+        return array
+
+    def _look_up(self, member, homes=None, **params):
+        from plugins.modules.purefa_workload import _look_up_workload
+
+        module = Mock(params=_params(**params))
+        module.fail_json.side_effect = SystemExit
+        array = self._array({} if homes is None else homes)
+        return _look_up_workload(module, array, self.FLEET, member), array
+
+    # --- a member-scoped lookup ------------------------------------------------
+
+    def test_a_workload_on_the_member_asked_is_live(self):
+        lookup, _ = self._look_up("arrayB", {"arrayB": {}})
+
+        assert lookup.presence == "live"
+        assert lookup.member == "arrayB"
+        assert lookup.workload is not None
+        assert lookup.members == ["arrayB"]
+
+    def test_a_destroyed_workload_is_distinguished_from_a_live_one(self):
+        lookup, _ = self._look_up("arrayB", {"arrayB": {"destroyed": True}})
+
+        assert lookup.presence == "destroyed"
+        assert lookup.member == "arrayB"
+
+    def test_a_workload_that_is_not_there_is_absent_not_a_failure(self):
+        lookup, _ = self._look_up("arrayB")
+
+        assert lookup.presence == "absent"
+        assert lookup.member is None
+        assert lookup.workload is None
+        assert lookup.matches == {}
+
+    def test_a_member_scoped_lookup_does_not_sweep(self):
+        lookup, array = self._look_up("arrayB", {"arrayB": {}})
+
+        assert lookup.swept is False
+        array.get_fleets_members.assert_not_called()
+        array.get_workloads.assert_called_once_with(
+            names=["test-workload"], context_names=["arrayB"], allow_errors=True
+        )
+
+    def test_the_array_own_answer_says_which_member_holds_it(self):
+        """Not what we asked for. The two disagree when a context resolves to
+        something else on the array, and only one of them is the truth."""
+        lookup, _ = self._look_up("arrayB", {"arrayB": {"context": "arrayA"}})
+
+        assert lookup.member == "arrayA"
+
+    def test_the_member_asked_stands_in_when_the_answer_names_none(self):
+        """Every SDK field is optional, so a workload can come back with no context
+        at all - as _workload_facts already allows for"""
+        lookup, _ = self._look_up("arrayB", {"arrayB": {"context": None}})
+
+        assert lookup.member == "arrayB"
+
+    # --- a fleet-wide lookup ---------------------------------------------------
+
+    def test_the_fleet_is_searched_when_no_member_was_settled(self):
+        from plugins.modules.purefa_workload import SEARCH_WHOLE_FLEET
+
+        lookup, array = self._look_up(SEARCH_WHOLE_FLEET, {"arrayB": {}})
+
+        assert lookup.member == "arrayB"
+        assert lookup.presence == "live"
+        assert lookup.swept is True
+        asked = [
+            call.kwargs["context_names"][0]
+            for call in array.get_workloads.call_args_list
+        ]
+        assert asked == [f"{self.FLEET}.arrays"]
+
+    def test_the_bare_fleet_name_is_never_used_as_a_query_context(self):
+        """The array rejects it with a 400 that reads exactly like absence"""
+        from plugins.modules.purefa_workload import SEARCH_WHOLE_FLEET
+
+        _, array = self._look_up(SEARCH_WHOLE_FLEET, {"arrayB": {}})
+
+        asked = [
+            call.kwargs.get("context_names", [None])[0]
+            for call in array.get_workloads.call_args_list
+        ]
+        assert self.FLEET not in asked
+
+    def test_nothing_anywhere_in_the_fleet_is_absent(self):
+        from plugins.modules.purefa_workload import SEARCH_WHOLE_FLEET
+
+        lookup, _ = self._look_up(SEARCH_WHOLE_FLEET)
+
+        assert lookup.presence == "absent"
+        assert lookup.swept is True
+
+    def test_two_members_holding_the_name_is_an_answer_not_a_refusal(self):
+        """The lookup reports both and leaves the refusal to _decide_action, which
+        is the only place that knows what the task was trying to do"""
+        from plugins.modules.purefa_workload import SEARCH_WHOLE_FLEET
+
+        lookup, _ = self._look_up(SEARCH_WHOLE_FLEET, {"arrayA": {}, "arrayB": {}})
+
+        assert lookup.presence == "ambiguous"
+        assert lookup.members == ["arrayA", "arrayB"]
+
+    def test_several_matches_can_never_be_read_as_none(self):
+        """The reason presence has a fourth value rather than the table being
+        fronted by a length check: read as absent under state: present, two
+        matches would be a create"""
+        from plugins.modules.purefa_workload import WorkloadLookup
+
+        lookup = WorkloadLookup(
+            matches={"arrayA": _mock_workload(), "arrayB": _mock_workload()},
+            swept=True,
+        )
+
+        assert lookup.presence != "absent"
+        # And nothing derived from it offers a single answer either
+        assert lookup.member is None
+        assert lookup.workload is None
+
+    def test_a_destroyed_copy_still_counts_as_a_match(self):
+        """Decided knowingly: a leftover destroyed copy blocks an otherwise obvious
+        delete until it is eradicated or a context is named"""
+        from plugins.modules.purefa_workload import SEARCH_WHOLE_FLEET
+
+        lookup, _ = self._look_up(
+            SEARCH_WHOLE_FLEET, {"arrayA": {}, "arrayB": {"destroyed": True}}
+        )
+
+        assert lookup.presence == "ambiguous"
+
+    def test_a_workload_that_does_not_say_whether_it_is_destroyed_reads_as_live(self):
+        """destroyed is optional on the SDK model and raises rather than returning
+        None, so it is read with a default"""
+        from plugins.modules.purefa_workload import WorkloadLookup
+
+        lookup = WorkloadLookup(
+            matches={"arrayB": _api_workload(destroyed=None)}, swept=False
+        )
+
+        assert lookup.presence == "live"
+
+    def test_the_record_cannot_be_edited_after_the_fact(self):
+        """Frozen because its useful values are derived from matches: a field
+        written afterwards could disagree with what was read"""
+        from plugins.modules.purefa_workload import WorkloadLookup
+
+        lookup = WorkloadLookup(matches={}, swept=False)
+
+        with pytest.raises(Exception):
+            lookup.swept = True
+
+
+class TestCopiesElsewhereAreCounted:
+    """The same name on two members is two workloads, which is worth knowing
+
+    _copies_elsewhere answers the question and the callers decide how to say it -
+    the removal warning in one wording, a create in its own.
+    """
+
+    FLEET = "test-fleet"
+
+    def _array(self, homes):
+        array = _mock_array()
+
+        def get_workloads(names=None, context_names=None, **kwargs):
+            asked = (context_names or [None])[0]
+            if asked == f"{self.FLEET}.arrays":
+                if not homes:
+                    return _mock_not_found_response()
+                return Mock(
+                    status_code=200,
+                    items=[_mock_workload(context=member) for member in homes],
+                    errors=[],
+                )
+            if asked in homes:
+                return _mock_workload_response(context=asked)
+            return _mock_not_found_response()
+
+        array.get_workloads.side_effect = get_workloads
+        return array
+
+    def _copies(self, homes, lookup, **params):
+        from plugins.modules.purefa_workload import _copies_elsewhere
+
+        module = Mock(params=_params(**params))
+        array = self._array(homes)
+        return _copies_elsewhere(module, array, self.FLEET, lookup), array
+
+    def _lookup(self, matches, swept):
+        from plugins.modules.purefa_workload import WorkloadLookup
+
+        return WorkloadLookup(
+            matches={member: _mock_workload(context=member) for member in matches},
+            swept=swept,
+        )
+
+    def test_the_other_members_holding_the_name_are_listed(self):
+        copies, _ = self._copies(
+            ["arrayA", "arrayB", "pod1"], self._lookup(["arrayB"], swept=False)
+        )
+
+        assert copies == ["arrayA", "pod1"]
+
+    def test_the_member_being_acted_on_is_not_one_of_them(self):
+        copies, _ = self._copies(["arrayB"], self._lookup(["arrayB"], swept=False))
+
+        assert copies == []
+
+    def test_the_member_asked_stands_in_when_nothing_was_found_there(self):
+        """A delete against arrayB where the workload only exists on arrayA: the
+        one being acted on is still arrayB, so arrayA is the copy elsewhere"""
+        copies, _ = self._copies(
+            ["arrayA"], self._lookup([], swept=False), context="arrayB"
+        )
+
+        assert copies == ["arrayA"]
+
+    def test_a_sweep_already_done_is_not_repeated(self):
+        """A fleet-wide lookup has already read every member, so the answer is the
+        lookup itself - the module sweeps once per run rather than up to three
+        times. The array is stubbed to claim two members here precisely to show
+        that it is not asked again."""
+        copies, array = self._copies(
+            ["arrayA", "arrayB"], self._lookup(["arrayB"], swept=True)
+        )
+
+        array.get_workloads.assert_not_called()
+        array.get_fleets_members.assert_not_called()
+        assert copies == []
+
+    def test_a_fleet_wide_lookup_with_one_match_reports_no_copies(self):
+        """It cannot report any: a sweep that found the name on two members is
+        ambiguous and already refused, so a lookup that got this far found exactly
+        one. That path is told which array was chosen instead."""
+        copies, _ = self._copies(
+            ["arrayB"], self._lookup(["arrayB"], swept=True), context=None
+        )
+
+        assert copies == []
 
 
 class TestRecommendationIsIdempotent:
