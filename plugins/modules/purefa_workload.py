@@ -28,20 +28,35 @@ options:
     description:
     - Name of the fleet member on which to perform the workload operation, or
       the name of the fleet itself.
-    - There is no default. Either this or I(placement) must be given, except on
-      a create with I(recommendation), where Fusion chooses the member. 
+    - Defaults to the whole fleet, which is also what naming the fleet itself
+      means - "the workload with this name, wherever it is in the fleet". Every
+      operation except a create acts on a workload that already exists, so the
+      member holding it is looked up rather than stated, and the answer is the
+      same whichever member the request was sent to.
+    - A create is the one exception, because there is nothing to look up. A
+      create that names neither this nor I(placement) fails asking for a member,
+      unless I(recommendation) is set and Fusion chooses one.
     - A workload is identified by its name B(and) its member. The same name on
       two fleet members is two separate workloads, so naming a different member
-      creates a second one rather than moving the first.
-    - Naming the B(fleet) instead means "the workload with this name, wherever
-      it is in the fleet". It is resolved to the member holding the workload, so
-      a task is idempotent without having to know which member that is. If two
-      or more members hold the same name it is ambiguous and the task fails.
-    - The fleet says where to look, not where to create. If no such workload
-      exists anywhere, a create fails asking for a member, unless
-      I(recommendation) is set.
+      creates a second one rather than moving the first. If two or more members
+      hold the name, the task is ambiguous and fails naming them, rather than
+      picking one.
+    - An explicitly empty string is refused rather than read as an omission, so
+      that a value computed from an undefined variable cannot silently widen a
+      delete to the whole fleet. A Jinja C(default) filter yielding an empty
+      string is caught this way. One yielding C(omit) is not, and nothing can
+      catch it - it removes the option entirely, which is indistinguishable from
+      never setting it.
+    - Does not narrow the search when I(recommendation) is true. Fusion may have
+      placed the workload on any member, so the fleet is searched whatever this
+      says, and this only routes the request. If the workload already exists on
+      any member, that one is used.
+    - B(API cost.) Naming a member is one read against one array. Omitting it
+      searches the fleet - one read on arrays that support the fleet-wide
+      context, and one read per member on those that do not. Name the member when
+      looping over many workloads.
     type: str
-    default: ""
+    version_added: '1.36.0'
   host:
     type: str
     description:
@@ -87,6 +102,11 @@ options:
       placement, so the two mean the same thing and this accepts everything
       I(context) does, including the fleet's own name. Setting both to different
       members fails; set one, or set both to the same value.
+    - Deliberately a separate option rather than an alias of I(context), so that
+      naming both with different members is reported instead of one of them
+      silently winning.
+    - Naming neither this nor I(context) means the whole fleet - see I(context)
+      for what that resolves to, and for the one operation that cannot default.
     - Ignored when I(recommendation) is true, as the recommended target
       replaces it.
     type: str
@@ -246,6 +266,18 @@ EXAMPLES = r"""
     fa_url: 10.10.10.2
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
 
+- name: Add a volume to workload foo, wherever in the fleet it lives
+  everpure.flasharray.purefa_workload:
+    # Naming neither context nor placement searches the fleet and acts on the
+    # member holding foo, so the task does not need to know which one that is.
+    name: foo
+    preset: bar
+    volume_configuration: fin
+    volume_count: 1
+    state: expand
+    fa_url: 10.10.10.2
+    api_token: e31060a7-21fc-e277-6240-25983c6c4592
+
 - name: Rename an existing workload
   everpure.flasharray.purefa_workload:
     name: foo
@@ -262,16 +294,23 @@ EXAMPLES = r"""
     fa_url: 10.10.10.2
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
 
-- name: Delete an existing workload
+- name: Delete an existing workload on a named fleet member
   everpure.flasharray.purefa_workload:
+    # Omitting context here would delete foo wherever in the fleet it is found.
+    # That works, but name the member when the target matters.
     name: foo
+    context: arr1
     state: absent
     fa_url: 10.10.10.2
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
 
-- name: Eradicate an existing workload
+- name: Eradicate an existing workload on a named fleet member
   everpure.flasharray.purefa_workload:
+    # Eradication cannot be undone, so say which array it applies to. Run it
+    # with --check first; the reported context is the array that would lose the
+    # workload.
     name: foo
+    context: arr1
     state: absent
     eradicate: true
     fa_url: 10.10.10.2
