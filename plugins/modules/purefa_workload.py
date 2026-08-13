@@ -1378,6 +1378,102 @@ def _fleet_members(module, array):
     return members
 
 
+#: _resolve_member_to_search returns this instead of a member name when the task did
+#: not name one, named the fleet, or asked for a recommendation - all three mean
+#: "look everywhere and let the answer say which array".
+SEARCH_WHOLE_FLEET = None
+
+
+def _requested_member(params):
+    """The fleet member the task named, or "" if it named none
+
+    context and placement are the same thing to the array - a workload is created on
+    its context, and there is no separate placement to send - so once they have been
+    checked to agree, either stands for both.
+    """
+    return params["context"] or params["placement"] or ""
+
+
+def _fusion_will_choose_placement(params):
+    """Whether Fusion, rather than the playbook, picks the array for this task
+
+    False for everything but a create: recommendation only ever decides where a
+    *new* workload goes. Deleting, expanding or renaming an existing one works from
+    the array holding it, and there is nothing there for Fusion to choose.
+    """
+    return bool(
+        params["state"] == "present"
+        and params["recommendation"]
+        and not params["rename"]
+    )
+
+
+def _resolve_member_to_search(module, array, fleet):
+    """Which array to address, or SEARCH_WHOLE_FLEET to look across all of them
+
+    Answers where to look and never what to do about it - state is not read here, so
+    no refusal has to guess what the task will go on to do.
+
+    Naming neither context nor placement means the fleet. Every operation except a
+    create acts on a workload that already exists, so the member holding it can be
+    looked up rather than stated, and a fleet-wide lookup gives the same answer
+    whichever member was addressed - which is the property that makes defaulting
+    safe where falling back to "the array the request reached" was not.
+
+    The bare fleet name is never returned: the array rejects it as a query context
+    with a 400 that reads exactly like the workload being absent, so "the fleet" is
+    SEARCH_WHOLE_FLEET and _look_up_workload picks the query shape from that.
+    """
+    context = module.params["context"]
+    placement = module.params["placement"]
+
+    if context and placement and context != placement:
+        module.fail_json(
+            msg=f"context '{context}' and placement '{placement}' name different "
+            "fleet members. They are the same thing to the array, so set one of "
+            "them, or set both to the same member."
+        )
+
+    # An omitted context is None and means the fleet. An empty string is something a
+    # playbook computed, and a computed empty context is how a fleet-wide destroy
+    # happens by accident rather than by intent - so the two are no longer spelled
+    # the same. This does not catch "| default(omit)", which removes the key
+    # entirely; nothing can.
+    if context == "":
+        module.fail_json(
+            msg="context is an empty string, which names no fleet member. Omit it "
+            f"to search the whole fleet for {module.params['name']}, or set it to a "
+            "member - an empty string is usually an undefined variable, as "
+            "'| default('')' produces."
+        )
+
+    requested = _requested_member(module.params)
+    # The one path that reads nothing: there is no name to check against the fleet
+    if not requested:
+        return SEARCH_WHOLE_FLEET
+
+    # The fleet itself is allowed and means "wherever in the fleet this workload is"
+    allowed = set(_fleet_members(module, array)) | {fleet}
+    for option in ("context", "placement"):
+        value = module.params[option]
+        if value and value not in allowed:
+            module.fail_json(
+                msg=f"{option} '{value}' is not a member of fleet {fleet}, nor the "
+                f"fleet itself. Valid: {', '.join(sorted(allowed))}."
+            )
+
+    if requested == fleet:
+        return SEARCH_WHOLE_FLEET
+
+    # A named member does not narrow the search when Fusion is placing: it only
+    # routes the question there. Fusion may have put the workload on any member, and
+    # looking only where the operator pointed would find nothing, ask for a second
+    # placement, and create a second workload on a re-run.
+    if _fusion_will_choose_placement(module.params):
+        return SEARCH_WHOLE_FLEET
+    return requested
+
+
 def _check_placement_options(module, array, fleet, state):
     """Settle where this task applies before anything is read or written.
 
@@ -1521,7 +1617,10 @@ def main():
             volume_count=dict(type="int"),
             volume_configuration=dict(type="str"),
             recommendation=dict(type="bool", default=False),
-            context=dict(type="str", default=""),
+            # No default, as for placement: omitting it means the fleet, and an
+            # empty string is then distinguishable from an omission rather than
+            # being the same request written two ways.
+            context=dict(type="str", default=None),
             host=dict(type="str", default=""),
             # Deliberately not in purefa_argument_spec(), which would land these
             # on every module in the collection

@@ -4324,6 +4324,191 @@ class TestPlacementOptionsAreValidated:
         assert "test-fleet" in module.fail_json.call_args.kwargs["msg"]
 
 
+class TestResolvingWhichMemberToSearch:
+    """Step 2 of the pipeline: where to look, and nothing about what to do
+
+    Naming neither context nor placement means the fleet rather than being refused:
+    everything except a create acts on a workload that already exists, so the member
+    holding it can be looked up. state is deliberately not read here, so no refusal
+    in this step has to guess what the task will go on to do.
+    """
+
+    FLEET = "test-fleet"
+
+    def _resolve(self, **params):
+        from plugins.modules.purefa_workload import _resolve_member_to_search
+
+        module = Mock(params=_params(**params))
+        module.fail_json.side_effect = SystemExit
+        array = _mock_array()
+        member = _resolve_member_to_search(module, array, self.FLEET)
+        return member, module, array
+
+    def _refuse(self, **params):
+        """The message a refused input produced, having checked that it refused"""
+        from plugins.modules.purefa_workload import _resolve_member_to_search
+
+        module = Mock(params=_params(**params))
+        module.fail_json.side_effect = SystemExit
+        with pytest.raises(SystemExit):
+            _resolve_member_to_search(module, _mock_array(), self.FLEET)
+        return module.fail_json.call_args.kwargs["msg"]
+
+    def test_a_named_member_is_the_member_searched(self):
+        member, module, _ = self._resolve(context="arrayB")
+
+        assert member == "arrayB"
+        module.fail_json.assert_not_called()
+
+    def test_placement_alone_names_the_member_too(self):
+        """The two options are the same thing to the array"""
+        member, _, _ = self._resolve(context=None, placement="arrayA")
+
+        assert member == "arrayA"
+
+    def test_both_naming_the_same_member_is_accepted(self):
+        member, module, _ = self._resolve(context="arrayB", placement="arrayB")
+
+        assert member == "arrayB"
+        module.fail_json.assert_not_called()
+
+    def test_disagreeing_context_and_placement_are_refused(self):
+        message = self._refuse(context="arrayA", placement="arrayB")
+
+        assert "arrayA" in message and "arrayB" in message
+
+    def test_naming_nothing_means_the_whole_fleet(self):
+        from plugins.modules.purefa_workload import SEARCH_WHOLE_FLEET
+
+        member, module, _ = self._resolve(context=None, placement=None)
+
+        assert member is SEARCH_WHOLE_FLEET
+        module.fail_json.assert_not_called()
+
+    def test_naming_nothing_reads_nothing(self):
+        """The one path with no name to check, so the fleet need not be listed"""
+        _, _, array = self._resolve(context=None, placement=None)
+
+        array.get_fleets_members.assert_not_called()
+        array.get_workloads.assert_not_called()
+
+    def test_an_explicitly_empty_context_is_refused(self):
+        """An omitted context means the fleet, so a computed one that came out
+        empty must not quietly mean the same thing - that is how a fleet-wide
+        destroy happens by accident. Only reachable because the argument spec no
+        longer defaults context to ''."""
+        message = self._refuse(context="")
+
+        assert "empty string" in message
+        # Says what to write instead, both ways
+        assert "Omit it" in message and "member" in message
+
+    def test_an_empty_context_is_refused_even_alongside_a_placement(self):
+        with pytest.raises(SystemExit):
+            self._resolve(context="", placement="arrayA")
+
+    def test_a_non_member_is_refused_and_the_members_are_listed(self):
+        message = self._refuse(context="not-in-the-fleet")
+
+        assert "not-in-the-fleet" in message
+        # The point of the listing: the user can see what they could have written
+        for member in FLEET_MEMBERS:
+            assert member in message
+        # ...including the fleet itself
+        assert self.FLEET in message
+
+    def test_a_non_member_placement_is_refused_by_its_own_name(self):
+        message = self._refuse(context=None, placement="not-in-the-fleet")
+
+        assert message.startswith("placement")
+
+    def test_the_fleet_itself_means_the_whole_fleet(self):
+        """The bare fleet name is never returned as a member: the array rejects it
+        as a query context with a 400 that reads exactly like absence"""
+        from plugins.modules.purefa_workload import SEARCH_WHOLE_FLEET
+
+        member, module, _ = self._resolve(context=self.FLEET)
+
+        assert member is SEARCH_WHOLE_FLEET
+        module.fail_json.assert_not_called()
+
+    def test_a_recommendation_widens_the_search_past_the_named_member(self):
+        """Fusion may have placed the workload anywhere, so a re-run has to look
+        everywhere. Looking only where the operator pointed would find nothing, ask
+        for a second placement, and create a second workload."""
+        from plugins.modules.purefa_workload import SEARCH_WHOLE_FLEET
+
+        member, module, _ = self._resolve(context="arrayA", recommendation=True)
+
+        assert member is SEARCH_WHOLE_FLEET
+        # Still checked against the fleet, since a name was given
+        module.fail_json.assert_not_called()
+
+    def test_a_recommendation_with_a_non_member_is_still_refused(self):
+        """Widening the search does not excuse a name that means nothing"""
+        with pytest.raises(SystemExit):
+            self._resolve(context="not-in-the-fleet", recommendation=True)
+
+    def test_a_recommendation_on_a_rename_keeps_the_named_member(self):
+        """There is nothing for Fusion to choose: a rename works on the workload
+        that is already there"""
+        member, _, _ = self._resolve(
+            context="arrayA", recommendation=True, rename="new-workload"
+        )
+
+        assert member == "arrayA"
+
+    @pytest.mark.parametrize("state", ["absent", "expand"])
+    def test_a_recommendation_on_another_state_keeps_the_named_member(self, state):
+        member, _, _ = self._resolve(context="arrayA", recommendation=True, state=state)
+
+        assert member == "arrayA"
+
+    @pytest.mark.parametrize("state", ["present", "absent", "expand"])
+    def test_the_state_does_not_change_where_the_search_goes(self, state):
+        """The property the whole restructure rests on: this step never reads
+        state, so it cannot refuse a task on a guess about what it will do"""
+        from plugins.modules.purefa_workload import SEARCH_WHOLE_FLEET
+
+        assert self._resolve(context="arrayB", state=state)[0] == "arrayB"
+        assert self._resolve(context=self.FLEET, state=state)[0] is SEARCH_WHOLE_FLEET
+        assert (
+            self._resolve(context=None, placement=None, state=state)[0]
+            is SEARCH_WHOLE_FLEET
+        )
+
+    @pytest.mark.parametrize(
+        "params,expected",
+        [
+            ({"context": "arrayB", "placement": None}, "arrayB"),
+            ({"context": None, "placement": "arrayA"}, "arrayA"),
+            ({"context": "arrayB", "placement": "arrayB"}, "arrayB"),
+            ({"context": None, "placement": None}, ""),
+            ({"context": "", "placement": None}, ""),
+        ],
+    )
+    def test_the_requested_member_reads_either_option(self, params, expected):
+        from plugins.modules.purefa_workload import _requested_member
+
+        assert _requested_member(_params(**params)) == expected
+
+    @pytest.mark.parametrize(
+        "params,expected",
+        [
+            ({"recommendation": True}, True),
+            ({"recommendation": False}, False),
+            # recommendation only ever decides where a new workload goes
+            ({"recommendation": True, "rename": "new-workload"}, False),
+            ({"recommendation": True, "state": "absent"}, False),
+            ({"recommendation": True, "state": "expand"}, False),
+        ],
+    )
+    def test_whether_fusion_is_choosing_the_placement(self, params, expected):
+        from plugins.modules.purefa_workload import _fusion_will_choose_placement
+
+        assert _fusion_will_choose_placement(_params(**params)) is expected
+
+
 class TestFindingAWorkloadAcrossTheFleet:
     """One call spans the fleet, with a per-member sweep behind it
 
