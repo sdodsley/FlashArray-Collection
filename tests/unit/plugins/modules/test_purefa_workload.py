@@ -278,12 +278,13 @@ def _params(**overrides):
     params = {
         "name": "test-workload",
         "context": "arrayB",
-
+        "state": "present",
         "preset": None,
         "placement": None,
         "rename": None,
         "host": "",
         "volume_count": None,
+        "volume_configuration": None,
         "eradicate": False,
         "recommendation": False,
         # wait is on by default, and host cannot be used without it
