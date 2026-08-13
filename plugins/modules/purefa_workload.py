@@ -1093,80 +1093,93 @@ def _disconnect_host(module, array, name, context, volume_names):
     return bool(attached)
 
 
-def create_workload(module, array, fleet, preset_config, context=None):
-    """Create fleet workload using existing preset"""
+def _ask_fusion_for_placement(module, array, route, preset_config):
+    """Ask Fusion which array to create on, and return the one it names
+
+    route is the array the question travels through, never the answer. This is the
+    one call in the module with no member for its context to describe - nothing has
+    been placed yet - which is why falling back to the array addressed is safe here
+    and is not a default placement: Fusion's answer replaces it before anything is
+    created. Without the fallback a task that named neither context nor placement
+    sends an empty context, which the array rejects with an internal error.
+
+    The parameters are built here rather than handed in. They are a pure function of
+    the task's options and the preset, so this question and the create that follows
+    each own their own payload without either having to be threaded through the
+    other.
+    """
+    route = route or get_local_array_name(array, module)
+    # Start the workload calculation for the preset being used
+    res = array.post_workloads_placement_recommendations(
+        inputs=WorkloadPlacementRecommendation(
+            parameters=_build_workload_parameters(module, preset_config)
+        ),
+        preset_names=[module.params["preset"]],
+        context_names=[route],
+    )
+    check_response(res, module, "Recommendation calculation failure")
+    workload_calc = getattr(list(res.items)[0], "name", None)
+    # A calculation, not a change, so this runs in check mode too - it is what lets a
+    # check-mode run report the target Fusion would have chosen
+    result = _wait_for_recommendation(module, array, route, workload_calc)
+    # Every link on the way to the target is optional and every list can come back
+    # empty, so the walk is guarded as a whole and a gap is reported as the missing
+    # recommendation it is, rather than as an error further downstream.
+    try:
+        target = result.results[0].placements[0].targets[0].name
+    except (AttributeError, IndexError):
+        target = None
+    if not target:
+        module.fail_json(
+            msg="Fusion reported a completed placement recommendation for preset "
+            f"{module.params['preset']} but named no target to deploy on."
+        )
+    return target
+
+
+def _choose_placement(module, array, fleet, member, preset_config):
+    """Which array a NEW workload is created on - the only place this is decided
+
+    Two sources and no third: the operator named a member, or Fusion chose one. There
+    is no fallback to the array the request happened to reach - that is what made the
+    same playbook mean different things under different fa_url values - and no
+    fallback is needed, because _decide_action has already refused a create that has
+    neither.
+    """
+    if module.params["recommendation"]:
+        # What was named routes the question and does not answer it, so the fleet
+        # itself is blanked here rather than sent: the array rejects a fleet as a
+        # context, and naming the fleet is the same request as naming nothing.
+        route = _requested_member(module.params)
+        return _ask_fusion_for_placement(
+            module, array, "" if route == fleet else route, preset_config
+        )
+    # _decide_action guarantees a real member here: a create that named none and did
+    # not ask Fusion is the one thing left that cannot be resolved, and it is refused
+    # before anything gets this far.
+    return member
+
+
+def create_workload(module, array, preset_config, context=None, others=None):
+    """Create a workload on one array from an existing preset
+
+    context is the array to create on. It is decided before this is called - see
+    _choose_placement - so there is no placement reasoning here and no lookup: by now
+    it is known that nothing of this name is there to find.
+
+    others are the fleet members that already hold this name. That does not stop the
+    create, and the array permits it: a name is unique per member, not across the
+    fleet, so what this makes is a second workload rather than a duplicate. Said
+    rather than refused, and in the create's own words - which is why the list is
+    handed in instead of warned about by the caller.
+    """
     changed = True
     context = module.params["context"] if context is None else context
     workload_parameters = _build_workload_parameters(module, preset_config)
-    # This is only reached when the workload was not found on the named context, so
-    # anything the sweep turns up is a copy of the name on some other member
-    elsewhere = _find_across_fleet(module, array, fleet)
-    if module.params["recommendation"]:
-        if len(elsewhere) > 1:
-            # Nothing in the task says which of them is meant, and picking one
-            # would be arbitrary and wrong about half the time
-            module.fail_json(
-                msg=f"Workload {module.params['name']} already exists on more than "
-                f"one fleet member: {', '.join(sorted(elsewhere))}. recommendation "
-                "cannot choose between them. Set context to the one you mean."
-            )
-        if elsewhere:
-            # Fusion chose the placement last time and may choose differently now,
-            # so a second run must find what the first one made rather than ask for
-            # another placement
-            member, existing = next(iter(elsewhere.items()))
-            module.exit_json(
-                changed=False,
-                workload=_workload_facts(module, array, existing, member),
-            )
-            # exit_json ends the module by raising, but this is the one place it is
-            # not the last statement - the return says so rather than leaving the
-            # rest of the function looking reachable
-            return
-        # Asking Fusion where to put a workload is the one call with no member for
-        # its context to name: it is the route the question travels, not the answer,
-        # which is why falling back to the array addressed is safe here and is not a
-        # default placement - Fusion's choice replaces it a few lines down. Without
-        # the fallback a task that named neither context nor placement sends an empty
-        # context, which the array rejects with an internal error.
-        recommendation_context = context or get_local_array_name(array, module)
-        # Start the workload calculation for the preset being used
-        res = array.post_workloads_placement_recommendations(
-            inputs=WorkloadPlacementRecommendation(parameters=workload_parameters),
-            preset_names=[module.params["preset"]],
-            context_names=[recommendation_context],
-        )
-        check_response(res, module, "Recommendation calculation failure")
-        workload_calc = getattr(list(res.items)[0], "name", None)
-        # A calculation, not a change, so this runs in check mode too - it is what
-        # lets a check-mode run report the target Fusion would have chosen
-        result = _wait_for_recommendation(
-            module, array, recommendation_context, workload_calc
-        )
-        # Replace any defined placement with the result from the recommendation.
-        # Every link on the way to the target is optional and every list can come
-        # back empty, so the walk is guarded as a whole and a gap is reported as the
-        # missing recommendation it is, rather than as an error further downstream.
-        try:
-            target = result.results[0].placements[0].targets[0].name
-        except (AttributeError, IndexError):
-            target = None
-        if not target:
-            module.fail_json(
-                msg="Fusion reported a completed placement recommendation for preset "
-                f"{module.params['preset']} but named no target to deploy on."
-            )
-        module.params["placement"] = target
-        module.params["context"] = module.params["placement"]
-        # Fusion's answer is the array this create acts on, so it replaces whatever
-        # the caller routed the question through
-        context = target
-    elif elsewhere:
-        # The user named a context, so this is a different workload that happens to
-        # share a name - which the array permits. Reported rather than refused.
+    if others:
         module.warn(
             f"A workload named {module.params['name']} already exists on "
-            f"{', '.join(sorted(elsewhere))}. Creating on {context} makes a "
+            f"{', '.join(others)}. Creating on {context} makes a "
             "separate workload: a name is unique per fleet member, not across "
             "the fleet."
         )
@@ -1204,7 +1217,7 @@ def create_workload(module, array, fleet, preset_config, context=None):
     module.exit_json(changed=changed, workload=workload_facts)
 
 
-def expand_workload(module, array, fleet, volume_configs, workload, context=None):
+def expand_workload(module, array, volume_configs, workload, context=None):
     """Add new volumes to workload"""
     changed = False
     matched = False
@@ -2032,23 +2045,21 @@ def main():
 
     # Every action except a create works on lookup.member - the array the workload
     # was actually found on. A create has nothing to have found, so it is the one arm
-    # that has to be told where to go. There is deliberately no shared "context"
-    # variable falling back from one to the other: that fallback is itself a
-    # placement decision, and it belongs where it can be seen.
+    # that asks the placement logic where to go. There is deliberately no shared
+    # "context" variable falling back from one to the other: that fallback is itself a
+    # placement decision, and it belongs in _choose_placement where it can be seen.
     if decision.action == "create":
-        # create_workload still settles its own placement, including asking Fusion.
-        # What it is handed is the member the task named - and nothing when the task
-        # named the fleet, which is not a member and which the array rejects as a
-        # context.
-        named = _requested_member(module.params)
         create_workload(
-            module, array, fleet, preset_config, "" if named == fleet else named
+            module,
+            array,
+            preset_config,
+            _choose_placement(module, array, fleet, member, preset_config),
+            others=_copies_elsewhere(module, array, fleet, lookup),
         )
     elif decision.action == "expand":
         expand_workload(
             module,
             array,
-            fleet,
             preset_config.volume_configurations,
             lookup.workload,
             lookup.member,

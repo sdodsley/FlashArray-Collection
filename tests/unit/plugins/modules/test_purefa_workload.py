@@ -421,6 +421,31 @@ def _bound_arguments(action, call):
     return bound.arguments
 
 
+def _create_as_main_does(
+    module, array, preset_config, fleet=FLEET_NAME, member=None, others=None
+):
+    """Create the way main()'s create arm does: the placement settled first
+
+    Deciding where a new workload goes and creating it there are two steps now -
+    _choose_placement answers the question, including by asking Fusion, and
+    create_workload is handed the answer - so a test about the whole round trip has
+    to make both calls to see it.
+
+    member is what _resolve_member_to_search returned, so it defaults to
+    SEARCH_WHOLE_FLEET: a create that names a member and does not ask Fusion is
+    handed it back unchanged, which is the case that needs no help from this.
+    """
+    from plugins.modules.purefa_workload import _choose_placement
+
+    return create_workload(
+        module,
+        array,
+        preset_config,
+        _choose_placement(module, array, fleet, member, preset_config),
+        others=others,
+    )
+
+
 class TestDeleteWorkload:
     """Test cases for delete_workload function"""
 
@@ -562,7 +587,6 @@ class TestCreateWorkload:
         mock_module.check_mode = True
         mock_module.params = _params(preset="test-preset", context="pod1")
         mock_array = _mock_array()
-        mock_fleet = Mock()
         mock_preset_config = Mock()
         mock_preset_config.parameters = []
         mock_preset_config.periodic_replication_configurations = []
@@ -572,7 +596,7 @@ class TestCreateWorkload:
         mock_preset_config.volume_configurations = []
         mock_preset_config.workload_tags = []
 
-        create_workload(mock_module, mock_array, mock_fleet, mock_preset_config)
+        create_workload(mock_module, mock_array, mock_preset_config)
 
         mock_array.post_workloads.assert_not_called()
         mock_module.exit_json.assert_called_once_with(
@@ -591,7 +615,7 @@ class TestCreateWorkload:
         mock_module.params = _params(preset="test-preset", context="pod1", wait=False)
         mock_array = _mock_array()
 
-        create_workload(mock_module, mock_array, Mock(), Mock(parameters=[]))
+        create_workload(mock_module, mock_array, Mock(parameters=[]))
 
         mock_module.exit_json.assert_called_once_with(
             changed=True,
@@ -1050,7 +1074,6 @@ class TestCreateWorkloadSuccess:
         mock_array.post_workloads.return_value = _mock_workload_response(
             context="pod1", status="creating"
         )
-        mock_fleet = Mock()
         mock_preset_config = Mock()
         mock_preset_config.parameters = []
         mock_preset_config.periodic_replication_configurations = Mock()
@@ -1060,7 +1083,7 @@ class TestCreateWorkloadSuccess:
         mock_preset_config.volume_configurations = Mock()
         mock_preset_config.workload_tags = Mock()
 
-        create_workload(mock_module, mock_array, mock_fleet, mock_preset_config)
+        create_workload(mock_module, mock_array, mock_preset_config)
 
         mock_array.post_workloads.assert_called_once()
         mock_module.exit_json.assert_called_once_with(
@@ -1104,9 +1127,13 @@ class TestCreateWorkloadSuccess:
         mock_build_workload_parameters.return_value = [Mock(name="param-1")]
         mock_preset_config = Mock()
 
-        create_workload(mock_module, mock_array, Mock(), mock_preset_config)
+        _create_as_main_does(mock_module, mock_array, mock_preset_config)
 
-        mock_build_workload_parameters.assert_called_once_with(
+        # Built once for the question and once for the create - a pure function of
+        # the task's options and the preset, so each payload is built where it is
+        # used rather than threaded through the other
+        assert mock_build_workload_parameters.call_count == 2
+        mock_build_workload_parameters.assert_called_with(
             mock_module, mock_preset_config
         )
         mock_recommendation.assert_called_once_with(
@@ -1136,7 +1163,7 @@ class TestCreateWorkloadSuccess:
         mock_preset_config = Mock()
         mock_preset_config.parameters = []
 
-        create_workload(mock_module, mock_array, Mock(), mock_preset_config)
+        create_workload(mock_module, mock_array, mock_preset_config)
 
         mock_array.post_workloads.assert_not_called()
         # The contract keeps its shape, so result.workload.context works under --check
@@ -1166,15 +1193,12 @@ class TestExpandWorkloadSuccess:
         )
         mock_array = _mock_array()
         mock_wait_for_volumes.return_value = _mock_workload()
-        mock_fleet = Mock()
         # Create volume config that matches
         mock_vol_config = Mock()
         mock_vol_config.name = "vol-config1"
         volume_configs = [mock_vol_config]
 
-        expand_workload(
-            mock_module, mock_array, mock_fleet, volume_configs, _mock_workload()
-        )
+        expand_workload(mock_module, mock_array, volume_configs, _mock_workload())
 
         assert mock_create_vol.call_count == 2
         # The host is reconciled against the full volume set, not just the new
@@ -1201,16 +1225,13 @@ class TestExpandWorkloadSuccess:
         )
         mock_module.fail_json.side_effect = SystemExit(1)
         mock_array = _mock_array()
-        mock_fleet = Mock()
         # Create volume config with different name
         mock_vol_config = Mock()
         mock_vol_config.name = "other-config"
         volume_configs = [mock_vol_config]
 
         with pytest.raises(SystemExit):
-            expand_workload(
-                mock_module, mock_array, mock_fleet, volume_configs, _mock_workload()
-            )
+            expand_workload(mock_module, mock_array, volume_configs, _mock_workload())
 
         mock_create_vol.assert_not_called()
         mock_module.fail_json.assert_called_once()
@@ -1243,7 +1264,7 @@ class TestExpandWorkloadSuccess:
         vol_config = Mock()
         vol_config.name = "vol-config1"
 
-        expand_workload(mock_module, mock_array, Mock(), [vol_config], _mock_workload())
+        expand_workload(mock_module, mock_array, [vol_config], _mock_workload())
 
         mock_module.fail_json.assert_not_called()
         mock_create_vol.assert_not_called()
@@ -2418,10 +2439,8 @@ class TestWaitDisabled:
             context="pod1", status="creating"
         )
 
-        create_workload(mock_module, mock_array, Mock(), Mock(parameters=[]))
+        create_workload(mock_module, mock_array, Mock(parameters=[]))
 
-        # create_workload sweeps the fleet before creating, so get_workloads is
-        # read either way - not polling means wait_for is never reached
         mock_wait_for.assert_not_called()
         # The immediate POST response is what gets reported
         mock_module.exit_json.assert_called_once_with(
@@ -2486,7 +2505,7 @@ class TestWaitDisabled:
         vol_config.name = "vol-config1"
         mock_array = _mock_array()
 
-        expand_workload(mock_module, mock_array, Mock(), [vol_config], _mock_workload())
+        expand_workload(mock_module, mock_array, [vol_config], _mock_workload())
 
         # The facts describe the workload handed in, not None
         assert (
@@ -2529,7 +2548,7 @@ class TestWaitForCreate:
         # The settled state the wait resolves to
         mock_wait_for.return_value = _mock_workload(context="pod1", status="ready")
 
-        create_workload(mock_module, mock_array, Mock(), Mock(parameters=[]))
+        create_workload(mock_module, mock_array, Mock(parameters=[]))
 
         wait_kwargs = mock_wait_for.call_args.kwargs
         assert wait_kwargs["timeout"] == 300
@@ -2553,12 +2572,9 @@ class TestWaitForCreate:
         mock_array.get_workloads.return_value = _mock_workload_response(context="pod1")
         mock_wait_for.return_value = _mock_workload(context="pod1")
 
-        create_workload(mock_module, mock_array, Mock(), Mock(parameters=[]))
+        create_workload(mock_module, mock_array, Mock(parameters=[]))
 
         probe = mock_wait_for.call_args.kwargs["probe"]
-        # create_workload sweeps every fleet member first, so the mock is
-        # cleared to make this assertion about the poll and nothing else
-        mock_array.get_workloads.reset_mock()
         probe()
 
         mock_array.get_workloads.assert_called_once_with(
@@ -2580,7 +2596,7 @@ class TestWaitForCreate:
         mock_array.post_workloads.return_value = _mock_workload_response(context="pod1")
         mock_wait_for.return_value = _mock_workload(context="pod1")
 
-        create_workload(mock_module, mock_array, Mock(), Mock(parameters=[]))
+        create_workload(mock_module, mock_array, Mock(parameters=[]))
 
         is_done = mock_wait_for.call_args.kwargs["is_done"]
         assert is_done(_mock_workload(status="ready")) is True
@@ -2603,7 +2619,7 @@ class TestWaitForCreate:
         mock_array.post_workloads.return_value = _mock_workload_response(context="pod1")
         mock_wait_for.return_value = _mock_workload(context="pod1")
 
-        create_workload(mock_module, mock_array, Mock(), Mock(parameters=[]))
+        create_workload(mock_module, mock_array, Mock(parameters=[]))
 
         detail = mock_wait_for.call_args.kwargs["detail"]
         workload = _mock_workload(status_details=["creating volume foo-vol1"])
@@ -2645,12 +2661,9 @@ class TestWaitForCreate:
         mock_array.post_workloads.return_value = _mock_workload_response(
             context="arrayB", status="creating"
         )
-        # Nothing exists yet, which is why a create is happening at all, so the
-        # fleet sweep inside create_workload must come up empty
-        mock_array.get_workloads.return_value = _mock_not_found_response()
         mock_wait_for.return_value = _mock_workload(context="arrayB", status="ready")
 
-        create_workload(mock_module, mock_array, Mock(), Mock())
+        _create_as_main_does(mock_module, mock_array, Mock())
 
         # The poll runs after the create, by which point the workload is there
         mock_array.get_workloads.reset_mock()
@@ -2842,7 +2855,6 @@ class TestWaitForExpand:
         expand_workload(
             mock_module,
             mock_array,
-            Mock(),
             [vol_config],
             _mock_workload(context="pod1"),
         )
@@ -3802,7 +3814,6 @@ class TestCheckModeMakesNoChanges:
         expand_workload(
             mock_module,
             mock_array,
-            Mock(),
             [vol_config],
             _mock_workload(context="pod1"),
         )
@@ -3816,7 +3827,7 @@ class TestCheckModeMakesNoChanges:
         mock_module = self._module(preset="test-preset", context="pod1")
         mock_array = _mock_array()
 
-        create_workload(mock_module, mock_array, Mock(), Mock(parameters=[]))
+        create_workload(mock_module, mock_array, Mock(parameters=[]))
 
         assert _writes(mock_array) == {}
 
@@ -3934,7 +3945,7 @@ class TestCreateVolumeCheckMode:
         vol_config = Mock()
         vol_config.name = "vol-config1"
 
-        expand_workload(mock_module, mock_array, Mock(), [vol_config], workload)
+        expand_workload(mock_module, mock_array, [vol_config], workload)
 
         # Nothing was created, so there are no names to wait on - not two Nones
         mock_wait_for_volumes.assert_called_once_with(
@@ -4047,7 +4058,7 @@ class TestCheckModePredictsTheRealRun:
         )
         mock_wait_for_recommendation.return_value = _mock_recommendation("arrayB")
 
-        create_workload(mock_module, mock_array, Mock(), Mock())
+        _create_as_main_does(mock_module, mock_array, Mock())
 
         # The calculation ran, so --check can name the array Fusion would choose
         mock_array.post_workloads_placement_recommendations.assert_called_once()
@@ -4127,7 +4138,7 @@ class TestCheckModePredictsTheRealRun:
         mock_module.check_mode = True
         mock_module.params = _params(preset="test-preset", context="pod1", wait=wait)
 
-        create_workload(mock_module, _mock_array(), Mock(), Mock(parameters=[]))
+        create_workload(mock_module, _mock_array(), Mock(parameters=[]))
 
         facts = mock_module.exit_json.call_args.kwargs["workload"]
         assert facts["status"] == expected_status
@@ -4587,7 +4598,13 @@ class TestNullFieldsFromTheArray:
 
 
 class TestRecommendationTargetIsGuarded:
-    """The walk to the chosen target crosses four optional links and three lists"""
+    """The walk to the chosen target crosses four optional links and three lists
+
+    Asked of _ask_fusion_for_placement, which owns the whole round trip: build the
+    payload, start the calculation, poll it, and read the array Fusion named. A gap
+    anywhere along that walk is the missing recommendation it is, and nothing is
+    created on the strength of it.
+    """
 
     def _module(self):
         module = Mock()
@@ -4597,6 +4614,11 @@ class TestRecommendationTargetIsGuarded:
         )
         module.fail_json.side_effect = SystemExit
         return module
+
+    def _ask(self, module, array):
+        from plugins.modules.purefa_workload import _ask_fusion_for_placement
+
+        return _ask_fusion_for_placement(module, array, "arrayB", Mock(parameters=[]))
 
     def _recommendation(self, results):
         return _ApiObject(name="calc1", status="completed", results=results)
@@ -4612,7 +4634,7 @@ class TestRecommendationTargetIsGuarded:
         mock_wait.return_value = self._recommendation(None)
 
         with pytest.raises(SystemExit):
-            create_workload(module, array, Mock(), Mock(parameters=[]))
+            self._ask(module, array)
 
         assert "named no target" in module.fail_json.call_args.kwargs["msg"]
         array.post_workloads.assert_not_called()
@@ -4628,7 +4650,7 @@ class TestRecommendationTargetIsGuarded:
         mock_wait.return_value = self._recommendation([])
 
         with pytest.raises(SystemExit):
-            create_workload(module, array, Mock(), Mock(parameters=[]))
+            self._ask(module, array)
 
         assert "named no target" in module.fail_json.call_args.kwargs["msg"]
 
@@ -4645,7 +4667,7 @@ class TestRecommendationTargetIsGuarded:
         )
 
         with pytest.raises(SystemExit):
-            create_workload(module, array, Mock(), Mock(parameters=[]))
+            self._ask(module, array)
 
         assert "named no target" in module.fail_json.call_args.kwargs["msg"]
 
@@ -5726,79 +5748,92 @@ class TestCopiesElsewhereAreCounted:
 class TestRecommendationIsIdempotent:
     """Fusion picks the placement, so a repeat run must not ask for another
 
-    The existence check in main() runs before Fusion chooses, against a context
-    the user did not name. Without the fleet sweep a second run finds nothing,
-    requests a new placement, and makes a second workload - through no action of
-    the user's.
+    A named context does not narrow where the module looks when Fusion is placing -
+    Fusion may have put the workload on any member - so the lookup spans the fleet
+    and a second run finds what the first one made. Looking only where the operator
+    pointed would find nothing, request a new placement, and make a second workload
+    through no action of theirs.
+
+    End to end through main(), because a repeat run no longer reaches create_workload
+    at all: what was an early exit inside it is now the decision table routing to
+    nothing, connect or recover - and two of those it never used to reach.
     """
 
-    def _array(self, homes):
-        array = _mock_array()
-
-        def get_workloads(names=None, context_names=None, **kwargs):
-            member = (context_names or [None])[0]
-            if member in homes:
-                return _mock_workload_response(context=member)
-            return _mock_not_found_response()
-
-        array.get_workloads.side_effect = get_workloads
-        return array
-
-    def _module(self):
+    def _run(self, homes, fails=False, **params):
+        # A context is named and points at the wrong member on purpose: with a
+        # recommendation it routes the question and never narrows the search
         module = Mock()
         module.check_mode = False
-        module.params = _params(preset="test-preset", context="", recommendation=True)
-        module.fail_json.side_effect = SystemExit
-        return module
+        module.params = _params(
+            preset="test-preset", context="arrayA", recommendation=True, **params
+        )
+        array = _mock_fleet(homes)
+        return module, array, _run_main(module, array, refused=fails)
 
-    @patch("plugins.modules.purefa_workload.check_response")
-    def test_an_existing_workload_is_returned_unchanged(self, mock_check_response):
-        module = self._module()
-        array = self._array(["arrayB"])
-
-        create_workload(module, array, Mock(), Mock(parameters=[]))
+    def test_an_existing_workload_is_returned_unchanged(self):
+        module, array, actions = self._run({"arrayB": {}})
 
         array.post_workloads_placement_recommendations.assert_not_called()
-        array.post_workloads.assert_not_called()
+        actions["create_workload"].assert_not_called()
         assert module.exit_json.call_args.kwargs["changed"] is False
         assert module.exit_json.call_args.kwargs["workload"]["context"] == "arrayB"
 
-    @patch("plugins.modules.purefa_workload.check_response")
-    def test_the_same_name_on_two_members_is_refused(self, mock_check_response):
+    def test_the_same_name_on_two_members_is_refused(self):
         """Nothing in the task says which one is meant, and choosing would be
         arbitrary"""
-        module = self._module()
-        array = self._array(["arrayA", "arrayB"])
-
-        with pytest.raises(SystemExit):
-            create_workload(module, array, Mock(), Mock(parameters=[]))
+        module, array, actions = self._run({"arrayA": {}, "arrayB": {}}, fails=True)
 
         message = module.fail_json.call_args.kwargs["msg"]
         assert "arrayA" in message and "arrayB" in message
         assert "Set context" in message
         array.post_workloads_placement_recommendations.assert_not_called()
-        array.post_workloads.assert_not_called()
+        for action in actions.values():
+            action.assert_not_called()
 
-    @patch("plugins.modules.purefa_workload._wait_for_recommendation")
-    @patch("plugins.modules.purefa_workload.check_response")
-    def test_nothing_found_still_asks_fusion(
-        self, mock_check_response, mock_wait_for_recommendation
-    ):
-        module = self._module()
-        module.params["wait"] = False
-        array = self._array([])
-        calculation = Mock()
-        calculation.name = "calc-1"
-        array.post_workloads_placement_recommendations.return_value = Mock(
-            status_code=200, items=[calculation]
+    def test_nothing_found_still_asks_fusion(self):
+        with patch(
+            "plugins.modules.purefa_workload._ask_fusion_for_placement",
+            return_value="arrayC",
+        ) as fusion:
+            module, _, actions = self._run({})
+
+        module.fail_json.assert_not_called()
+        fusion.assert_called_once()
+        actions["create_workload"].assert_called_once()
+        arguments = _bound_arguments(
+            "create_workload", actions["create_workload"].call_args
         )
-        mock_wait_for_recommendation.return_value = _mock_recommendation("arrayB")
-        array.post_workloads.return_value = _mock_workload_response(context="arrayB")
+        assert arguments["context"] == "arrayC"
 
-        create_workload(module, array, Mock(), Mock(parameters=[]))
+    def test_a_repeat_run_with_a_host_connects_it(self):
+        """The early exit returned before connect_or_disconnect_volumes could be
+        reached, so a repeat run that asked for a host reported ok having silently
+        skipped it"""
+        _, array, actions = self._run({"arrayB": {}}, host="host1")
 
-        array.post_workloads_placement_recommendations.assert_called_once()
-        array.post_workloads.assert_called_once()
+        array.post_workloads_placement_recommendations.assert_not_called()
+        actions["create_workload"].assert_not_called()
+        actions["connect_or_disconnect_volumes"].assert_called_once()
+        arguments = _bound_arguments(
+            "connect_or_disconnect_volumes",
+            actions["connect_or_disconnect_volumes"].call_args,
+        )
+        assert arguments["mode"] == "connect"
+        assert arguments["context"] == "arrayB"
+
+    def test_a_workload_destroyed_since_the_last_run_is_recovered(self):
+        """The early exit reported ok on a workload pending eradication, which is
+        neither present nor going to become present on its own. recover_workload
+        needed no change - nothing could route to it."""
+        _, array, actions = self._run({"arrayB": {"destroyed": True}})
+
+        array.post_workloads_placement_recommendations.assert_not_called()
+        actions["create_workload"].assert_not_called()
+        actions["recover_workload"].assert_called_once()
+        arguments = _bound_arguments(
+            "recover_workload", actions["recover_workload"].call_args
+        )
+        assert arguments["context"] == "arrayB"
 
 
 class TestRecommendationWithoutAContext:
@@ -5812,6 +5847,9 @@ class TestRecommendationWithoutAContext:
     The array addressed is only the route the question travels. It is never a
     default placement - _decide_action refuses a create that has neither a member
     nor a recommendation - and these tests pin the difference.
+
+    Asked of _choose_placement and create_workload together, since main() reaches the
+    create arm with the placement already settled.
     """
 
     def _module(self, context=""):
@@ -5825,8 +5863,8 @@ class TestRecommendationWithoutAContext:
 
     def _array(self):
         array = _mock_array()
-        # Nothing of this name anywhere, so the fleet sweep finds no earlier
-        # placement and create_workload() goes on to ask for one
+        # Nothing of this name anywhere, which is why the create arm was reached at
+        # all - _decide_action looked before anything got this far
         array.get_workloads.return_value = _mock_not_found_response()
         calculation = Mock()
         calculation.name = "calc-1"
@@ -5850,7 +5888,7 @@ class TestRecommendationWithoutAContext:
         array = self._array()
         mock_wait.return_value = _mock_recommendation("arrayB")
 
-        create_workload(module, array, Mock(), Mock(parameters=[]))
+        _create_as_main_does(module, array, Mock(parameters=[]))
 
         asked = array.post_workloads_placement_recommendations.call_args.kwargs
         assert asked["context_names"] == ["MUCFA21"]
@@ -5870,7 +5908,7 @@ class TestRecommendationWithoutAContext:
         array = self._array()
         mock_wait.return_value = _mock_recommendation("arrayB")
 
-        create_workload(module, array, Mock(), Mock(parameters=[]))
+        _create_as_main_does(module, array, Mock(parameters=[]))
 
         assert mock_wait.call_args.args[2] == "MUCFA21"
 
@@ -5888,7 +5926,7 @@ class TestRecommendationWithoutAContext:
         array = self._array()
         mock_wait.return_value = _mock_recommendation("arrayB")
 
-        create_workload(module, array, Mock(), Mock(parameters=[]))
+        _create_as_main_does(module, array, Mock(parameters=[]))
 
         asked = array.post_workloads_placement_recommendations.call_args.kwargs
         assert asked["context_names"] == ["pod1"]
@@ -5908,7 +5946,7 @@ class TestRecommendationWithoutAContext:
         array = self._array()
         mock_wait.return_value = _mock_recommendation("arrayB")
 
-        create_workload(module, array, Mock(), Mock(parameters=[]))
+        _create_as_main_does(module, array, Mock(parameters=[]))
 
         assert array.post_workloads.call_args.kwargs["context_names"] == ["arrayB"]
         assert module.exit_json.call_args.kwargs["workload"]["context"] == "arrayB"
@@ -5921,13 +5959,12 @@ class TestRecommendationWithoutAContext:
     def test_nothing_is_asked_when_the_workload_is_already_there(
         self, mock_check_response, mock_local_array_name
     ):
-        """The fallback sits after the idempotency sweep, so a repeat run reads
-        nothing extra"""
-        module = self._module()
-        array = _mock_array()
-        array.get_workloads.return_value = _mock_workload_response(context="arrayB")
+        """A route is only worked out where one is needed. A repeat run never reaches
+        the create arm, so nothing is routed anywhere and nothing is asked."""
+        module = self._module(context=None)
+        array = _mock_fleet({"arrayB": {}})
 
-        create_workload(module, array, Mock(), Mock(parameters=[]))
+        _run_main(module, array)
 
         mock_local_array_name.assert_not_called()
         array.post_workloads_placement_recommendations.assert_not_called()
@@ -5948,7 +5985,7 @@ class TestRecommendationWithoutAContext:
         array = self._array()
         mock_wait.return_value = _mock_recommendation("arrayB")
 
-        create_workload(module, array, Mock(), Mock(parameters=[]))
+        _create_as_main_does(module, array, Mock(parameters=[]))
 
         asked = array.post_workloads_placement_recommendations.call_args.kwargs
         assert asked["context_names"] == ["MUCFA21"]
@@ -5974,19 +6011,36 @@ class TestDuplicateNameIsReportedNotHidden:
 
     @patch("plugins.modules.purefa_workload.check_response")
     def test_creating_warns_when_the_name_exists_elsewhere(self, mock_check_response):
+        """The create says it in its own words, which is why it is handed the list
+        rather than warned about by the caller: what it makes is a second workload of
+        the same name, not a duplicate"""
         module = Mock()
         module.check_mode = False
         module.params = _params(preset="test-preset", context="pod1", wait=False)
         array = self._array(["arrayB"])
         array.post_workloads.return_value = _mock_workload_response(context="pod1")
 
-        create_workload(module, array, Mock(), Mock(parameters=[]))
+        create_workload(module, array, Mock(parameters=[]), "pod1", others=["arrayB"])
 
         module.warn.assert_called_once()
         warning = module.warn.call_args[0][0]
         assert "arrayB" in warning
         # Warned, not refused - the array permits it and the user named a context
         array.post_workloads.assert_called_once()
+
+    def test_the_create_is_told_which_members_already_hold_the_name(self):
+        """Which members those are is main()'s answer, from the sweep that used to
+        happen inside the create"""
+        module = Mock()
+        module.check_mode = False
+        module.params = _params(context="pod1", preset="test-preset")
+        actions = _run_main(module, _mock_fleet({"arrayB": {}}))
+
+        arguments = _bound_arguments(
+            "create_workload", actions["create_workload"].call_args
+        )
+        assert arguments["others"] == ["arrayB"]
+        assert arguments["context"] == "pod1"
 
     def _lookup(self, member="arrayB"):
         """A member-scoped lookup that found the workload where it was asked for"""
@@ -6212,20 +6266,26 @@ class TestNamingNothingMeansTheFleet:
         assert self.FLEET not in self._contexts_read(array)
 
     @pytest.mark.parametrize("context", WHOLE_FLEET)
-    def test_the_bare_fleet_name_is_never_handed_to_a_create(self, context):
+    def test_the_bare_fleet_name_is_never_used_as_a_route_to_fusion(self, context):
         """The same invariant on the one path that does not read first: Fusion's
         question travels through an array, and a fleet is not one"""
-        _, _, actions = self._run(
-            {}, context=context, preset="test-preset", recommendation=True
-        )
+        with patch(
+            "plugins.modules.purefa_workload._ask_fusion_for_placement",
+            return_value="arrayC",
+        ) as fusion:
+            _, _, actions = self._run(
+                {}, context=context, preset="test-preset", recommendation=True
+            )
 
+        # Empty rather than the fleet, so the question is routed through the array
+        # addressed - which is a member
+        assert fusion.call_args.args[2] == ""
         actions["create_workload"].assert_called_once()
         arguments = _bound_arguments(
             "create_workload", actions["create_workload"].call_args
         )
-        # Empty rather than the fleet, so that create_workload routes Fusion's
-        # question through the array addressed - which is a member
-        assert arguments["context"] == ""
+        # And what the create is handed is Fusion's answer, never the route
+        assert arguments["context"] == "arrayC"
 
     # --- what is refused, and what is not --------------------------------------
 
@@ -6268,9 +6328,13 @@ class TestNamingNothingMeansTheFleet:
     @pytest.mark.parametrize("context", WHOLE_FLEET)
     def test_nothing_found_with_recommendation_lets_fusion_choose(self, context):
         """The one create that needs no member named, because Fusion names one"""
-        module, _, actions = self._run(
-            {}, context=context, preset="test-preset", recommendation=True
-        )
+        with patch(
+            "plugins.modules.purefa_workload._ask_fusion_for_placement",
+            return_value="arrayC",
+        ):
+            module, _, actions = self._run(
+                {}, context=context, preset="test-preset", recommendation=True
+            )
 
         module.fail_json.assert_not_called()
         actions["create_workload"].assert_called_once()
@@ -6537,6 +6601,27 @@ class TestTheFleetIsSweptOnce:
         """It reads one member, then pays one sweep to answer whether the name lives
         anywhere else - deliberately, and once"""
         assert self._sweeps("arrayB", {"arrayB": {}}, state="absent") == 1
+
+    def test_a_member_scoped_create_sweeps_once(self):
+        """The create's own sweep is gone. The one it pays for now is the shared
+        copies-elsewhere question, asked in main() like every other action's."""
+        assert (
+            self._sweeps("pod1", {"arrayB": {}}, state="present", preset="test-preset")
+            == 1
+        )
+
+    def test_a_recommendation_create_sweeps_once(self):
+        """Two of the three old sweeps were on this path: the fleet lookup and the
+        create's idempotency check asked the same question one after the other"""
+        with patch(
+            "plugins.modules.purefa_workload._ask_fusion_for_placement",
+            return_value="arrayC",
+        ):
+            sweeps = self._sweeps(
+                None, {}, state="present", preset="test-preset", recommendation=True
+            )
+
+        assert sweeps == 1
 
     def test_a_rename_pays_one_sweep_per_name(self):
         """A sweep answers only for the name it was made about, and a rename involves
