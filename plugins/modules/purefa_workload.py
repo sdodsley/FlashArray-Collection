@@ -713,7 +713,7 @@ def _is_absent(response):
     )
 
 
-def _read_workload(module, array, context):
+def _read_workload(module, array, context, name=None):
     """Read the workload in the given context, or None if it does not exist
 
     A workload that is not there is reported as an error rather than as an empty
@@ -724,9 +724,14 @@ def _read_workload(module, array, context):
 
     allow_errors is required whenever the context is a fleet member other than the
     local array being addressed.
+
+    name defaults to the workload the task is about. It is given explicitly when the
+    question is about another name - a rename asking whether its target already
+    exists somewhere.
     """
+    name = name or module.params["name"]
     res = array.get_workloads(
-        names=[module.params["name"]],
+        names=[name],
         context_names=[context],
         allow_errors=True,
     )
@@ -734,14 +739,18 @@ def _read_workload(module, array, context):
         return list(res.items)[0]
     if _is_absent(res):
         return None
-    check_response(res, module, f"Failed to read workload {module.params['name']}")
+    check_response(res, module, f"Failed to read workload {name}")
 
 
-def _find_across_fleet(module, array, fleet):
+def _find_across_fleet(module, array, fleet, name=None):
     """Every fleet member reporting a workload of this name, as {member: workload}
 
     Names are not unique across a fleet: the same name on two members is two
     separate workloads, and both are returned.
+
+    name defaults to the workload the task is about, and is given explicitly when
+    the question is about another name - a rename asking where its target already
+    exists.
 
     "<fleet>.arrays" is a context that spans every member, and answers this in one
     call. The bare fleet name does not - the array rejects it with "Cannot specify
@@ -754,8 +763,9 @@ def _find_across_fleet(module, array, fleet):
     A 200 is only trusted when it is a complete answer, for the same reason - see
     below.
     """
+    name = name or module.params["name"]
     res = array.get_workloads(
-        names=[module.params["name"]],
+        names=[name],
         context_names=[f"{fleet}.arrays"],
         allow_errors=True,
     )
@@ -783,27 +793,32 @@ def _find_across_fleet(module, array, fleet):
     # early would defeat the ambiguity check and turn a duplicate name into a
     # silently wrong target.
     for member in _fleet_members(module, array, fleet):
-        workload = _read_workload(module, array, member)
+        workload = _read_workload(module, array, member, name)
         if workload is not None:
             found[member] = workload
     return found
 
 
-def _warn_about_copies_elsewhere(module, array, fleet):
-    """Say when a name being removed here also exists on other fleet members
+def _warn_about_copies_elsewhere(module, array, fleet, name=None):
+    """Say when a name being acted on here also exists on other fleet members
 
-    Reporting only. The module destroys exactly the (name, context) it was given,
-    and this must never widen that: eradication cannot be undone, so a fleet-wide
-    search informs the operator rather than choosing a target for them.
+    Reporting only. The module acts on exactly the (name, context) it was given, and
+    this must never widen that: eradication cannot be undone, so a fleet-wide search
+    informs the operator rather than choosing a target for them.
+
+    name defaults to the workload the task is about. A rename asks twice - once for
+    the name it is leaving, once for the name it is taking, since renaming foo to bar
+    where bar already exists on another member produces two bars.
     """
+    name = name or module.params["name"]
     others = sorted(
         member
-        for member in _find_across_fleet(module, array, fleet)
+        for member in _find_across_fleet(module, array, fleet, name)
         if member != module.params["context"]
     )
     if others:
         module.warn(
-            f"A workload named {module.params['name']} also exists on "
+            f"A workload named {name} also exists on "
             f"{', '.join(others)}. Only the one on {module.params['context']} is "
             "affected here - a name is unique per fleet member, not across the "
             "fleet."
@@ -1405,6 +1420,55 @@ def _fleet_members(module, array, fleet):
     return members
 
 
+def _check_option_combinations(module):
+    """Refuse option combinations that cannot be honoured, before any API call
+
+    Every check here is answerable from the task alone. Nothing that depends on what
+    the array holds belongs in it - that is _decide_action's job, once there is
+    something to decide about.
+    """
+    # A host has to be connected to every volume in the workload, which cannot be
+    # established while the volume set is still growing, so there is no correct way
+    # to honour host without waiting.
+    if module.params["host"] and not module.params["wait"]:
+        module.fail_json(
+            msg="host cannot be used with wait: false. Connecting or "
+            "disconnecting a host requires the workload's volume set to have "
+            "settled first, which only happens when waiting."
+        )
+
+    volume_count = module.params["volume_count"]
+    if volume_count is not None and volume_count <= 0:
+        module.fail_json(msg="volume_count must be a positive integer.")
+
+    # Renaming is a state: present operation. On any other state the option is
+    # silently ignored today, so a task asking to both rename and delete reads as
+    # having renamed.
+    if module.params["rename"] and module.params["state"] != "present":
+        module.fail_json(
+            msg=f"rename cannot be used with state: {module.params['state']}. "
+            "Renaming a workload is a state: present operation - run it as a "
+            "separate task."
+        )
+
+
+def _read_fleet_name(module, array):
+    """The name of the fleet this array belongs to
+
+    Every workload operation is scoped to a fleet: presets are named after one, and
+    a workload lives on one of its members. An array outside a fleet has no
+    workloads to manage, so this is a hard requirement rather than a fallback.
+    """
+    res = array.get_fleets()
+    fleets = list(res.items) if res.status_code == 200 else []
+    if not fleets:
+        module.fail_json(
+            msg="purefa_workload requires a Fusion fleet environment, but this "
+            "array is not a member of a fleet."
+        )
+    return fleets[0].name
+
+
 #: _resolve_member_to_search returns this instead of a member name when the task did
 #: not name one, named the fleet, or asked for a recommendation - all three mean
 #: "look everywhere and let the answer say which array".
@@ -1577,7 +1641,7 @@ def _look_up_workload(module, array, fleet, member):
     return WorkloadLookup(matches={home: workload}, swept=False)
 
 
-def _copies_elsewhere(module, array, fleet, lookup):
+def _copies_elsewhere(module, array, fleet, lookup, name=None):
     """Every other fleet member holding this workload name, sorted
 
     The same name on two members is two separate workloads, and an operator acting
@@ -1587,9 +1651,16 @@ def _copies_elsewhere(module, array, fleet, lookup):
 
     Reporting only. Nothing here widens what a task acts on: it destroys exactly the
     (name, context) it was given, and eradication cannot be undone.
+
+    name defaults to the workload the task is about, and is given explicitly for the
+    other name a rename involves.
     """
+    name = name or module.params["name"]
     here = lookup.member or _requested_member(module.params)
-    found = lookup.matches if lookup.swept else _find_across_fleet(module, array, fleet)
+    # A sweep already done answers only for the name it was made about, so a rename
+    # asking about its target pays for its own
+    reuse = lookup.swept and name == module.params["name"]
+    found = lookup.matches if reuse else _find_across_fleet(module, array, fleet, name)
     return sorted(member for member in found if member != here)
 
 
@@ -1767,6 +1838,43 @@ def _decide_action(params, member, lookup, fleet):
     )
 
 
+#: The only two actions that build volumes from a preset, and so the only two that
+#: read one. Stated once, rather than restated as the conditions that route to them.
+PRESET_ACTIONS = frozenset({"create", "expand"})
+
+
+def _read_preset(module, array, fleet, action):
+    """The preset the action will build from, or None where none is needed
+
+    Every outcome other than a create or an expand works from the workload the array
+    already has, so a task that names no preset is not incomplete. required_if cannot
+    express that: whether a create is happening is only known once the workload has
+    been looked up.
+
+    Asking the action rather than restating the conditions that produced it also
+    means a task missing both a preset and the workload reports the workload - the
+    real problem - instead of demanding a preset it would then have nothing to use.
+    """
+    if action not in PRESET_ACTIONS:
+        return None
+    if not module.params["preset"]:
+        module.fail_json(
+            msg="preset required to create a new workload or to expand an "
+            "existing one."
+        )
+    # Presets are fleet objects, and the API names them "<fleet>:<preset>", so
+    # qualify it here rather than at the top of main(): it is meaningless on every
+    # path that does not reach this function.
+    module.params["preset"] = fleet + ":" + module.params["preset"]
+    res = array.get_presets_workload(names=[module.params["preset"]])
+    check_response(
+        res,
+        module,
+        f"Preset {module.params['preset']} does not exist in fleet {fleet}",
+    )
+    return list(res.items)[0]
+
+
 def _check_placement_options(module, array, fleet, state):
     """Settle where this task applies before anything is read or written.
 
@@ -1933,19 +2041,8 @@ def main():
     if not HAS_PURESTORAGE:
         module.fail_json(msg="py-pure-client sdk is required for this module")
 
-    # Checked before any API call. A host has to be connected to every volume in
-    # the workload, which cannot be established while the volume set is still
-    # growing, so there is no correct way to honour host without waiting.
-    if module.params["host"] and not module.params["wait"]:
-        module.fail_json(
-            msg="host cannot be used with wait: false. Connecting or "
-            "disconnecting a host requires the workload's volume set to have "
-            "settled first, which only happens when waiting."
-        )
-
-    volume_count = module.params["volume_count"]
-    if volume_count is not None and volume_count <= 0:
-        module.fail_json(msg="volume_count must be a positive integer.")
+    # Everything answerable from the task alone, before any API call
+    _check_option_combinations(module)
 
     array = get_array(module)
     api_version = array.get_rest_version()
@@ -1955,14 +2052,7 @@ def main():
             "Minimum version required: {0}".format(MIN_REQUIRED_API_VERSION)
         )
     state = module.params["state"]
-    fleet_res = array.get_fleets()
-    fleet_items = list(fleet_res.items) if fleet_res.status_code == 200 else []
-    if not fleet_items:
-        module.fail_json(
-            msg="purefa_workload requires a Fusion fleet environment, but this "
-            "array is not a member of a fleet."
-        )
-    fleet = fleet_items[0].name
+    fleet = _read_fleet_name(module, array)
     _check_placement_options(module, array, fleet, state)
     # context and placement mean the same thing to the API - a workload is created
     # on its context, and there is no separate placement to send - and they have

@@ -1614,6 +1614,7 @@ class TestMain:
             "wait": True,
             "context": "",
             "placement": None,
+            "rename": None,
         }
         mock_module.fail_json.side_effect = SystemExit(1)
         mock_ansible_module.return_value = mock_module
@@ -1736,6 +1737,7 @@ class TestMain:
             "host": "",
             "placement": None,
             "eradicate": False,
+            "rename": None,
         }
         mock_ansible_module.return_value = mock_module
         mock_array = _mock_array()
@@ -1789,6 +1791,7 @@ class TestMain:
             "host": "",
             "placement": None,
             "eradicate": True,
+            "rename": None,
         }
         mock_ansible_module.return_value = mock_module
         mock_array = _mock_array()
@@ -1839,6 +1842,7 @@ class TestMain:
             "host": "",
             "placement": None,
             "eradicate": False,
+            "rename": None,
         }
         mock_ansible_module.return_value = mock_module
         mock_array = _mock_array()
@@ -2147,6 +2151,7 @@ class TestMainContextDefault:
             "eradicate": False,
             "placement": None,
             "context": "",
+            "rename": None,
         }
         mock_module.params.update(params)
         # A real fail_json ends the module. Without this the mock returns and main()
@@ -2815,6 +2820,319 @@ class TestHostRequiresWait:
         source = open(module_under_test.__file__).read()
         assert 'wait=dict(type="bool", default=True)' in source
         assert 'wait_timeout=dict(type="int", default=300)' in source
+
+
+class TestCheckingOptionCombinations:
+    """Step 1: everything answerable from the task alone, before any API call
+
+    Nothing that depends on what the array holds belongs here - that is
+    _decide_action's job, once there is something to decide about. These three are
+    all decidable from the task, which is why they are checked before the array is
+    even reached.
+    """
+
+    def _check(self, **params):
+        from plugins.modules.purefa_workload import _check_option_combinations
+
+        module = Mock(params=_params(**params))
+        module.fail_json.side_effect = SystemExit
+        _check_option_combinations(module)
+        return module
+
+    def _refuse(self, **params):
+        from plugins.modules.purefa_workload import _check_option_combinations
+
+        module = Mock(params=_params(**params))
+        module.fail_json.side_effect = SystemExit
+        with pytest.raises(SystemExit):
+            _check_option_combinations(module)
+        return module.fail_json.call_args.kwargs["msg"]
+
+    def test_a_plain_task_is_accepted(self):
+        module = self._check()
+
+        module.fail_json.assert_not_called()
+
+    def test_a_host_cannot_be_used_without_waiting(self):
+        message = self._refuse(host="host1", wait=False)
+
+        assert "wait" in message
+
+    def test_waiting_can_still_be_turned_off_without_a_host(self):
+        module = self._check(wait=False)
+
+        module.fail_json.assert_not_called()
+
+    @pytest.mark.parametrize("volume_count", [0, -1])
+    def test_a_volume_count_that_adds_nothing_is_refused(self, volume_count):
+        message = self._refuse(state="expand", volume_count=volume_count)
+
+        assert "positive integer" in message
+
+    def test_an_unset_volume_count_is_not_a_zero(self):
+        module = self._check(volume_count=None)
+
+        module.fail_json.assert_not_called()
+
+    @pytest.mark.parametrize("state", ["absent", "expand"])
+    def test_a_rename_on_any_other_state_is_refused(self, state):
+        """Silently ignored today, so a task asking to both rename and delete reads
+        as having renamed"""
+        message = self._refuse(state=state, rename="new-workload")
+
+        assert "rename" in message and state in message
+
+    def test_a_rename_on_a_present_state_is_the_supported_one(self):
+        module = self._check(state="present", rename="new-workload")
+
+        module.fail_json.assert_not_called()
+
+    def test_nothing_here_can_ask_the_array_anything(self):
+        """It is handed no array, which is the enforcement rather than the
+        convention: it runs before get_array(), and none of these questions needs
+        one"""
+        import inspect
+
+        from plugins.modules.purefa_workload import _check_option_combinations
+
+        signature = inspect.signature(_check_option_combinations)
+
+        assert list(signature.parameters) == ["module"]
+
+
+class TestReadingTheFleetName:
+    """Every workload operation is scoped to a fleet, so the name is settled once"""
+
+    def _read(self, response):
+        from plugins.modules.purefa_workload import _read_fleet_name
+
+        module = Mock(params=_params())
+        module.fail_json.side_effect = SystemExit
+        array = _mock_array()
+        array.get_fleets.return_value = response
+        return module, array
+
+    def _fleets(self, *names, status_code=200):
+        fleets = []
+        for name in names:
+            fleet = Mock()
+            fleet.name = name
+            fleets.append(fleet)
+        return Mock(status_code=status_code, items=fleets)
+
+    def test_the_fleet_this_array_belongs_to_is_returned(self):
+        from plugins.modules.purefa_workload import _read_fleet_name
+
+        module, array = self._read(self._fleets("test-fleet"))
+
+        assert _read_fleet_name(module, array) == "test-fleet"
+        module.fail_json.assert_not_called()
+
+    def test_an_array_in_no_fleet_is_refused(self):
+        """An array outside a fleet has no workloads to manage, so this is a hard
+        requirement rather than something to fall back from"""
+        from plugins.modules.purefa_workload import _read_fleet_name
+
+        module, array = self._read(self._fleets())
+
+        with pytest.raises(SystemExit):
+            _read_fleet_name(module, array)
+        assert "fleet" in module.fail_json.call_args.kwargs["msg"]
+
+    def test_a_failed_read_is_not_taken_for_an_array_without_a_fleet(self):
+        from plugins.modules.purefa_workload import _read_fleet_name
+
+        module, array = self._read(self._fleets("test-fleet", status_code=500))
+
+        with pytest.raises(SystemExit):
+            _read_fleet_name(module, array)
+
+
+class TestReadingThePresetForTheAction:
+    """Only a create and an expand build volumes, so only they read a preset
+
+    Asking the action rather than restating the conditions that produced it is what
+    stops a task missing both a preset and the workload from reporting the preset -
+    and stops an expand that will fail anyway from paying for the read first.
+    """
+
+    FLEET = "test-fleet"
+
+    def _read(self, action, **params):
+        from plugins.modules.purefa_workload import _read_preset
+
+        module = Mock(params=_params(**params))
+        module.fail_json.side_effect = SystemExit
+        array = _mock_array()
+        preset_config = Mock()
+        array.get_presets_workload.return_value = Mock(
+            status_code=200, items=[preset_config]
+        )
+        with patch("plugins.modules.purefa_workload.check_response"):
+            result = _read_preset(module, array, self.FLEET, action)
+        return result, module, array, preset_config
+
+    @pytest.mark.parametrize("action", ["create", "expand"])
+    def test_the_preset_is_read_for_the_actions_that_build_volumes(self, action):
+        result, _, array, preset_config = self._read(action, preset="test-preset")
+
+        assert result is preset_config
+        array.get_presets_workload.assert_called_once_with(
+            names=["test-fleet:test-preset"]
+        )
+
+    @pytest.mark.parametrize(
+        "action",
+        [
+            "recover",
+            "rename",
+            "connect",
+            "disconnect",
+            "delete",
+            "eradicate",
+            "nothing",
+            "fail",
+        ],
+    )
+    def test_no_preset_is_read_for_anything_else(self, action):
+        """Every other outcome works from the workload the array already has, so a
+        task that names no preset is not incomplete"""
+        result, module, array, _ = self._read(action)
+
+        assert result is None
+        array.get_presets_workload.assert_not_called()
+        module.fail_json.assert_not_called()
+
+    @pytest.mark.parametrize("action", ["create", "expand"])
+    def test_a_missing_preset_is_refused_where_it_is_needed(self, action):
+        with pytest.raises(SystemExit):
+            self._read(action, preset=None)
+
+    def test_the_preset_is_qualified_with_the_fleet(self):
+        """Presets are fleet objects, named "<fleet>:<preset>" by the API"""
+        _, module, _, _ = self._read("create", preset="test-preset")
+
+        assert module.params["preset"] == "test-fleet:test-preset"
+
+    def test_the_name_is_left_alone_on_a_path_that_never_reads_it(self):
+        """It was qualified before any state was consulted once, so a delete died
+        in string concatenation rather than deleting"""
+        _, module, _, _ = self._read("delete", preset="test-preset")
+
+        assert module.params["preset"] == "test-preset"
+
+    def test_the_actions_that_read_a_preset_are_declared_once(self):
+        from plugins.modules.purefa_workload import ACTIONS, PRESET_ACTIONS
+
+        assert PRESET_ACTIONS == {"create", "expand"}
+        assert PRESET_ACTIONS <= set(ACTIONS)
+
+
+class TestAskingAboutAnotherName:
+    """A rename involves two names, and the fleet has to be asked about both
+
+    Renaming foo to bar on arrayA where bar already exists on arrayB produces two
+    bars. Every reader defaults to the task's own name, so no existing caller has to
+    say so.
+    """
+
+    FLEET = "test-fleet"
+
+    def _array(self, homes):
+        """homes maps a member to the names it holds"""
+        array = _mock_array()
+
+        def get_workloads(names=None, context_names=None, **kwargs):
+            asked_name = (names or [None])[0]
+            asked = (context_names or [None])[0]
+            if asked == f"{self.FLEET}.arrays":
+                found = [member for member, held in homes.items() if asked_name in held]
+                if not found:
+                    return _mock_not_found_response()
+                return Mock(
+                    status_code=200,
+                    items=[
+                        _mock_workload(name=asked_name, context=member)
+                        for member in found
+                    ],
+                    errors=[],
+                )
+            if asked_name in homes.get(asked, ()):
+                return _mock_workload_response(name=asked_name, context=asked)
+            return _mock_not_found_response()
+
+        array.get_workloads.side_effect = get_workloads
+        return array
+
+    def test_the_sweep_asks_about_the_name_it_was_given(self):
+        from plugins.modules.purefa_workload import _find_across_fleet
+
+        array = self._array({"arrayA": ["test-workload"], "arrayB": ["new-workload"]})
+
+        found = _find_across_fleet(
+            Mock(params=_params()), array, self.FLEET, "new-workload"
+        )
+
+        assert list(found) == ["arrayB"]
+
+    def test_the_sweep_defaults_to_the_task_own_name(self):
+        from plugins.modules.purefa_workload import _find_across_fleet
+
+        array = self._array({"arrayA": ["test-workload"], "arrayB": ["new-workload"]})
+
+        found = _find_across_fleet(Mock(params=_params()), array, self.FLEET)
+
+        assert list(found) == ["arrayA"]
+
+    def test_the_per_member_fallback_asks_about_the_same_name(self):
+        """The fleet-wide context is not documented, so the sweep behind it has to
+        ask the same question - about the name given, not the task's"""
+        from plugins.modules.purefa_workload import _find_across_fleet
+
+        array = self._array({"arrayB": ["new-workload"]})
+        # No fleet-wide answer at all, so every member is asked individually
+        original = array.get_workloads.side_effect
+
+        def get_workloads(names=None, context_names=None, **kwargs):
+            if (context_names or [None])[0] == f"{self.FLEET}.arrays":
+                return _mock_not_found_response()
+            return original(names=names, context_names=context_names, **kwargs)
+
+        array.get_workloads.side_effect = get_workloads
+
+        found = _find_across_fleet(
+            Mock(params=_params()), array, self.FLEET, "new-workload"
+        )
+
+        assert list(found) == ["arrayB"]
+
+    def test_the_warning_names_the_name_it_asked_about(self):
+        from plugins.modules.purefa_workload import _warn_about_copies_elsewhere
+
+        module = Mock(params=_params(context="arrayA", rename="new-workload"))
+        array = self._array({"arrayA": ["test-workload"], "arrayB": ["new-workload"]})
+
+        _warn_about_copies_elsewhere(module, array, self.FLEET, "new-workload")
+
+        warning = module.warn.call_args[0][0]
+        assert "new-workload" in warning
+        assert "arrayB" in warning
+
+    def test_copies_of_another_name_are_looked_up_rather_than_reused(self):
+        """A sweep already done answers only for the name it was made about"""
+        from plugins.modules.purefa_workload import _copies_elsewhere, WorkloadLookup
+
+        module = Mock(params=_params(context=None))
+        array = self._array({"arrayA": ["test-workload"], "arrayB": ["new-workload"]})
+        # The lookup swept for test-workload and found it on arrayA
+        lookup = WorkloadLookup(
+            matches={"arrayA": _mock_workload(context="arrayA")}, swept=True
+        )
+
+        assert _copies_elsewhere(module, array, self.FLEET, lookup) == []
+        assert _copies_elsewhere(module, array, self.FLEET, lookup, "new-workload") == [
+            "arrayB"
+        ]
 
 
 class TestPresetIsOnlyNeededWhereItIsRead:
