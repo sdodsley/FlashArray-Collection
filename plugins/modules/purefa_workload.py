@@ -1002,18 +1002,15 @@ def _wait_for_volumes(module, array, context, volume_names, workload):
 
 
 # Eight functions below act on a workload on a particular array - _create_volume and
-# the seven actions main() dispatches to - and each takes that array as a trailing
-# context argument, defaulting to module.params["context"] when the caller does not
-# name one. That generalises what the waiters already do deliberately (see
-# _wait_for_status), and it is what stops each of them re-deriving its own target
-# after the caller has already settled it.
-#
-# The argument is trailing rather than third positional purely so that every
-# existing positional call site keeps binding while the callers are converted; it
-# moves into place, and the fallback goes away, once main() is the only caller.
+# the seven actions main() dispatches to - and each is told that array as its third
+# argument, ahead of anything it is asked to do there. Required, with no fallback to
+# module.params["context"]: the array was settled by the pipeline before any of these
+# was called, and a function that could still work it out for itself would be a
+# second answer to a question that has one. That generalises what the waiters already
+# do deliberately - see _wait_for_status.
 
 
-def _create_volume(module, array, context=None):
+def _create_volume(module, array, context):
     """Create an actual volume in a workload
 
     Returns the array-generated volume name, so that a later wait can target
@@ -1024,7 +1021,6 @@ def _create_volume(module, array, context=None):
     this at all in check mode. It is kept rather than removed as unreachable so
     that no future caller can create a volume by forgetting to guard.
     """
-    context = module.params["context"] if context is None else context
     if module.check_mode:
         return None
     res = array.post_volumes(
@@ -1160,7 +1156,7 @@ def _choose_placement(module, array, fleet, member, preset_config):
     return member
 
 
-def create_workload(module, array, preset_config, context=None, others=None):
+def create_workload(module, array, context, preset_config, others=None):
     """Create a workload on one array from an existing preset
 
     context is the array to create on. It is decided before this is called - see
@@ -1174,7 +1170,6 @@ def create_workload(module, array, preset_config, context=None, others=None):
     handed in instead of warned about by the caller.
     """
     changed = True
-    context = module.params["context"] if context is None else context
     workload_parameters = _build_workload_parameters(module, preset_config)
     if others:
         module.warn(
@@ -1217,11 +1212,10 @@ def create_workload(module, array, preset_config, context=None, others=None):
     module.exit_json(changed=changed, workload=workload_facts)
 
 
-def expand_workload(module, array, volume_configs, workload, context=None):
+def expand_workload(module, array, context, volume_configs, workload):
     """Add new volumes to workload"""
     changed = False
     matched = False
-    context = module.params["context"] if context is None else context
     volume_names = []
     for vol_config in volume_configs:
         if vol_config.name == module.params["volume_configuration"]:
@@ -1270,10 +1264,9 @@ def expand_workload(module, array, volume_configs, workload, context=None):
     module.exit_json(changed=changed, workload=workload_facts)
 
 
-def delete_workload(module, array, workload=None, context=None):
+def delete_workload(module, array, context, workload=None):
     """Delete the workload"""
     changed = True
-    context = module.params["context"] if context is None else context
     if module.check_mode:
         # Nothing is sent, so report the state this run would have produced
         if module.params["eradicate"]:
@@ -1311,10 +1304,9 @@ def delete_workload(module, array, workload=None, context=None):
     module.exit_json(changed=changed, workload=workload_facts)
 
 
-def eradicate_workload(module, array, context=None):
+def eradicate_workload(module, array, context):
     """Eradicate the workload"""
     changed = True
-    context = module.params["context"] if context is None else context
     if not module.check_mode:
         res = array.delete_workloads(
             names=[module.params["name"]],
@@ -1335,10 +1327,9 @@ def eradicate_workload(module, array, context=None):
     )
 
 
-def recover_workload(module, array, workload=None, context=None):
+def recover_workload(module, array, context, workload=None):
     """Recover the workload and optionally reconnect to host"""
     changed = True
-    context = module.params["context"] if context is None else context
     if module.check_mode:
         # Nothing is sent, so report the state this run would have produced
         workload_facts = _workload_facts(
@@ -1371,7 +1362,7 @@ def recover_workload(module, array, workload=None, context=None):
     module.exit_json(changed=changed, workload=workload_facts)
 
 
-def rename_workload(module, array, workload=None, context=None):
+def rename_workload(module, array, context, workload=None):
     """Rename the workload
 
     Nothing about a rename is asynchronous, so wait does not apply, and a rename
@@ -1379,7 +1370,6 @@ def rename_workload(module, array, workload=None, context=None):
     and host are still reported, read under whichever name is current.
     """
     changed = True
-    context = module.params["context"] if context is None else context
     if module.check_mode:
         # Nothing is sent, so report the name this run would have given it
         workload_facts = _workload_facts(
@@ -1397,13 +1387,12 @@ def rename_workload(module, array, workload=None, context=None):
     module.exit_json(changed=changed, workload=workload_facts)
 
 
-def connect_or_disconnect_volumes(module, array, mode, workload, context=None):
+def connect_or_disconnect_volumes(module, array, context, mode, workload):
     """Connect the host to the workload's volumes, or disconnect it from them
 
     Both directions are scoped to this workload's volumes. The host keeps every
     connection it has outside the workload either way.
     """
-    context = module.params["context"] if context is None else context
     if mode == "connect" and module.params["wait"]:
         # "All connected" only means something once the volume set has settled
         workload = _wait_for_status(module, array, context, "ready") or workload
@@ -2052,28 +2041,28 @@ def main():
         create_workload(
             module,
             array,
-            preset_config,
             _choose_placement(module, array, fleet, member, preset_config),
+            preset_config,
             others=_copies_elsewhere(module, array, fleet, lookup),
         )
     elif decision.action == "expand":
         expand_workload(
             module,
             array,
+            lookup.member,
             preset_config.volume_configurations,
             lookup.workload,
-            lookup.member,
         )
     elif decision.action == "recover":
-        recover_workload(module, array, lookup.workload, lookup.member)
+        recover_workload(module, array, lookup.member, lookup.workload)
     elif decision.action == "rename":
-        rename_workload(module, array, lookup.workload, lookup.member)
+        rename_workload(module, array, lookup.member, lookup.workload)
     elif decision.action in ("connect", "disconnect"):
         connect_or_disconnect_volumes(
-            module, array, decision.action, lookup.workload, lookup.member
+            module, array, lookup.member, decision.action, lookup.workload
         )
     elif decision.action == "delete":
-        delete_workload(module, array, lookup.workload, lookup.member)
+        delete_workload(module, array, lookup.member, lookup.workload)
     elif decision.action == "eradicate":
         eradicate_workload(module, array, lookup.member)
     elif decision.action == "nothing":

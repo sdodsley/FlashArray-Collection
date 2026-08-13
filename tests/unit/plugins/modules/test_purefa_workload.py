@@ -406,10 +406,11 @@ def _run_main(module, array, stub=ACTION_FUNCTIONS, refused=False):
 def _bound_arguments(action, call):
     """A recorded call to one of main()'s action functions, by parameter name
 
-    They are called positionally and the positions are still moving, so a test that
-    cares about one particular argument binds the call against the real signature
-    rather than counting places. Read after the patch is undone, when the module
-    attribute is the real function again.
+    They are called positionally and they do not all take the same things, so a test
+    that cares about one particular argument binds the call against the real signature
+    rather than counting places - which also means a reordered signature shows up as
+    the wrong value, not as a test that quietly asserts about something else. Read
+    after the patch is undone, when the module attribute is the real function again.
     """
     import inspect
     import plugins.modules.purefa_workload as module_under_test
@@ -440,8 +441,8 @@ def _create_as_main_does(
     return create_workload(
         module,
         array,
-        preset_config,
         _choose_placement(module, array, fleet, member, preset_config),
+        preset_config,
         others=others,
     )
 
@@ -456,7 +457,7 @@ class TestDeleteWorkload:
         mock_module.params = _params()
         mock_array = _mock_array()
 
-        delete_workload(mock_module, mock_array, _mock_workload())
+        delete_workload(mock_module, mock_array, "arrayB", _mock_workload())
 
         mock_array.patch_workloads.assert_not_called()
         # wait is on, so a real run would settle on destroyed
@@ -471,7 +472,7 @@ class TestDeleteWorkload:
         mock_module.params = _params(wait=False)
         mock_array = _mock_array()
 
-        delete_workload(mock_module, mock_array, _mock_workload())
+        delete_workload(mock_module, mock_array, "arrayB", _mock_workload())
 
         mock_module.exit_json.assert_called_once_with(
             changed=True, workload=_expected_facts(status="destroying", destroyed=True)
@@ -484,7 +485,7 @@ class TestDeleteWorkload:
         mock_module.params = _params(eradicate=True)
         mock_array = _mock_array()
 
-        delete_workload(mock_module, mock_array, _mock_workload())
+        delete_workload(mock_module, mock_array, "arrayB", _mock_workload())
 
         mock_array.patch_workloads.assert_not_called()
         mock_array.delete_workloads.assert_not_called()
@@ -507,7 +508,7 @@ class TestEradicateWorkload:
         mock_module.params = _params()
         mock_array = _mock_array()
 
-        eradicate_workload(mock_module, mock_array)
+        eradicate_workload(mock_module, mock_array, "arrayB")
 
         mock_array.delete_workloads.assert_not_called()
         mock_module.exit_json.assert_called_once_with(
@@ -526,7 +527,10 @@ class TestRecoverWorkload:
         mock_array = _mock_array()
 
         recover_workload(
-            mock_module, mock_array, _mock_workload(status="destroyed", destroyed=True)
+            mock_module,
+            mock_array,
+            "arrayB",
+            _mock_workload(status="destroyed", destroyed=True),
         )
 
         mock_array.patch_workloads.assert_not_called()
@@ -542,7 +546,10 @@ class TestRecoverWorkload:
         mock_array = _mock_array()
 
         recover_workload(
-            mock_module, mock_array, _mock_workload(status="destroyed", destroyed=True)
+            mock_module,
+            mock_array,
+            "arrayB",
+            _mock_workload(status="destroyed", destroyed=True),
         )
 
         mock_module.exit_json.assert_called_once_with(
@@ -560,7 +567,9 @@ class TestRenameWorkload:
         mock_module.params = _params(name="old-workload", rename="new-workload")
         mock_array = _mock_array()
 
-        rename_workload(mock_module, mock_array, _mock_workload(name="old-workload"))
+        rename_workload(
+            mock_module, mock_array, "arrayB", _mock_workload(name="old-workload")
+        )
 
         mock_array.patch_workloads.assert_not_called()
         mock_module.exit_json.assert_called_once_with(
@@ -596,7 +605,7 @@ class TestCreateWorkload:
         mock_preset_config.volume_configurations = []
         mock_preset_config.workload_tags = []
 
-        create_workload(mock_module, mock_array, mock_preset_config)
+        create_workload(mock_module, mock_array, "pod1", mock_preset_config)
 
         mock_array.post_workloads.assert_not_called()
         mock_module.exit_json.assert_called_once_with(
@@ -615,7 +624,7 @@ class TestCreateWorkload:
         mock_module.params = _params(preset="test-preset", context="pod1", wait=False)
         mock_array = _mock_array()
 
-        create_workload(mock_module, mock_array, Mock(parameters=[]))
+        create_workload(mock_module, mock_array, "pod1", Mock(parameters=[]))
 
         mock_module.exit_json.assert_called_once_with(
             changed=True,
@@ -877,7 +886,7 @@ class TestConnectOrDisconnectVolumes:
         mock_wait_for_status.return_value = None
 
         connect_or_disconnect_volumes(
-            mock_module, mock_array, "connect", _mock_workload()
+            mock_module, mock_array, "pod1", "connect", _mock_workload()
         )
 
         mock_array.post_connections.assert_not_called()
@@ -895,7 +904,7 @@ class TestConnectOrDisconnectVolumes:
         mock_array = _mock_array(connected=WORKLOAD_VOLUMES)
 
         connect_or_disconnect_volumes(
-            mock_module, mock_array, "disconnect", _mock_workload()
+            mock_module, mock_array, "pod1", "disconnect", _mock_workload()
         )
 
         mock_array.delete_connections.assert_not_called()
@@ -915,7 +924,7 @@ class TestConnectOrDisconnectVolumes:
         mock_wait_for_status.return_value = None
 
         connect_or_disconnect_volumes(
-            mock_module, mock_array, "connect", _mock_workload()
+            mock_module, mock_array, "pod1", "connect", _mock_workload()
         )
 
         mock_array.post_connections.assert_not_called()
@@ -933,7 +942,7 @@ class TestConnectOrDisconnectVolumes:
         mock_array = _mock_array(connected=[])
 
         connect_or_disconnect_volumes(
-            mock_module, mock_array, "disconnect", _mock_workload()
+            mock_module, mock_array, "pod1", "disconnect", _mock_workload()
         )
 
         mock_array.delete_connections.assert_not_called()
@@ -955,7 +964,7 @@ class TestConnectOrDisconnectVolumes:
         mock_wait_for_status.return_value = _mock_workload(context="pod1")
 
         connect_or_disconnect_volumes(
-            mock_module, mock_array, "connect", _mock_workload(context="pod1")
+            mock_module, mock_array, "pod1", "connect", _mock_workload(context="pod1")
         )
 
         mock_wait_for_status.assert_called_once_with(
@@ -981,7 +990,7 @@ class TestDeleteWorkloadSuccess:
             status="destroying", destroyed=True, time_remaining=86400000
         )
 
-        delete_workload(mock_module, mock_array)
+        delete_workload(mock_module, mock_array, "pod1")
 
         mock_array.patch_workloads.assert_called_once()
         mock_module.exit_json.assert_called_once_with(
@@ -1004,7 +1013,7 @@ class TestEradicateWorkloadSuccess:
         mock_array = _mock_array()
         mock_array.delete_workloads.return_value = Mock(status_code=200)
 
-        eradicate_workload(mock_module, mock_array)
+        eradicate_workload(mock_module, mock_array, "pod1")
 
         mock_array.delete_workloads.assert_called_once()
         mock_module.exit_json.assert_called_once_with(
@@ -1026,7 +1035,7 @@ class TestRecoverWorkloadSuccess:
             status="recovering"
         )
 
-        recover_workload(mock_module, mock_array)
+        recover_workload(mock_module, mock_array, "pod1")
 
         mock_array.patch_workloads.assert_called_once()
         mock_module.exit_json.assert_called_once_with(
@@ -1051,7 +1060,7 @@ class TestRenameWorkloadSuccess:
             name="new-workload"
         )
 
-        rename_workload(mock_module, mock_array)
+        rename_workload(mock_module, mock_array, "pod1")
 
         mock_array.patch_workloads.assert_called_once()
         mock_module.exit_json.assert_called_once_with(
@@ -1083,7 +1092,7 @@ class TestCreateWorkloadSuccess:
         mock_preset_config.volume_configurations = Mock()
         mock_preset_config.workload_tags = Mock()
 
-        create_workload(mock_module, mock_array, mock_preset_config)
+        create_workload(mock_module, mock_array, "pod1", mock_preset_config)
 
         mock_array.post_workloads.assert_called_once()
         mock_module.exit_json.assert_called_once_with(
@@ -1163,7 +1172,7 @@ class TestCreateWorkloadSuccess:
         mock_preset_config = Mock()
         mock_preset_config.parameters = []
 
-        create_workload(mock_module, mock_array, mock_preset_config)
+        create_workload(mock_module, mock_array, "pod1", mock_preset_config)
 
         mock_array.post_workloads.assert_not_called()
         # The contract keeps its shape, so result.workload.context works under --check
@@ -1198,7 +1207,9 @@ class TestExpandWorkloadSuccess:
         mock_vol_config.name = "vol-config1"
         volume_configs = [mock_vol_config]
 
-        expand_workload(mock_module, mock_array, volume_configs, _mock_workload())
+        expand_workload(
+            mock_module, mock_array, "pod1", volume_configs, _mock_workload()
+        )
 
         assert mock_create_vol.call_count == 2
         # The host is reconciled against the full volume set, not just the new
@@ -1231,7 +1242,9 @@ class TestExpandWorkloadSuccess:
         volume_configs = [mock_vol_config]
 
         with pytest.raises(SystemExit):
-            expand_workload(mock_module, mock_array, volume_configs, _mock_workload())
+            expand_workload(
+                mock_module, mock_array, "pod1", volume_configs, _mock_workload()
+            )
 
         mock_create_vol.assert_not_called()
         mock_module.fail_json.assert_called_once()
@@ -1264,7 +1277,7 @@ class TestExpandWorkloadSuccess:
         vol_config = Mock()
         vol_config.name = "vol-config1"
 
-        expand_workload(mock_module, mock_array, [vol_config], _mock_workload())
+        expand_workload(mock_module, mock_array, "pod1", [vol_config], _mock_workload())
 
         mock_module.fail_json.assert_not_called()
         mock_create_vol.assert_not_called()
@@ -1290,7 +1303,7 @@ class TestDeleteWorkloadWithEradicate:
             destroyed=True
         )
 
-        delete_workload(mock_module, mock_array)
+        delete_workload(mock_module, mock_array, "pod1")
 
         mock_array.patch_workloads.assert_called_once()
         # The array delete_workload acted on is handed on, not looked up again
@@ -1316,7 +1329,7 @@ class TestDeleteWorkloadWithEradicate:
         mock_array.delete_workloads.return_value = Mock(status_code=200)
 
         with pytest.raises(SystemExit):
-            delete_workload(mock_module, mock_array)
+            delete_workload(mock_module, mock_array, "pod1")
 
         mock_array.delete_workloads.assert_called_once()
         mock_module.exit_json.assert_called_once_with(
@@ -1334,7 +1347,7 @@ class TestDeleteWorkloadWithEradicate:
             destroyed=True
         )
 
-        delete_workload(mock_module, mock_array)
+        delete_workload(mock_module, mock_array, "pod1")
 
         mock_array.patch_workloads.assert_called_once()
         mock_module.exit_json.assert_called_once_with(
@@ -1359,7 +1372,7 @@ class TestRecoverWorkloadWithHost:
         mock_array.patch_workloads.return_value = _mock_workload_response()
         mock_wait_for_status.return_value = _mock_workload()
 
-        recover_workload(mock_module, mock_array)
+        recover_workload(mock_module, mock_array, "pod1")
 
         mock_array.patch_workloads.assert_called_once()
         # Recovered volumes may have kept their connections, so the diff inside
@@ -1394,7 +1407,7 @@ class TestConnectOrDisconnectVolumesSuccess:
         mock_wait_for_status.return_value = _mock_workload()
 
         connect_or_disconnect_volumes(
-            mock_module, mock_array, "connect", _mock_workload()
+            mock_module, mock_array, "pod1", "connect", _mock_workload()
         )
 
         mock_array.post_connections.assert_called_once_with(
@@ -1419,7 +1432,7 @@ class TestConnectOrDisconnectVolumesSuccess:
         mock_array = _mock_array(connected=WORKLOAD_VOLUMES)
 
         connect_or_disconnect_volumes(
-            mock_module, mock_array, "disconnect", _mock_workload()
+            mock_module, mock_array, "pod1", "disconnect", _mock_workload()
         )
 
         mock_array.delete_connections.assert_called_once_with(
@@ -1454,7 +1467,7 @@ class TestCreateVolume:
             status_code=200, items=[created_volume]
         )
 
-        result = _create_volume(mock_module, mock_array)
+        result = _create_volume(mock_module, mock_array, "pod1")
 
         mock_array.post_volumes.assert_called_once()
         mock_check_response.assert_called_once()
@@ -2439,7 +2452,7 @@ class TestWaitDisabled:
             context="pod1", status="creating"
         )
 
-        create_workload(mock_module, mock_array, Mock(parameters=[]))
+        create_workload(mock_module, mock_array, "pod1", Mock(parameters=[]))
 
         mock_wait_for.assert_not_called()
         # The immediate POST response is what gets reported
@@ -2459,7 +2472,7 @@ class TestWaitDisabled:
             context="pod1", status="destroying", destroyed=True
         )
 
-        delete_workload(mock_module, mock_array, _mock_workload())
+        delete_workload(mock_module, mock_array, "pod1", _mock_workload())
 
         mock_wait_for.assert_not_called()
 
@@ -2477,7 +2490,9 @@ class TestWaitDisabled:
             name="new-workload", context="pod1"
         )
 
-        rename_workload(mock_module, mock_array, _mock_workload(name="old-workload"))
+        rename_workload(
+            mock_module, mock_array, "pod1", _mock_workload(name="old-workload")
+        )
 
         mock_wait_for.assert_not_called()
         mock_module.exit_json.assert_called_once_with(
@@ -2505,7 +2520,7 @@ class TestWaitDisabled:
         vol_config.name = "vol-config1"
         mock_array = _mock_array()
 
-        expand_workload(mock_module, mock_array, [vol_config], _mock_workload())
+        expand_workload(mock_module, mock_array, "pod1", [vol_config], _mock_workload())
 
         # The facts describe the workload handed in, not None
         assert (
@@ -2526,7 +2541,7 @@ class TestWaitDisabled:
         mock_array = _mock_array()
         mock_array.delete_workloads.return_value = Mock(status_code=200)
 
-        eradicate_workload(mock_module, mock_array)
+        eradicate_workload(mock_module, mock_array, "pod1")
 
         mock_wait_for.assert_not_called()
 
@@ -2548,7 +2563,7 @@ class TestWaitForCreate:
         # The settled state the wait resolves to
         mock_wait_for.return_value = _mock_workload(context="pod1", status="ready")
 
-        create_workload(mock_module, mock_array, Mock(parameters=[]))
+        create_workload(mock_module, mock_array, "pod1", Mock(parameters=[]))
 
         wait_kwargs = mock_wait_for.call_args.kwargs
         assert wait_kwargs["timeout"] == 300
@@ -2572,7 +2587,7 @@ class TestWaitForCreate:
         mock_array.get_workloads.return_value = _mock_workload_response(context="pod1")
         mock_wait_for.return_value = _mock_workload(context="pod1")
 
-        create_workload(mock_module, mock_array, Mock(parameters=[]))
+        create_workload(mock_module, mock_array, "pod1", Mock(parameters=[]))
 
         probe = mock_wait_for.call_args.kwargs["probe"]
         probe()
@@ -2596,7 +2611,7 @@ class TestWaitForCreate:
         mock_array.post_workloads.return_value = _mock_workload_response(context="pod1")
         mock_wait_for.return_value = _mock_workload(context="pod1")
 
-        create_workload(mock_module, mock_array, Mock(parameters=[]))
+        create_workload(mock_module, mock_array, "pod1", Mock(parameters=[]))
 
         is_done = mock_wait_for.call_args.kwargs["is_done"]
         assert is_done(_mock_workload(status="ready")) is True
@@ -2619,7 +2634,7 @@ class TestWaitForCreate:
         mock_array.post_workloads.return_value = _mock_workload_response(context="pod1")
         mock_wait_for.return_value = _mock_workload(context="pod1")
 
-        create_workload(mock_module, mock_array, Mock(parameters=[]))
+        create_workload(mock_module, mock_array, "pod1", Mock(parameters=[]))
 
         detail = mock_wait_for.call_args.kwargs["detail"]
         workload = _mock_workload(status_details=["creating volume foo-vol1"])
@@ -2701,7 +2716,10 @@ class TestWaitForRecover:
         mock_wait_for.return_value = _mock_workload(context="pod1", status="ready")
 
         recover_workload(
-            mock_module, mock_array, _mock_workload(status="destroyed", destroyed=True)
+            mock_module,
+            mock_array,
+            "pod1",
+            _mock_workload(status="destroyed", destroyed=True),
         )
 
         assert (
@@ -2737,7 +2755,7 @@ class TestWaitForDelete:
             time_remaining=86400000,
         )
 
-        delete_workload(mock_module, mock_array, _mock_workload())
+        delete_workload(mock_module, mock_array, "pod1", _mock_workload())
 
         assert (
             mock_wait_for.call_args.kwargs["description"]
@@ -2772,7 +2790,7 @@ class TestWaitForEradicate:
         mock_array = _mock_array()
         mock_array.delete_workloads.return_value = Mock(status_code=200)
 
-        eradicate_workload(mock_module, mock_array)
+        eradicate_workload(mock_module, mock_array, "pod1")
 
         assert (
             mock_wait_for.call_args.kwargs["description"]
@@ -2799,7 +2817,7 @@ class TestWaitForEradicate:
         mock_array.delete_workloads.return_value = Mock(status_code=200)
         mock_array.get_workloads.return_value = _mock_not_found_response(404)
 
-        eradicate_workload(mock_module, mock_array)
+        eradicate_workload(mock_module, mock_array, "pod1")
 
         probe = mock_wait_for.call_args.kwargs["probe"]
         assert probe() is None
@@ -2818,7 +2836,7 @@ class TestWaitForEradicate:
         mock_array.delete_workloads.return_value = Mock(status_code=200)
         mock_array.get_workloads.return_value = Mock(status_code=500, items=[])
 
-        eradicate_workload(mock_module, mock_array)
+        eradicate_workload(mock_module, mock_array, "pod1")
         mock_check_response.reset_mock()
 
         probe = mock_wait_for.call_args.kwargs["probe"]
@@ -2855,6 +2873,7 @@ class TestWaitForExpand:
         expand_workload(
             mock_module,
             mock_array,
+            "pod1",
             [vol_config],
             _mock_workload(context="pod1"),
         )
@@ -3715,7 +3734,7 @@ class TestVolumeReadsHappenOnce:
         mock_wait_for_status.return_value = _mock_workload()
 
         connect_or_disconnect_volumes(
-            mock_module, mock_array, "connect", _mock_workload()
+            mock_module, mock_array, "pod1", "connect", _mock_workload()
         )
 
         mock_array.get_volumes.assert_called_once()
@@ -3733,7 +3752,9 @@ class TestVolumeReadsHappenOnce:
             name="new-workload"
         )
 
-        rename_workload(mock_module, mock_array, _mock_workload(name="old-workload"))
+        rename_workload(
+            mock_module, mock_array, "pod1", _mock_workload(name="old-workload")
+        )
 
         mock_array.get_volumes.assert_called_once()
         # Read under the new name, since that is what the workload is called now
@@ -3751,7 +3772,7 @@ class TestVolumeReadsHappenOnce:
         mock_array = _mock_array()
         mock_array.delete_workloads.return_value = Mock(status_code=200)
 
-        eradicate_workload(mock_module, mock_array)
+        eradicate_workload(mock_module, mock_array, "pod1")
 
         mock_array.get_volumes.assert_not_called()
         mock_module.exit_json.assert_called_once_with(
@@ -3814,6 +3835,7 @@ class TestCheckModeMakesNoChanges:
         expand_workload(
             mock_module,
             mock_array,
+            "pod1",
             [vol_config],
             _mock_workload(context="pod1"),
         )
@@ -3827,7 +3849,7 @@ class TestCheckModeMakesNoChanges:
         mock_module = self._module(preset="test-preset", context="pod1")
         mock_array = _mock_array()
 
-        create_workload(mock_module, mock_array, Mock(parameters=[]))
+        create_workload(mock_module, mock_array, "pod1", Mock(parameters=[]))
 
         assert _writes(mock_array) == {}
 
@@ -3837,7 +3859,7 @@ class TestCheckModeMakesNoChanges:
         mock_module = self._module(context="pod1")
         mock_array = _mock_array()
 
-        delete_workload(mock_module, mock_array, _mock_workload())
+        delete_workload(mock_module, mock_array, "pod1", _mock_workload())
 
         assert _writes(mock_array) == {}
 
@@ -3847,7 +3869,7 @@ class TestCheckModeMakesNoChanges:
         mock_module = self._module(context="pod1", eradicate=True)
         mock_array = _mock_array()
 
-        delete_workload(mock_module, mock_array, _mock_workload())
+        delete_workload(mock_module, mock_array, "pod1", _mock_workload())
 
         assert _writes(mock_array) == {}
 
@@ -3856,7 +3878,7 @@ class TestCheckModeMakesNoChanges:
         mock_module = self._module(context="pod1")
         mock_array = _mock_array()
 
-        eradicate_workload(mock_module, mock_array)
+        eradicate_workload(mock_module, mock_array, "pod1")
 
         assert _writes(mock_array) == {}
 
@@ -3867,7 +3889,10 @@ class TestCheckModeMakesNoChanges:
         mock_array = _mock_array()
 
         recover_workload(
-            mock_module, mock_array, _mock_workload(status="destroyed", destroyed=True)
+            mock_module,
+            mock_array,
+            "pod1",
+            _mock_workload(status="destroyed", destroyed=True),
         )
 
         assert _writes(mock_array) == {}
@@ -3878,7 +3903,7 @@ class TestCheckModeMakesNoChanges:
         mock_module = self._module(context="pod1", rename="new-workload")
         mock_array = _mock_array()
 
-        rename_workload(mock_module, mock_array, _mock_workload())
+        rename_workload(mock_module, mock_array, "pod1", _mock_workload())
 
         assert _writes(mock_array) == {}
 
@@ -3890,7 +3915,7 @@ class TestCheckModeMakesNoChanges:
         mock_wait_for_status.return_value = None
 
         connect_or_disconnect_volumes(
-            mock_module, mock_array, "connect", _mock_workload()
+            mock_module, mock_array, "pod1", "connect", _mock_workload()
         )
 
         assert _writes(mock_array) == {}
@@ -3902,7 +3927,7 @@ class TestCheckModeMakesNoChanges:
         mock_array = _mock_array(connected=WORKLOAD_VOLUMES)
 
         connect_or_disconnect_volumes(
-            mock_module, mock_array, "disconnect", _mock_workload()
+            mock_module, mock_array, "pod1", "disconnect", _mock_workload()
         )
 
         assert _writes(mock_array) == {}
@@ -3921,7 +3946,7 @@ class TestCreateVolumeCheckMode:
         mock_module.params = _params(volume_configuration="vc1", context="pod1")
         mock_array = _mock_array()
 
-        assert _create_volume(mock_module, mock_array) is None
+        assert _create_volume(mock_module, mock_array, "pod1") is None
         mock_array.post_volumes.assert_not_called()
 
     @patch("plugins.modules.purefa_workload.VolumePost")
@@ -3945,7 +3970,7 @@ class TestCreateVolumeCheckMode:
         vol_config = Mock()
         vol_config.name = "vol-config1"
 
-        expand_workload(mock_module, mock_array, [vol_config], workload)
+        expand_workload(mock_module, mock_array, "pod1", [vol_config], workload)
 
         # Nothing was created, so there are no names to wait on - not two Nones
         mock_wait_for_volumes.assert_called_once_with(
@@ -4078,14 +4103,14 @@ class TestCheckModePredictsTheRealRun:
         checked = Mock()
         checked.check_mode = True
         checked.params = _params(context="pod1")
-        delete_workload(checked, _mock_array(), _mock_workload())
+        delete_workload(checked, _mock_array(), "pod1", _mock_workload())
 
         real = Mock()
         real.check_mode = False
         real.params = _params(context="pod1")
         real_array = _mock_array()
         real_array.patch_workloads.return_value = Mock(status_code=200, items=[settled])
-        delete_workload(real, real_array, _mock_workload())
+        delete_workload(real, real_array, "pod1", _mock_workload())
 
         predicted = checked.exit_json.call_args.kwargs["workload"]
         actual = real.exit_json.call_args.kwargs["workload"]
@@ -4107,7 +4132,7 @@ class TestCheckModePredictsTheRealRun:
         checked = Mock()
         checked.check_mode = True
         checked.params = _params(context="pod1", eradicate=True)
-        delete_workload(checked, _mock_array(), _mock_workload())
+        delete_workload(checked, _mock_array(), "pod1", _mock_workload())
 
         real = Mock()
         real.check_mode = False
@@ -4120,7 +4145,7 @@ class TestCheckModePredictsTheRealRun:
         )
         real_array.delete_workloads.return_value = Mock(status_code=200)
         with pytest.raises(SystemExit):
-            delete_workload(real, real_array, _mock_workload())
+            delete_workload(real, real_array, "pod1", _mock_workload())
 
         eradicated = {"name": "test-workload", "context": "pod1"}
         assert checked.exit_json.call_args.kwargs["workload"] == eradicated
@@ -4138,7 +4163,7 @@ class TestCheckModePredictsTheRealRun:
         mock_module.check_mode = True
         mock_module.params = _params(preset="test-preset", context="pod1", wait=wait)
 
-        create_workload(mock_module, _mock_array(), Mock(parameters=[]))
+        create_workload(mock_module, _mock_array(), "pod1", Mock(parameters=[]))
 
         facts = mock_module.exit_json.call_args.kwargs["workload"]
         assert facts["status"] == expected_status
@@ -4582,7 +4607,7 @@ class TestNullFieldsFromTheArray:
         )
         mock_wait_for.return_value = _api_workload()
 
-        create_workload(mock_module, array, Mock(), Mock(parameters=[]))
+        create_workload(mock_module, array, "arrayB", Mock(parameters=[]))
 
         mock_module.fail_json.assert_not_called()
         facts = mock_module.exit_json.call_args.kwargs["workload"]
@@ -6020,7 +6045,7 @@ class TestDuplicateNameIsReportedNotHidden:
         array = self._array(["arrayB"])
         array.post_workloads.return_value = _mock_workload_response(context="pod1")
 
-        create_workload(module, array, Mock(parameters=[]), "pod1", others=["arrayB"])
+        create_workload(module, array, "pod1", Mock(parameters=[]), others=["arrayB"])
 
         module.warn.assert_called_once()
         warning = module.warn.call_args[0][0]
