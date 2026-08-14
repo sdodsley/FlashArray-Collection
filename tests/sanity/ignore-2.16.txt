@@ -120,3 +120,4 @@ plugins/modules/purefa_vnc.py import-2.7
 plugins/modules/purefa_volume.py import-2.7
 plugins/modules/purefa_volume_tags.py import-2.7
 plugins/modules/purefa_workload.py import-2.7
+plugins/modules/purefa_zte.py import-2.7
