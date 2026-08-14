@@ -46,7 +46,6 @@ plugins/modules/purefa_vnc.py compile-2.7
 plugins/modules/purefa_volume.py compile-2.7
 plugins/modules/purefa_volume_tags.py compile-2.7
 plugins/modules/purefa_workload.py compile-2.7
-plugins/modules/purefa_zte.py compile-2.7
 tests/unit/plugins/modules/test_purefa_policy.py compile-2.7
 tests/unit/plugins/modules/test_purefa_volume.py compile-2.7
 plugins/module_utils/api_helpers.py import-2.7
