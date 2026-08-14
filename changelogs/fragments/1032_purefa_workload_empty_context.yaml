@@ -1,2 +1,0 @@
-bugfixes:
-  - purefa_workload - Default an empty context to the placement target, or the local array name, so that recommendation-based placement no longer fails with an internal error when no context is named
