@@ -44,12 +44,15 @@ options:
     description:
     - The ZTE phase to perform.
     - I(start) begins Phase 1, securely wiping the drives and generating the
-      sanitization certificate.
+      sanitization certificate. If a reset is already running this is a no-op.
     - I(status) returns the current ZTE process status and, when available,
       the sanitization certificate. This is non-destructive.
     - I(finalize) performs Phase 3, finalizing the reset. This permanently
       deletes the sanitization certificate, so ensure it has been saved first.
-    - I(cancel) cancels a ZTE process that is in a failed state.
+      A finalized array no longer reports a reset process, so re-running
+      I(finalize) reports no change rather than failing.
+    - I(cancel) cancels a ZTE process that is in a failed state. If no reset
+      is present, or the reset has not failed, this is a no-op.
     type: str
     choices: [ start, status, finalize, cancel ]
     default: status
@@ -64,6 +67,9 @@ options:
   preserve_config:
     description:
     - Whether to preserve array configuration data during the drive wipe.
+    - Note that the default preserves all configuration data. Set this to
+      C(false) to wipe configuration data as well, for a completely
+      factory-fresh array.
     - Only used when I(state=start).
     type: bool
     default: true
@@ -179,10 +185,11 @@ zte:
   contains:
     status:
       description:
-      - The status of the ZTE process, for example C(resetting),
-        C(waiting_for_finalize), C(downloading), C(reset_failed),
-        C(download_failed), C(reimage_failed) or C(finalized).
-      - An empty string indicates that no ZTE process is in progress.
+      - The status of the ZTE process. One of C(resetting),
+        C(waiting_for_finalize), C(downloading), C(downloaded),
+        C(reset_failed), C(download_failed) or C(reimage_failed).
+      - An empty string indicates that no ZTE process is in progress. This is
+        both the pre-start and the post-finalize state.
       type: str
       returned: always
     details:
@@ -190,8 +197,11 @@ zte:
       type: str
       returned: always
     image_download_progress:
-      description: The image download progress when reinstalling the image.
-      type: str
+      description:
+      - The image download progress, in decimal format, when reinstalling the
+        image.
+      - Null when no image download is in progress.
+      type: float
       returned: always
     sanitization_certificate:
       description:
@@ -233,18 +243,48 @@ ACTIVE_STATES = frozenset(
     ]
 )
 
+# Statuses that indicate the ZTE process has failed. These are the only
+# statuses from which the array will accept a cancellation.
+FAILED_STATES = frozenset(
+    [
+        "reset_failed",
+        "download_failed",
+        "reimage_failed",
+    ]
+)
 
-def get_erasure(array):
+# Statuses from which the array will accept a finalize request
+FINALIZABLE_STATES = frozenset(
+    [
+        "waiting_for_finalize",
+        "downloaded",
+    ]
+)
+
+
+def response_erasure(res):
+    """Return the erasure object carried by an API response, or None."""
+    items = list(getattr(res, "items", None) or [])
+    return items[0] if items else None
+
+
+def get_erasure(module, array):
     """Return the current erasure (factory reset) object, or None.
 
     A successful Option 1 finalize leaves no erasure in progress, in which case
-    ``get_arrays_erasures`` returns an empty item list.
+    ``get_arrays_erasures`` returns a 200 with an empty item list. Any non-200
+    is a genuine API failure and must not be confused with "no reset running".
     """
     res = array.get_arrays_erasures()
-    if res.status_code != 200:
-        return None
-    items = list(res.items)
-    return items[0] if items else None
+    check_response(res, module, "Failed to get ZTE status")
+    return response_erasure(res)
+
+
+def erasure_status(current):
+    """Return the status string of an erasure object, or an empty string."""
+    if current is None:
+        return ""
+    return getattr(current, "status", "") or ""
 
 
 def erasure_facts(current):
@@ -253,20 +293,21 @@ def erasure_facts(current):
         return {
             "status": "",
             "details": "",
-            "image_download_progress": "",
+            "image_download_progress": None,
             "sanitization_certificate": "",
         }
     return {
-        "status": getattr(current, "status", "") or "",
+        "status": erasure_status(current),
         "details": getattr(current, "details", "") or "",
-        "image_download_progress": getattr(current, "image_download_progress", "")
-        or "",
+        # A numeric field - 0 is a valid progress value, so it must not be
+        # collapsed to an empty string.
+        "image_download_progress": getattr(current, "image_download_progress", None),
         "sanitization_certificate": getattr(current, "sanitization_certificate", "")
         or "",
     }
 
 
-def zte_status(module, array, current):
+def zte_status(module, current):
     """Report the current ZTE status. Non-destructive."""
     module.exit_json(changed=False, zte=erasure_facts(current))
 
@@ -278,10 +319,21 @@ def start_zte(module, array, current):
             msg="To start ZTE the `eradicate` parameter must be set to true. "
             "This permanently and unrecoverably erases all data on the array."
         )
-    if current is not None and getattr(current, "status", "") in ACTIVE_STATES:
-        # A reset is already in progress - nothing to do
-        module.exit_json(changed=False, zte=erasure_facts(current))
-    changed = True
+        return
+    if current is not None:
+        status = erasure_status(current)
+        if status in ACTIVE_STATES:
+            # A reset is already in progress - nothing to do
+            module.exit_json(changed=False, zte=erasure_facts(current))
+            return
+        module.fail_json(
+            msg="Cannot start ZTE. A factory reset already exists with status "
+            "'{0}'. Cancel it using `state: cancel` before starting a new "
+            "reset. Details: {1}".format(
+                status, getattr(current, "details", "") or "none"
+            )
+        )
+        return
     if not module.check_mode:
         preserve = ["all"] if module.params["preserve_config"] else []
         res = array.post_arrays_erasures(
@@ -290,8 +342,11 @@ def start_zte(module, array, current):
             skip_phonehome_check=module.params["skip_phonehome_check"],
         )
         check_response(res, module, "Failed to start ZTE")
-        current = get_erasure(array)
-    module.exit_json(changed=changed, zte=erasure_facts(current))
+        # Take the new state from the POST response. The REST service becomes
+        # unavailable shortly after the wipe starts, so a follow-up GET here
+        # could fail an operation that actually succeeded.
+        current = response_erasure(res)
+    module.exit_json(changed=True, zte=erasure_facts(current))
 
 
 def finalize_zte(module, array, current):
@@ -301,9 +356,28 @@ def finalize_zte(module, array, current):
             msg="To finalize ZTE the `eradicate` parameter must be set to true. "
             "This permanently deletes the sanitization certificate."
         )
+        return
     if current is None:
-        module.fail_json(msg="There is no ZTE process to finalize")
-    changed = True
+        # A successful finalize removes the erasure object, so "no reset
+        # present" is the post-finalize steady state. Report no change rather
+        # than failing, so the task stays idempotent across re-runs.
+        module.exit_json(changed=False, zte=erasure_facts(None))
+        return
+    status = erasure_status(current)
+    if status in FAILED_STATES:
+        module.fail_json(
+            msg="Cannot finalize ZTE. The factory reset is in a failed state "
+            "('{0}') and must be cancelled using `state: cancel`. "
+            "Details: {1}".format(status, getattr(current, "details", "") or "none")
+        )
+        return
+    if status not in FINALIZABLE_STATES:
+        module.fail_json(
+            msg="Cannot finalize ZTE. The factory reset is not ready to be "
+            "finalized (status '{0}'). Wait until the status is "
+            "`waiting_for_finalize`.".format(status)
+        )
+        return
     if not module.check_mode:
         kwargs = dict(
             finalize=True,
@@ -318,20 +392,25 @@ def finalize_zte(module, array, current):
             )
         res = array.patch_arrays_erasures(**kwargs)
         check_response(res, module, "Failed to finalize ZTE")
-        current = get_erasure(array)
-    module.exit_json(changed=changed, zte=erasure_facts(current))
+        current = response_erasure(res)
+    module.exit_json(changed=True, zte=erasure_facts(current))
 
 
 def cancel_zte(module, array, current):
     """Cancel a ZTE process that is in a failed state."""
     if current is None:
         module.exit_json(changed=False, zte=erasure_facts(current))
-    changed = True
+        return
+    if erasure_status(current) not in FAILED_STATES:
+        # The array only accepts a cancellation for a failed reset, so there
+        # is nothing to cancel here.
+        module.exit_json(changed=False, zte=erasure_facts(current))
+        return
     if not module.check_mode:
         res = array.delete_arrays_erasures()
         check_response(res, module, "Failed to cancel ZTE")
-        current = get_erasure(array)
-    module.exit_json(changed=changed, zte=erasure_facts(current))
+        current = None
+    module.exit_json(changed=True, zte=erasure_facts(current))
 
 
 def main():
@@ -366,7 +445,7 @@ def main():
             "Minimum version required: {0}".format(MIN_REQUIRED_API_VERSION)
         )
 
-    current = get_erasure(array)
+    current = get_erasure(module, array)
 
     state = module.params["state"]
     if state == "start":
@@ -376,7 +455,7 @@ def main():
     elif state == "cancel":
         cancel_zte(module, array, current)
     else:
-        zte_status(module, array, current)
+        zte_status(module, current)
 
 
 if __name__ == "__main__":
