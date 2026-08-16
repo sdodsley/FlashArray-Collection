@@ -28,33 +28,16 @@ options:
     description:
     - Name of the fleet member on which to perform the workload operation, or
       the name of the fleet itself.
-    - Defaults to the whole fleet, which is also what naming the fleet itself
-      means - "the workload with this name, wherever it is in the fleet". Every
-      operation except a create acts on a workload that already exists, so the
-      member holding it is looked up rather than stated, and the answer is the
-      same whichever member the request was sent to.
-    - A create is the one exception, because there is nothing to look up. A
-      create that names neither this nor I(placement) fails asking for a member,
-      unless I(recommendation) is set and Fusion chooses one.
+    - Defaults to the whole fleet. Selecting the fleet means - "the workload
+      with this name, wherever it is in the fleet".
+    - A create is the one exception, because there is nothing to look up. Either
+      specify this or I(placement), or set I(recommendation), in which case
+      Fusion chooses the target array.
     - A workload is identified by its name B(and) its member. The same name on
       two fleet members is two separate workloads, so naming a different member
       creates a second one rather than moving the first. If two or more members
-      hold the name, the task is ambiguous and fails naming them, rather than
-      picking one.
-    - An explicitly empty string is refused rather than read as an omission, so
-      that a value computed from an undefined variable cannot silently widen a
-      delete to the whole fleet. A Jinja C(default) filter yielding an empty
-      string is caught this way. One yielding C(omit) is not, and nothing can
-      catch it - it removes the option entirely, which is indistinguishable from
-      never setting it.
-    - Does not narrow the search when I(recommendation) is true. Fusion may have
-      placed the workload on any member, so the fleet is searched whatever this
-      says, and this only routes the request. If the workload already exists on
-      any member, that one is used.
-    - B(API cost.) Naming a member is one read against one array. Omitting it
-      searches the fleet - one read on arrays that support the fleet-wide
-      context, and one read per member on those that do not. Name the member when
-      looping over many workloads.
+      hold the name in the same context (e.g. Fleet), the task is ambiguous and
+      fails naming them, rather than picking one.
     type: str
     version_added: '1.36.0'
   host:
@@ -95,21 +78,13 @@ options:
   eradicate:
     description:
     - whether to eradicate a workload
-    - Applies only to I(state=absent). Any other state is refused rather than
-      ignored, since there is no reading of "make sure this exists, and destroy
-      it for good".
+    - Applies only to I(state=absent). Any other state is refused.
     type: bool
     default: false
   placement:
     description:
     - Name of the fleet member on which the workload will be deployed.
-    - A workload is deployed on its I(context), and the API has no separate
-      placement, so the two mean the same thing and this accepts everything
-      I(context) does, including the fleet's own name. Setting both to different
-      members fails; set one, or set both to the same value.
-    - Deliberately a separate option rather than an alias of I(context), so that
-      naming both with different members is reported instead of one of them
-      silently winning.
+    - Same as I(context), so naming both with different members fails.
     - Naming neither this nor I(context) means the whole fleet - see I(context)
       for what that resolves to, and for the one operation that cannot default.
     - Ignored when I(recommendation) is true, as the recommended target
@@ -118,13 +93,12 @@ options:
   recommendation:
     description:
     - whether to use the Fusion placement recommendation based
-      on the workload preset definitions.
+      on the workload preset definitions during creates.
     - This will use the first recommended placement if more than
       one is available
-    - Only a create asks Fusion anything. Every other operation works from the
-      member already holding the workload, which is looked up rather than chosen,
-      so this is reported as not applied rather than silently dropped - including
-      on a I(state=present) task that turned out to have nothing to create.
+    - Only useful during a create. Every other operation works from the member
+      already holding the workload, which is looked up rather than chosen, so
+      setting this there changes nothing.
     default: false
     type: bool
   parameters:
@@ -184,15 +158,11 @@ options:
     - Number of additional volumes to add to an existing workload
     - Only used with I(state=expand), where it is required.
     - Must be a positive integer. Zero is rejected.
-    - Any other state is told the option was not applied, rather than dropping it
-      silently.
     type: int
   volume_configuration:
     description:
     - Name of the volume configuration to use for adding volumes
       to a workload
-    - Only used with I(state=expand), where it is required. Any other state is
-      told the option was not applied, rather than dropping it silently.
     type: str
   wait:
     description:
@@ -208,10 +178,7 @@ options:
       I(wait) is true. The task fails if that operation has not finished within
       this time.
     - This bounds each operation individually rather than the task as a whole, so
-      a task that waits for more than one can take a multiple of it. Creating a
-      workload with I(recommendation) and a I(host) waits three times - for the
-      placement to be calculated, for the workload to become ready, and for the
-      host connections - and so can take up to three times this value.
+      a task that waits for more than one can take a multiple of it. 
     type: int
     default: 300
     version_added: '1.45.0'
@@ -703,8 +670,7 @@ def _facts(
     array's free-form status text - are what purefa_info reports, and repeating
     them here would only invite the two to disagree.
 
-    The defaults are what a workload that does not exist yet can honestly report,
-    so a predicted create only has to name what it knows.
+    The defaults are what a workload that does not exist yet can report.
     """
     return {
         "name": name,
@@ -865,20 +831,9 @@ def _warn_about_copies_elsewhere(module, array, fleet, lookup, name=None):
     this must never widen that: eradication cannot be undone, so a fleet-wide search
     informs the operator rather than choosing a target for them.
 
-    Asked for every action rather than only for the destructive ones: the rule is
-    about the state of the fleet, not about the category of action, and an operator
-    acting on "the" workload needs to know there are two whether or not this task is
-    what made that true.
-
     name defaults to the workload the task is about. A rename asks twice - once for
     the name it is leaving, once for the name it is taking, since renaming foo to bar
     where bar already exists on another member produces two bars.
-
-    On a fleet-wide search this can never fire: two matches were already refused as
-    ambiguous, so exactly one member holds the name and there is nothing to report.
-    That path is told which member was chosen instead - see
-    _warn_which_member_was_chosen. Named a context, "it also exists over there";
-    named nothing, "I picked this one". Complementary, never both.
     """
     name = name or module.params["name"]
     others = _copies_elsewhere(module, array, fleet, lookup, name)
@@ -1064,10 +1019,7 @@ def _wait_for_volumes(module, array, context, volume_names, workload):
 # the seven actions main() dispatches to - and each is told that array as its third
 # argument, ahead of anything it is asked to do there. Required, with no fallback to
 # module.params["context"]: the array was settled by the pipeline before any of these
-# was called, and a function that could still work it out for itself would be a
-# second answer to a question that has one. That generalises what the waiters already
-# do deliberately - see _wait_for_status.
-
+# was called. 
 
 def _create_volume(module, array, context):
     """Create an actual volume in a workload
@@ -1157,11 +1109,6 @@ def _ask_fusion_for_placement(module, array, route, preset_config):
     and is not a default placement: Fusion's answer replaces it before anything is
     created. Without the fallback a task that named neither context nor placement
     sends an empty context, which the array rejects with an internal error.
-
-    The parameters are built here rather than handed in. They are a pure function of
-    the task's options and the preset, so this question and the create that follows
-    each own their own payload without either having to be threaded through the
-    other.
     """
     route = route or get_local_array_name(array, module)
     # Start the workload calculation for the preset being used
@@ -1195,11 +1142,8 @@ def _ask_fusion_for_placement(module, array, route, preset_config):
 def _choose_placement(module, array, fleet, member, preset_config):
     """Which array a NEW workload is created on - the only place this is decided
 
-    Two sources and no third: the operator named a member, or Fusion chose one. There
-    is no fallback to the array the request happened to reach - that is what made the
-    same playbook mean different things under different fa_url values - and no
-    fallback is needed, because _decide_action has already refused a create that has
-    neither.
+    Two possible sources: the operator named a member, or Fusion chose one. There
+    is no fallback to the array the request happened to reach.
     """
     if module.params["recommendation"]:
         # What was named routes the question and does not answer it, so the fleet
@@ -2013,15 +1957,15 @@ def _warn_which_member_was_chosen(module, fleet, member, lookup, action):
 #: case. Said rather than refused, because a playbook may legitimately set one of
 #: these once in module_defaults for a sibling task, as preset already is.
 #:
-#: Three options are deliberately absent. eradicate is refused outright where it
+#: Four options are deliberately absent. eradicate is refused outright where it
 #: cannot apply, and _decide_action already has its own word for the one case where
 #: it is accepted and ignored. host selects the action rather than being read by
 #: one, so "host is ignored" means nothing anywhere except with rename, which is
 #: refused. wait defaults to true, so listing it would warn on every rename anyone
 #: ever runs.
+#:
 IGNORED_OPTIONS = (
     # (option, the one action that reads it, why none of the others do)
-    ("recommendation", "create", "Fusion only chooses where a new workload goes"),
     ("volume_count", "expand", "only an expand adds volumes"),
     ("volume_configuration", "expand", "only an expand adds volumes"),
     ("parameters", "create", "preset parameters are applied only at creation"),

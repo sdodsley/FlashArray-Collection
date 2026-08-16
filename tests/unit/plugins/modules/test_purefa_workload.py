@@ -3040,7 +3040,6 @@ class TestOptionsTheActionDoesNotRead:
     #: A value for each option in the table, so a case can be built from the table
     #: itself rather than from a second list that could drift from it
     VALUES = {
-        "recommendation": True,
         "volume_count": 2,
         "volume_configuration": "config1",
         "parameters": [{"name": "size", "value": {"string": "1G"}}],
@@ -3108,13 +3107,23 @@ class TestOptionsTheActionDoesNotRead:
 
         assert len(warnings) == 2
 
-    @pytest.mark.parametrize("option", ["eradicate", "host", "wait"])
+    @pytest.mark.parametrize("option", ["eradicate", "host", "wait", "recommendation"])
     def test_the_options_deliberately_left_out_stay_out(self, option):
         """eradicate is refused where it cannot apply, and _decide_action has its
         own word for the one case where it is accepted and ignored. host selects
         the action rather than being read by one. wait defaults to true, so listing
-        it would warn on every rename anyone ever runs."""
+        it would warn on every rename anyone ever runs. recommendation reads like
+        placement but cannot do what placement did - every path that ignores it
+        takes its member from the lookup, so there is no wrong target to warn
+        about, and a warning would only fire on the converged second run of a
+        recommendation-based create."""
         assert option not in {name for name, _read_by, _why in IGNORED_OPTIONS}
+
+    def test_a_converged_recommendation_create_says_nothing(self):
+        """The second run of the commonest task there is. It resolves to a no-op
+        because the first run's workload was found, and that is success, not an
+        option being dropped."""
+        assert self._warnings("nothing", recommendation=True) == []
 
 
 class TestReadingTheFleetName:
