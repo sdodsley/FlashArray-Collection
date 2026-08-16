@@ -178,7 +178,7 @@ options:
       I(wait) is true. The task fails if that operation has not finished within
       this time.
     - This bounds each operation individually rather than the task as a whole, so
-      a task that waits for more than one can take a multiple of it. 
+      a task that waits for more than one can take a multiple of it.
     type: int
     default: 300
     version_added: '1.45.0'
@@ -1019,7 +1019,8 @@ def _wait_for_volumes(module, array, context, volume_names, workload):
 # the seven actions main() dispatches to - and each is told that array as its third
 # argument, ahead of anything it is asked to do there. Required, with no fallback to
 # module.params["context"]: the array was settled by the pipeline before any of these
-# was called. 
+# was called.
+
 
 def _create_volume(module, array, context):
     """Create an actual volume in a workload

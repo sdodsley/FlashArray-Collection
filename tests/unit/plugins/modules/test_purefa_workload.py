@@ -2311,7 +2311,7 @@ class TestMainContextDefault:
         """The two options are the same thing to the array, so either settles it"""
         mock_loose_version.side_effect = lambda x: float(x) if x else 0.0
 
-        _, mock_array = self._run_main(
+        _unused, mock_array = self._run_main(
             mock_ansible_module, mock_get_array, {"placement": "arrayB"}
         )
 
@@ -2328,7 +2328,7 @@ class TestMainContextDefault:
         """A named member narrows the search to it, and is never widened"""
         mock_loose_version.side_effect = lambda x: float(x) if x else 0.0
 
-        _, mock_array = self._run_main(
+        _unused, mock_array = self._run_main(
             mock_ansible_module, mock_get_array, {"context": "arrayA"}
         )
 
@@ -3200,7 +3200,7 @@ class TestReadingThePresetForTheAction:
 
     @pytest.mark.parametrize("action", ["create", "expand"])
     def test_the_preset_is_read_for_the_actions_that_build_volumes(self, action):
-        result, _, array, preset_config = self._read(action, preset="test-preset")
+        result, _unused, array, preset_config = self._read(action, preset="test-preset")
 
         assert result is preset_config
         array.get_presets_workload.assert_called_once_with(
@@ -3223,7 +3223,7 @@ class TestReadingThePresetForTheAction:
     def test_no_preset_is_read_for_anything_else(self, action):
         """Every other outcome works from the workload the array already has, so a
         task that names no preset is not incomplete"""
-        result, module, array, _ = self._read(action)
+        result, module, array, _unused = self._read(action)
 
         assert result is None
         array.get_presets_workload.assert_not_called()
@@ -3236,14 +3236,14 @@ class TestReadingThePresetForTheAction:
 
     def test_the_preset_is_qualified_with_the_fleet(self):
         """Presets are fleet objects, named "<fleet>:<preset>" by the API"""
-        _, module, _, _ = self._read("create", preset="test-preset")
+        _unused, module, _unused, _unused = self._read("create", preset="test-preset")
 
         assert module.params["preset"] == "test-fleet:test-preset"
 
     def test_the_name_is_left_alone_on_a_path_that_never_reads_it(self):
         """It was qualified before any state was consulted once, so a delete died
         in string concatenation rather than deleting"""
-        _, module, _, _ = self._read("delete", preset="test-preset")
+        _unused, module, _unused, _unused = self._read("delete", preset="test-preset")
 
         assert module.params["preset"] == "test-preset"
 
@@ -4846,19 +4846,19 @@ class TestResolvingWhichMemberToSearch:
         return module.fail_json.call_args.kwargs["msg"]
 
     def test_a_named_member_is_the_member_searched(self):
-        member, module, _ = self._resolve(context="arrayB")
+        member, module, _unused = self._resolve(context="arrayB")
 
         assert member == "arrayB"
         module.fail_json.assert_not_called()
 
     def test_placement_alone_names_the_member_too(self):
         """The two options are the same thing to the array"""
-        member, _, _ = self._resolve(context=None, placement="arrayA")
+        member, _unused, _unused = self._resolve(context=None, placement="arrayA")
 
         assert member == "arrayA"
 
     def test_both_naming_the_same_member_is_accepted(self):
-        member, module, _ = self._resolve(context="arrayB", placement="arrayB")
+        member, module, _unused = self._resolve(context="arrayB", placement="arrayB")
 
         assert member == "arrayB"
         module.fail_json.assert_not_called()
@@ -4871,14 +4871,14 @@ class TestResolvingWhichMemberToSearch:
     def test_naming_nothing_means_the_whole_fleet(self):
         from plugins.modules.purefa_workload import SEARCH_WHOLE_FLEET
 
-        member, module, _ = self._resolve(context=None, placement=None)
+        member, module, _unused = self._resolve(context=None, placement=None)
 
         assert member is SEARCH_WHOLE_FLEET
         module.fail_json.assert_not_called()
 
     def test_naming_nothing_reads_nothing(self):
         """The one path with no name to check, so the fleet need not be listed"""
-        _, _, array = self._resolve(context=None, placement=None)
+        _unused, _unused, array = self._resolve(context=None, placement=None)
 
         array.get_fleets_members.assert_not_called()
         array.get_workloads.assert_not_called()
@@ -4918,7 +4918,7 @@ class TestResolvingWhichMemberToSearch:
         as a query context with a 400 that reads exactly like absence"""
         from plugins.modules.purefa_workload import SEARCH_WHOLE_FLEET
 
-        member, module, _ = self._resolve(context=self.FLEET)
+        member, module, _unused = self._resolve(context=self.FLEET)
 
         assert member is SEARCH_WHOLE_FLEET
         module.fail_json.assert_not_called()
@@ -4929,7 +4929,7 @@ class TestResolvingWhichMemberToSearch:
         for a second placement, and create a second workload."""
         from plugins.modules.purefa_workload import SEARCH_WHOLE_FLEET
 
-        member, module, _ = self._resolve(context="arrayA", recommendation=True)
+        member, module, _unused = self._resolve(context="arrayA", recommendation=True)
 
         assert member is SEARCH_WHOLE_FLEET
         # Still checked against the fleet, since a name was given
@@ -4943,7 +4943,7 @@ class TestResolvingWhichMemberToSearch:
     def test_a_recommendation_on_a_rename_keeps_the_named_member(self):
         """There is nothing for Fusion to choose: a rename works on the workload
         that is already there"""
-        member, _, _ = self._resolve(
+        member, _unused, _unused = self._resolve(
             context="arrayA", recommendation=True, rename="new-workload"
         )
 
@@ -4951,7 +4951,9 @@ class TestResolvingWhichMemberToSearch:
 
     @pytest.mark.parametrize("state", ["absent", "expand"])
     def test_a_recommendation_on_another_state_keeps_the_named_member(self, state):
-        member, _, _ = self._resolve(context="arrayA", recommendation=True, state=state)
+        member, _unused, _unused = self._resolve(
+            context="arrayA", recommendation=True, state=state
+        )
 
         assert member == "arrayA"
 
@@ -5032,7 +5034,7 @@ class TestFindingAWorkloadAcrossTheFleet:
                 return Mock(
                     status_code=200,
                     items=[_mock_workload(context=member) for member in homes]
-                    + [_mock_workload(context=None) for _ in range(unattributed)],
+                    + [_mock_workload(context=None) for _unused in range(unattributed)],
                     errors=[Mock(message=message) for message in errors],
                 )
             if asked in homes:
@@ -5203,7 +5205,7 @@ class TestLookingUpTheWorkload:
     # --- a member-scoped lookup ------------------------------------------------
 
     def test_a_workload_on_the_member_asked_is_live(self):
-        lookup, _ = self._look_up("arrayB", {"arrayB": {}})
+        lookup, _unused = self._look_up("arrayB", {"arrayB": {}})
 
         assert lookup.presence == "live"
         assert lookup.member == "arrayB"
@@ -5211,13 +5213,13 @@ class TestLookingUpTheWorkload:
         assert lookup.members == ["arrayB"]
 
     def test_a_destroyed_workload_is_distinguished_from_a_live_one(self):
-        lookup, _ = self._look_up("arrayB", {"arrayB": {"destroyed": True}})
+        lookup, _unused = self._look_up("arrayB", {"arrayB": {"destroyed": True}})
 
         assert lookup.presence == "destroyed"
         assert lookup.member == "arrayB"
 
     def test_a_workload_that_is_not_there_is_absent_not_a_failure(self):
-        lookup, _ = self._look_up("arrayB")
+        lookup, _unused = self._look_up("arrayB")
 
         assert lookup.presence == "absent"
         assert lookup.member is None
@@ -5236,14 +5238,14 @@ class TestLookingUpTheWorkload:
     def test_the_array_own_answer_says_which_member_holds_it(self):
         """Not what we asked for. The two disagree when a context resolves to
         something else on the array, and only one of them is the truth."""
-        lookup, _ = self._look_up("arrayB", {"arrayB": {"context": "arrayA"}})
+        lookup, _unused = self._look_up("arrayB", {"arrayB": {"context": "arrayA"}})
 
         assert lookup.member == "arrayA"
 
     def test_the_member_asked_stands_in_when_the_answer_names_none(self):
         """Every SDK field is optional, so a workload can come back with no context
         at all - as _workload_facts already allows for"""
-        lookup, _ = self._look_up("arrayB", {"arrayB": {"context": None}})
+        lookup, _unused = self._look_up("arrayB", {"arrayB": {"context": None}})
 
         assert lookup.member == "arrayB"
 
@@ -5267,7 +5269,7 @@ class TestLookingUpTheWorkload:
         """The array rejects it with a 400 that reads exactly like absence"""
         from plugins.modules.purefa_workload import SEARCH_WHOLE_FLEET
 
-        _, array = self._look_up(SEARCH_WHOLE_FLEET, {"arrayB": {}})
+        _unused, array = self._look_up(SEARCH_WHOLE_FLEET, {"arrayB": {}})
 
         asked = [
             call.kwargs.get("context_names", [None])[0]
@@ -5278,7 +5280,7 @@ class TestLookingUpTheWorkload:
     def test_nothing_anywhere_in_the_fleet_is_absent(self):
         from plugins.modules.purefa_workload import SEARCH_WHOLE_FLEET
 
-        lookup, _ = self._look_up(SEARCH_WHOLE_FLEET)
+        lookup, _unused = self._look_up(SEARCH_WHOLE_FLEET)
 
         assert lookup.presence == "absent"
         assert lookup.swept is True
@@ -5288,7 +5290,9 @@ class TestLookingUpTheWorkload:
         is the only place that knows what the task was trying to do"""
         from plugins.modules.purefa_workload import SEARCH_WHOLE_FLEET
 
-        lookup, _ = self._look_up(SEARCH_WHOLE_FLEET, {"arrayA": {}, "arrayB": {}})
+        lookup, _unused = self._look_up(
+            SEARCH_WHOLE_FLEET, {"arrayA": {}, "arrayB": {}}
+        )
 
         assert lookup.presence == "ambiguous"
         assert lookup.members == ["arrayA", "arrayB"]
@@ -5314,7 +5318,7 @@ class TestLookingUpTheWorkload:
         delete until it is eradicated or a context is named"""
         from plugins.modules.purefa_workload import SEARCH_WHOLE_FLEET
 
-        lookup, _ = self._look_up(
+        lookup, _unused = self._look_up(
             SEARCH_WHOLE_FLEET, {"arrayA": {}, "arrayB": {"destroyed": True}}
         )
 
@@ -5750,21 +5754,23 @@ class TestCopiesElsewhereAreCounted:
         )
 
     def test_the_other_members_holding_the_name_are_listed(self):
-        copies, _ = self._copies(
+        copies, _unused = self._copies(
             ["arrayA", "arrayB", "pod1"], self._lookup(["arrayB"], swept=False)
         )
 
         assert copies == ["arrayA", "pod1"]
 
     def test_the_member_being_acted_on_is_not_one_of_them(self):
-        copies, _ = self._copies(["arrayB"], self._lookup(["arrayB"], swept=False))
+        copies, _unused = self._copies(
+            ["arrayB"], self._lookup(["arrayB"], swept=False)
+        )
 
         assert copies == []
 
     def test_the_member_asked_stands_in_when_nothing_was_found_there(self):
         """A delete against arrayB where the workload only exists on arrayA: the
         one being acted on is still arrayB, so arrayA is the copy elsewhere"""
-        copies, _ = self._copies(
+        copies, _unused = self._copies(
             ["arrayA"], self._lookup([], swept=False), context="arrayB"
         )
 
@@ -5787,7 +5793,7 @@ class TestCopiesElsewhereAreCounted:
         """It cannot report any: a sweep that found the name on two members is
         ambiguous and already refused, so a lookup that got this far found exactly
         one. That path is told which array was chosen instead."""
-        copies, _ = self._copies(
+        copies, _unused = self._copies(
             ["arrayB"], self._lookup(["arrayB"], swept=True), context=None
         )
 
@@ -5844,7 +5850,7 @@ class TestRecommendationIsIdempotent:
             "plugins.modules.purefa_workload._ask_fusion_for_placement",
             return_value="arrayC",
         ) as fusion:
-            module, _, actions = self._run({})
+            module, _unused, actions = self._run({})
 
         module.fail_json.assert_not_called()
         fusion.assert_called_once()
@@ -5858,7 +5864,7 @@ class TestRecommendationIsIdempotent:
         """The early exit returned before connect_or_disconnect_volumes could be
         reached, so a repeat run that asked for a host reported ok having silently
         skipped it"""
-        _, array, actions = self._run({"arrayB": {}}, host="host1")
+        _unused, array, actions = self._run({"arrayB": {}}, host="host1")
 
         array.post_workloads_placement_recommendations.assert_not_called()
         actions["create_workload"].assert_not_called()
@@ -5874,7 +5880,7 @@ class TestRecommendationIsIdempotent:
         """The early exit reported ok on a workload pending eradication, which is
         neither present nor going to become present on its own. recover_workload
         needed no change - nothing could route to it."""
-        _, array, actions = self._run({"arrayB": {"destroyed": True}})
+        _unused, array, actions = self._run({"arrayB": {"destroyed": True}})
 
         array.post_workloads_placement_recommendations.assert_not_called()
         actions["create_workload"].assert_not_called()
@@ -6159,13 +6165,13 @@ class TestAbsenceIsReadFromTheArraysExplanation:
         ],
     )
     def test_absence_is_recognised(self, message):
-        result, surfaced, _ = self._read(400, [message])
+        result, surfaced, _unused = self._read(400, [message])
 
         assert result is None
         surfaced.assert_not_called()
 
     def test_absence_is_recognised_on_a_404_too(self):
-        result, surfaced, _ = self._read(404, ["Workload does not exist."])
+        result, surfaced, _unused = self._read(404, ["Workload does not exist."])
 
         assert result is None
         surfaced.assert_not_called()
@@ -6187,12 +6193,12 @@ class TestAbsenceIsReadFromTheArraysExplanation:
         assert result is None  # only because check_response is stubbed here
 
     def test_a_400_explaining_nothing_is_surfaced(self):
-        _, surfaced, _ = self._read(400, [])
+        _unused, surfaced, _unused = self._read(400, [])
 
         surfaced.assert_called_once()
 
     def test_a_server_error_is_surfaced(self):
-        _, surfaced, _ = self._read(500, ["Workload does not exist."])
+        _unused, surfaced, _unused = self._read(500, ["Workload does not exist."])
 
         surfaced.assert_called_once()
 
@@ -6273,7 +6279,7 @@ class TestNamingNothingMeansTheFleet:
         """One of these per EXAMPLE that used to be refused. Each resolves to the
         member the sweep found it on, and that member is what the action is handed -
         never the array the request happened to reach."""
-        module, _, actions = self._run(homes, context=context, **params)
+        module, _unused, actions = self._run(homes, context=context, **params)
 
         actions[action].assert_called_once()
         arguments = _bound_arguments(action, actions[action].call_args)
@@ -6286,7 +6292,7 @@ class TestNamingNothingMeansTheFleet:
     def test_the_host_direction_is_the_one_the_decision_named(self, state, mode):
         """One function does both, so the mode is the whole difference between
         giving a host access to the workload's volumes and taking it away"""
-        _, _, actions = self._run({"arrayB": {}}, state=state, host="host1")
+        _unused, _unused, actions = self._run({"arrayB": {}}, state=state, host="host1")
 
         arguments = _bound_arguments(
             "connect_or_disconnect_volumes",
@@ -6297,7 +6303,7 @@ class TestNamingNothingMeansTheFleet:
     def test_the_no_change_exit_describes_the_member_it_found(self):
         """Nothing was asked for, so the workload's own answer is the only source -
         including for the volume read the facts are built from"""
-        module, array, _ = self._run({"arrayB": {}}, state="present")
+        module, array, _unused = self._run({"arrayB": {}}, state="present")
 
         module.exit_json.assert_called_once_with(
             changed=False, workload=_expected_facts()
@@ -6310,7 +6316,9 @@ class TestNamingNothingMeansTheFleet:
         context-less default too: the array rejects a fleet as a query context with a
         400 that reads exactly like the workload being absent - which under
         state: present would be a create."""
-        _, array, _ = self._run({"arrayB": {}}, context=context, state="absent")
+        _unused, array, _unused = self._run(
+            {"arrayB": {}}, context=context, state="absent"
+        )
 
         assert self.FLEET not in self._contexts_read(array)
 
@@ -6322,7 +6330,7 @@ class TestNamingNothingMeansTheFleet:
             "plugins.modules.purefa_workload._ask_fusion_for_placement",
             return_value="arrayC",
         ) as fusion:
-            _, _, actions = self._run(
+            _unused, _unused, actions = self._run(
                 {}, context=context, preset="test-preset", recommendation=True
             )
 
@@ -6344,7 +6352,7 @@ class TestNamingNothingMeansTheFleet:
         """A name belongs to a member, not to a fleet, so two of them are two
         workloads and nothing in the task says which is meant. There is no state for
         which "which of these did you mean" has an answer."""
-        module, _, actions = self._run(
+        module, _unused, actions = self._run(
             {"arrayA": {}, "arrayB": {}},
             fails=True,
             context=context,
@@ -6365,7 +6373,7 @@ class TestNamingNothingMeansTheFleet:
         is not naming a member"""
         from plugins.modules.purefa_workload import _CREATE_NEEDS_A_MEMBER
 
-        module, _, actions = self._run(
+        module, _unused, actions = self._run(
             {}, fails=True, context=context, state="present", preset="test-preset"
         )
 
@@ -6381,7 +6389,7 @@ class TestNamingNothingMeansTheFleet:
             "plugins.modules.purefa_workload._ask_fusion_for_placement",
             return_value="arrayC",
         ):
-            module, _, actions = self._run(
+            module, _unused, actions = self._run(
                 {}, context=context, preset="test-preset", recommendation=True
             )
 
@@ -6392,7 +6400,7 @@ class TestNamingNothingMeansTheFleet:
     def test_nothing_found_on_a_removal_is_already_done(self, context):
         """Not a failure - absent is the requested end state, and it is already the
         case"""
-        module, _, _ = self._run({}, context=context, state="absent")
+        module, _unused, _unused = self._run({}, context=context, state="absent")
 
         module.fail_json.assert_not_called()
         module.exit_json.assert_called_once_with(changed=False, workload={})
@@ -6424,7 +6432,7 @@ class TestNamingNothingMeansTheFleet:
         """The fact the operator lacks. The copies-elsewhere warning cannot fire on
         this path - two matches were already refused - and its wording names a context
         they never wrote, which reads as confirmation of something they typed."""
-        module, _, _ = self._run({"arrayB": {}}, state="absent")
+        module, _unused, _unused = self._run({"arrayB": {}}, state="absent")
 
         warning = module.warn.call_args[0][0]
         assert "No context was named" in warning
@@ -6432,7 +6440,9 @@ class TestNamingNothingMeansTheFleet:
         assert "destroyed" in warning
 
     def test_naming_the_fleet_is_not_reported_as_naming_nothing(self):
-        module, _, _ = self._run({"arrayB": {}}, context=self.FLEET, state="absent")
+        module, _unused, _unused = self._run(
+            {"arrayB": {}}, context=self.FLEET, state="absent"
+        )
 
         warning = module.warn.call_args[0][0]
         assert f"context {self.FLEET} names fleet {self.FLEET}" in warning
@@ -6448,7 +6458,7 @@ class TestNamingNothingMeansTheFleet:
     def test_an_eradicate_with_no_context_says_so_in_those_words(self, params, homes):
         """A delete asked to eradicate does both, so the word that matters is the
         one for the half that cannot be undone"""
-        module, _, _ = self._run(homes, **params)
+        module, _unused, _unused = self._run(homes, **params)
 
         assert "will be eradicated" in module.warn.call_args[0][0]
 
@@ -6472,7 +6482,7 @@ class TestNamingNothingMeansTheFleet:
         self, params, homes, action
     ):
         """Nothing is lost on these, so there is nothing to confirm before it is"""
-        module, _, actions = self._run(homes, **params)
+        module, _unused, actions = self._run(homes, **params)
 
         actions[action].assert_called_once()
         module.warn.assert_not_called()
@@ -6480,7 +6490,7 @@ class TestNamingNothingMeansTheFleet:
     def test_a_named_member_is_told_about_copies_instead(self):
         """Complementary, never both: named a context, "it also exists over there";
         named nothing, "I picked this one" """
-        module, _, actions = self._run(
+        module, _unused, actions = self._run(
             {"arrayA": {}, "arrayB": {}}, context="arrayB", state="absent"
         )
 
@@ -6529,7 +6539,7 @@ class TestTheCasesTheChainLost:
     def test_a_destroyed_workload_is_not_eradicated_by_a_disconnect_task(self):
         """The trap: adding eradicate: true to a host disconnect eradicated the
         workload, ignoring the host that made it a disconnect in the first place"""
-        module, _, actions = self._run(
+        module, _unused, actions = self._run(
             {"arrayB": {"destroyed": True}},
             state="absent",
             host="host1",
@@ -6547,7 +6557,7 @@ class TestTheCasesTheChainLost:
     def test_a_destroyed_workload_with_a_host_is_a_no_op_with_a_reason(self):
         """The volumes went with the workload, so the host is already disconnected.
         Failing would break idempotency; silence is what hid the case above."""
-        module, _, actions = self._run(
+        module, _unused, actions = self._run(
             {"arrayB": {"destroyed": True}}, state="absent", host="host1"
         )
 
@@ -6560,7 +6570,7 @@ class TestTheCasesTheChainLost:
     def test_a_workload_that_is_already_as_asked_reports_itself(self):
         """state: present and it is present - the idempotent success path, which was
         only ever reached by falling off the end"""
-        module, _, actions = self._run({"arrayB": {}}, state="present")
+        module, _unused, actions = self._run({"arrayB": {}}, state="present")
 
         for action in actions.values():
             action.assert_not_called()
@@ -6571,7 +6581,7 @@ class TestTheCasesTheChainLost:
     def test_a_destroyed_workload_pending_eradication_reports_its_countdown(self):
         """It is absent in the sense state: absent asks for, and time_remaining is
         the useful part of saying so"""
-        module, _, actions = self._run(
+        module, _unused, actions = self._run(
             {"arrayB": {"destroyed": True, "time_remaining": 86400000}}, state="absent"
         )
 
