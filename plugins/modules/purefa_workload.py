@@ -65,6 +65,8 @@ options:
       instead of the workload being deleted.
     - Only the workload's own volumes are affected. Volumes the host is connected
       to outside this workload are never changed.
+    - Refused together with I(rename), which does not disturb connections and
+      connects nothing. Run the two as separate tasks.
     default: ""
   name:
     description:
@@ -93,6 +95,9 @@ options:
   eradicate:
     description:
     - whether to eradicate a workload
+    - Applies only to I(state=absent). Any other state is refused rather than
+      ignored, since there is no reading of "make sure this exists, and destroy
+      it for good".
     type: bool
     default: false
   placement:
@@ -116,6 +121,10 @@ options:
       on the workload preset definitions.
     - This will use the first recommended placement if more than
       one is available
+    - Only a create asks Fusion anything. Every other operation works from the
+      member already holding the workload, which is looked up rather than chosen,
+      so this is reported as not applied rather than silently dropped - including
+      on a I(state=present) task that turned out to have nothing to create.
     default: false
     type: bool
   parameters:
@@ -123,6 +132,8 @@ options:
     - Parameter values to apply when creating a workload from the preset.
     - Parameters are only applied on the create path and are not applied
       when recovering an existing destroyed workload.
+    - Any task that does not create is told they were not applied, rather than
+      dropping them silently.
     type: list
     elements: dict
     suboptions:
@@ -173,11 +184,15 @@ options:
     - Number of additional volumes to add to an existing workload
     - Only used with I(state=expand), where it is required.
     - Must be a positive integer. Zero is rejected.
+    - Any other state is told the option was not applied, rather than dropping it
+      silently.
     type: int
   volume_configuration:
     description:
     - Name of the volume configuration to use for adding volumes
       to a workload
+    - Only used with I(state=expand), where it is required. Any other state is
+      told the option was not applied, rather than dropping it silently.
     type: str
   wait:
     description:
@@ -334,10 +349,12 @@ EXAMPLES = r"""
 RETURN = r"""
 workload:
     description: Describes what a task did to the workload.
-        Returned on every action that leaves a workload in place, and empty only
-        when no workload remains to describe, as after an eradication. More detail
-        is available from array by M(everpure.flasharray.purefa_info) rather than
-        repeated here.
+        Returned on every action. An eradication leaves nothing to read off, so it
+        reports I(name) and I(context) alone - which workload, and the array it was
+        removed from - and none of the other keys below. The dict is empty only when
+        there was no workload at all, as for I(state=absent) against a name that
+        exists nowhere in the fleet. More detail is available from the array by
+        M(everpure.flasharray.purefa_info) rather than repeated here.
     type: dict
     returned: success
     contains:
@@ -349,7 +366,7 @@ workload:
         context:
             description: Name of the fleet member the workload is placed on.
                 When I(recommendation) is used this is the target chosen by
-                Fusion. Together with I(name) it identifies the workload - 
+                Fusion. Together with I(name) it identifies the workload -
                 the same name on another fleet member is a different workload.
             type: str
             sample: 'arrayB'
@@ -378,7 +395,10 @@ workload:
             sample: false
         time_remaining:
             description: Milliseconds until a destroyed workload is eradicated.
-                Null unless I(destroyed) is true, and null in check mode.
+                Null unless I(destroyed) is true. A check-mode run that predicts a
+                destroy also reports null, because the countdown only starts once
+                the destroy is applied; a check-mode run that merely reports a
+                workload already destroyed passes the array's own value through.
             type: int
             sample: 86400000
         volumes:
@@ -1499,6 +1519,25 @@ def _check_option_combinations(module):
             "separate task."
         )
 
+    # A rename does not read host, so the two together promise a rename that also
+    # connects. The remedy is the one directly above: two tasks.
+    if module.params["host"] and module.params["rename"]:
+        module.fail_json(
+            msg="host cannot be used with rename. A rename does not disturb "
+            "connections and connects nothing - run the host task separately."
+        )
+
+    # eradicate only ever qualifies a removal, so anything else asks to make sure
+    # the workload exists and destroy it for good in the same breath. The other
+    # options this module ignores elsewhere are reported rather than refused - see
+    # IGNORED_OPTIONS - but there is no reading of this one to report.
+    if module.params["eradicate"] and module.params["state"] != "absent":
+        module.fail_json(
+            msg=f"eradicate cannot be used with state: {module.params['state']}. "
+            "It applies only to state: absent, where it removes a destroyed "
+            "workload for good."
+        )
+
 
 def _read_fleet_name(module, array):
     """The name of the fleet this array belongs to
@@ -1968,6 +2007,45 @@ def _warn_which_member_was_chosen(module, fleet, member, lookup, action):
     )
 
 
+#: Options only some actions read. An option a task sets that the action it
+#: resolved to does not read is said rather than quietly dropped - being accepted
+#: and silently doing nothing is what this module was reported for, in placement's
+#: case. Said rather than refused, because a playbook may legitimately set one of
+#: these once in module_defaults for a sibling task, as preset already is.
+#:
+#: Three options are deliberately absent. eradicate is refused outright where it
+#: cannot apply, and _decide_action already has its own word for the one case where
+#: it is accepted and ignored. host selects the action rather than being read by
+#: one, so "host is ignored" means nothing anywhere except with rename, which is
+#: refused. wait defaults to true, so listing it would warn on every rename anyone
+#: ever runs.
+IGNORED_OPTIONS = (
+    # (option, the one action that reads it, why none of the others do)
+    ("recommendation", "create", "Fusion only chooses where a new workload goes"),
+    ("volume_count", "expand", "only an expand adds volumes"),
+    ("volume_configuration", "expand", "only an expand adds volumes"),
+    ("parameters", "create", "preset parameters are applied only at creation"),
+)
+
+
+def _warn_about_ignored_options(module, action):
+    """Say which of the options the task set this action does not read
+
+    Asked after _decide_action rather than beside the refusals in
+    _check_option_combinations, because none of it is answerable from the task
+    alone: a create and a no-op are the same task until the workload has been
+    looked up. That is also what lets each warning name the action the task turned
+    out to be, rather than the state it asked for.
+    """
+    for option, read_by, why in IGNORED_OPTIONS:
+        if not module.params[option] or action == read_by:
+            continue
+        module.warn(
+            f"{option} is not applied: this task resolved to a {action} of "
+            f"{module.params['name']}, and {why}."
+        )
+
+
 def main():
     argument_spec = purefa_argument_spec()
     argument_spec.update(
@@ -2070,6 +2148,9 @@ def main():
     # The complement, for the one path where that warning cannot fire: which member
     # the search settled on, before anything is removed from it.
     _warn_which_member_was_chosen(module, fleet, member, lookup, decision.action)
+    # And the options this action will not read. Only answerable now: which action
+    # a state: present task is depends on what the lookup found.
+    _warn_about_ignored_options(module, decision.action)
 
     # Every action except a create works on lookup.member - the array the workload
     # was actually found on. A create has nothing to have found, so it is the one arm

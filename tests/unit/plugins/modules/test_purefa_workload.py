@@ -46,6 +46,7 @@ sys.modules[
 ] = MagicMock()
 
 from plugins.modules.purefa_workload import (
+    IGNORED_OPTIONS,
     SEARCH_WHOLE_FLEET,
     _build_workload_parameters,
     _workload_completed,
@@ -295,6 +296,9 @@ def _params(**overrides):
         "volume_configuration": None,
         "eradicate": False,
         "recommendation": False,
+        # Read by _warn_about_ignored_options on every main() path, and filled in
+        # by AnsibleModule from the argument spec whether or not a task sets it
+        "parameters": None,
         # wait is on by default, and host cannot be used without it
         "wait": True,
         "wait_timeout": 300,
@@ -1761,14 +1765,7 @@ class TestMain:
         mock_loose_version.side_effect = lambda x: float(x) if x else 0.0
 
         mock_module = Mock()
-        mock_module.params = {
-            "volume_count": None,
-            "host": "",
-            "wait": True,
-            "context": "",
-            "placement": None,
-            "rename": None,
-        }
+        mock_module.params = _params(context="")
         mock_module.fail_json.side_effect = SystemExit(1)
         mock_ansible_module.return_value = mock_module
         mock_array = _mock_array()
@@ -1828,18 +1825,7 @@ class TestMain:
         mock_loose_version.side_effect = lambda x: float(x) if x else 0.0
 
         mock_module = Mock()
-        mock_module.params = {
-            "volume_count": None,
-            "state": "present",
-            "preset": "test-preset",
-            "context": "arrayB",
-            "name": "test-workload",
-            "rename": None,
-            "host": "",
-            "recommendation": False,
-            "placement": None,
-            "eradicate": False,
-        }
+        mock_module.params = _params(preset="test-preset")
         mock_ansible_module.return_value = mock_module
         mock_array = _mock_array()
         mock_array.get_rest_version.return_value = "2.40"
@@ -1880,18 +1866,9 @@ class TestMain:
         mock_loose_version.side_effect = lambda x: float(x) if x else 0.0
 
         mock_module = Mock()
-        mock_module.params = {
-            "volume_count": None,
-            "state": "absent",
-            "preset": "test-preset",
-            # A member has to be named now - there is no default context
-            "context": "arrayB",
-            "name": "test-workload",
-            "host": "",
-            "placement": None,
-            "eradicate": False,
-            "rename": None,
-        }
+        # The member comes from _params() as arrayB: there is no default context,
+        # so one has to be named
+        mock_module.params = _params(state="absent", preset="test-preset")
         mock_ansible_module.return_value = mock_module
         mock_array = _mock_array()
         mock_array.get_rest_version.return_value = "2.40"
@@ -1934,18 +1911,11 @@ class TestMain:
         mock_loose_version.side_effect = lambda x: float(x) if x else 0.0
 
         mock_module = Mock()
-        mock_module.params = {
-            "volume_count": None,
-            "state": "absent",
-            "preset": "test-preset",
-            # A member has to be named now - there is no default context
-            "context": "arrayB",
-            "name": "test-workload",
-            "host": "",
-            "placement": None,
-            "eradicate": True,
-            "rename": None,
-        }
+        # The member comes from _params() as arrayB: there is no default context,
+        # so one has to be named
+        mock_module.params = _params(
+            state="absent", preset="test-preset", eradicate=True
+        )
         mock_ansible_module.return_value = mock_module
         mock_array = _mock_array()
         mock_array.get_rest_version.return_value = "2.40"
@@ -1985,18 +1955,9 @@ class TestMain:
         mock_loose_version.side_effect = lambda x: float(x) if x else 0.0
 
         mock_module = Mock()
-        mock_module.params = {
-            "volume_count": None,
-            "state": "absent",
-            "preset": "test-preset",
-            # A member has to be named now - there is no default context
-            "context": "arrayB",
-            "name": "test-workload",
-            "host": "",
-            "placement": None,
-            "eradicate": False,
-            "rename": None,
-        }
+        # The member comes from _params() as arrayB: there is no default context,
+        # so one has to be named
+        mock_module.params = _params(state="absent", preset="test-preset")
         mock_ansible_module.return_value = mock_module
         mock_array = _mock_array()
         mock_array.get_rest_version.return_value = "2.40"
@@ -2033,19 +1994,9 @@ class TestMain:
 
         mock_module = Mock()
         mock_module.check_mode = False
-        mock_module.params = {
-            "volume_count": None,
-            "state": "present",
-            "preset": "test-preset",
-            # A member has to be named now - there is no default context
-            "context": "arrayB",
-            "name": "test-workload",
-            "host": "",
-            "placement": None,
-            "recommendation": False,
-            "eradicate": False,
-            "rename": None,
-        }
+        # The member comes from _params() as arrayB: there is no default context,
+        # so one has to be named
+        mock_module.params = _params(preset="test-preset")
         mock_ansible_module.return_value = mock_module
         mock_array = _mock_array()
         mock_array.get_rest_version.return_value = "2.40"
@@ -2089,18 +2040,7 @@ class TestMain:
 
         mock_module = Mock()
         mock_module.fail_json.side_effect = SystemExit(1)
-        mock_module.params = {
-            "volume_count": None,
-            "state": "present",
-            "preset": "test-preset",
-            "context": "arrayB",
-            "name": "test-workload",
-            "host": "",
-            "placement": None,
-            "recommendation": False,
-            "eradicate": False,
-            "rename": "new-workload",
-        }
+        mock_module.params = _params(preset="test-preset", rename="new-workload")
         mock_ansible_module.return_value = mock_module
         mock_array = _mock_array()
         mock_array.get_rest_version.return_value = "2.40"
@@ -2143,18 +2083,7 @@ class TestMain:
 
         mock_module = Mock()
         mock_module.fail_json.side_effect = SystemExit(1)
-        mock_module.params = {
-            "volume_count": None,
-            "state": "present",
-            "preset": "test-preset",
-            "context": "arrayB",
-            "name": "test-workload",
-            "host": "",
-            "placement": None,
-            "recommendation": False,
-            "eradicate": False,
-            "rename": "new-workload",
-        }
+        mock_module.params = _params(preset="test-preset", rename="new-workload")
         mock_ansible_module.return_value = mock_module
         mock_array = _mock_array()
         mock_array.get_rest_version.return_value = "2.40"
@@ -2197,18 +2126,7 @@ class TestMain:
         mock_loose_version.side_effect = lambda x: float(x) if x else 0.0
 
         mock_module = Mock()
-        mock_module.params = {
-            "volume_count": None,
-            "state": "present",
-            "preset": "test-preset",
-            "context": "arrayB",
-            "name": "test-workload",
-            "host": "",
-            "placement": None,
-            "recommendation": False,
-            "eradicate": False,
-            "rename": None,
-        }
+        mock_module.params = _params(preset="test-preset")
         mock_ansible_module.return_value = mock_module
         mock_array = _mock_array()
         mock_array.get_rest_version.return_value = "2.40"
@@ -2249,18 +2167,7 @@ class TestMain:
         mock_loose_version.side_effect = lambda x: float(x) if x else 0.0
 
         mock_module = Mock()
-        mock_module.params = {
-            "volume_count": None,
-            "state": "present",
-            "preset": "test-preset",
-            "context": "arrayB",
-            "name": "test-workload",
-            "host": "",
-            "placement": None,
-            "recommendation": False,
-            "eradicate": False,
-            "rename": None,
-        }
+        mock_module.params = _params(preset="test-preset")
         mock_ansible_module.return_value = mock_module
         mock_array = _mock_array()
         mock_array.get_rest_version.return_value = "2.40"
@@ -2299,20 +2206,12 @@ class TestMainContextDefault:
         from plugins.modules.purefa_workload import main
 
         mock_module = Mock()
-        mock_module.params = {
-            "volume_count": None,
-            "state": "absent",
-            "preset": "test-preset",
-            "name": "test-workload",
-            "host": "",
-            "eradicate": False,
-            "placement": None,
+        mock_module.params = _params(
+            state="absent",
+            preset="test-preset",
             # Omitted, which is now a request to search the whole fleet
-            "context": None,
-            "rename": None,
-            "recommendation": False,
-            "wait": True,
-        }
+            context=None,
+        )
         mock_module.params.update(params)
         # A real fail_json ends the module. Without this the mock returns and main()
         # carries on past a refusal, which reads as the refusal not having happened.
@@ -3089,6 +2988,32 @@ class TestCheckingOptionCombinations:
 
         module.fail_json.assert_not_called()
 
+    def test_a_host_cannot_be_connected_by_a_rename(self):
+        """A rename does not read host, so the two together promise a rename that
+        also connects. Refused rather than warned about, unlike the options in
+        IGNORED_OPTIONS: there is no reading of it to report."""
+        message = self._refuse(rename="new-workload", host="host1")
+
+        assert "host" in message and "rename" in message
+
+    def test_a_host_on_its_own_is_the_supported_one(self):
+        module = self._check(host="host1")
+
+        module.fail_json.assert_not_called()
+
+    @pytest.mark.parametrize("state", ["present", "expand"])
+    def test_an_eradicate_on_any_state_but_absent_is_refused(self, state):
+        """Accepted and ignored today, so a task reads as "make sure this exists,
+        and destroy it for good" and does neither of the two things it names"""
+        message = self._refuse(state=state, eradicate=True)
+
+        assert "eradicate" in message and state in message
+
+    def test_an_eradicate_on_a_removal_is_the_supported_one(self):
+        module = self._check(state="absent", eradicate=True)
+
+        module.fail_json.assert_not_called()
+
     def test_nothing_here_can_ask_the_array_anything(self):
         """It is handed no array, which is the enforcement rather than the
         convention: it runs before get_array(), and none of these questions needs
@@ -3100,6 +3025,96 @@ class TestCheckingOptionCombinations:
         signature = inspect.signature(_check_option_combinations)
 
         assert list(signature.parameters) == ["module"]
+
+
+class TestOptionsTheActionDoesNotRead:
+    """An option set on a task that does not read it is said, not dropped
+
+    Being accepted and silently doing nothing is what this module was reported for,
+    in placement's case. None of this is answerable from the task alone - a create
+    and a no-op are the same task until the workload has been looked up - which is
+    why it is asked once the action is known, and why each warning can name the
+    action rather than the state that was asked for.
+    """
+
+    #: A value for each option in the table, so a case can be built from the table
+    #: itself rather than from a second list that could drift from it
+    VALUES = {
+        "recommendation": True,
+        "volume_count": 2,
+        "volume_configuration": "config1",
+        "parameters": [{"name": "size", "value": {"string": "1G"}}],
+    }
+
+    #: Every action main() can dispatch, so "does not read it" is tested against
+    #: all of them rather than against one representative
+    ACTIONS = (
+        "create",
+        "expand",
+        "recover",
+        "rename",
+        "connect",
+        "disconnect",
+        "delete",
+        "eradicate",
+        "nothing",
+    )
+
+    def _warnings(self, action, **params):
+        from plugins.modules.purefa_workload import _warn_about_ignored_options
+
+        module = Mock(params=_params(**params))
+        _warn_about_ignored_options(module, action)
+        return [call.args[0] for call in module.warn.call_args_list]
+
+    def test_the_table_names_an_action_this_module_actually_dispatches(self):
+        """A typo in the table would silently warn on every single run"""
+        for _option, read_by, _why in IGNORED_OPTIONS:
+            assert read_by in self.ACTIONS
+
+    def test_every_option_in_the_table_has_a_value_to_test_with(self):
+        assert {option for option, _read_by, _why in IGNORED_OPTIONS} == set(
+            self.VALUES
+        )
+
+    @pytest.mark.parametrize("option, read_by, _why", IGNORED_OPTIONS)
+    def test_the_one_action_that_reads_it_says_nothing(self, option, read_by, _why):
+        assert self._warnings(read_by, **{option: self.VALUES[option]}) == []
+
+    @pytest.mark.parametrize("option, read_by, _why", IGNORED_OPTIONS)
+    def test_every_other_action_says_so(self, option, read_by, _why):
+        for action in self.ACTIONS:
+            if action == read_by:
+                continue
+            warnings = self._warnings(action, **{option: self.VALUES[option]})
+
+            assert len(warnings) == 1, (action, warnings)
+            assert option in warnings[0]
+            # The action, not the state: which one a state: present task turned out
+            # to be is the whole reason this is asked here rather than up front
+            assert action in warnings[0]
+
+    @pytest.mark.parametrize("option, _read_by, _why", IGNORED_OPTIONS)
+    def test_an_option_the_task_never_set_is_not_reported(self, option, _read_by, _why):
+        """The defaults are falsy, and warning about a default would make every
+        task noisy enough that the real warnings stop being read"""
+        for action in self.ACTIONS:
+            assert self._warnings(action) == []
+
+    def test_each_option_is_reported_on_its_own(self):
+        """Two ignored options are two warnings. Honest, and it keeps the table a
+        table rather than a set of combinations"""
+        warnings = self._warnings("nothing", volume_count=2, volume_configuration="c1")
+
+        assert len(warnings) == 2
+
+    @pytest.mark.parametrize("option", ["eradicate", "host", "wait"])
+    def test_the_options_deliberately_left_out_stay_out(self, option):
+        """eradicate is refused where it cannot apply, and _decide_action has its
+        own word for the one case where it is accepted and ignored. host selects
+        the action rather than being read by one. wait defaults to true, so listing
+        it would warn on every rename anyone ever runs."""
+        assert option not in {name for name, _read_by, _why in IGNORED_OPTIONS}
 
 
 class TestReadingTheFleetName:

@@ -1,6 +1,7 @@
 breaking_changes:
   - purefa_workload - ``context``/``placement`` now default to the whole fleet instead of to the array receiving the request. A ``state=absent`` task naming neither now finds the workload wherever it is in the fleet and destroys it there; in 1.44.0 the same task looked only at the array it was sent to, so a workload held only by another fleet member was reported as already gone and left untouched. Name ``context`` to keep a task scoped to one member.
   - purefa_workload - A task naming neither ``context`` nor ``placement`` now fails, naming the members involved, when two or more fleet members hold the workload name. In 1.44.0 it acted on the copy held by the array receiving the request.
+  - 'purefa_workload - ``eradicate: true`` is now refused on any state but ``absent``, and ``host`` is refused together with ``rename``. Both were previously accepted and ignored, so a task reading as "make sure this exists, and destroy it for good" or as "rename this and connect a host to it" did neither of the two things it named.'
 
 minor_changes:
   - purefa_workload - Return a ``workload`` dict on every action describing the resulting fleet member, status, and volumes, instead of only ``changed``
@@ -9,11 +10,12 @@ minor_changes:
   - purefa_workload - Refuse an explicitly empty ``context`` rather than reading it as unset, so that a value computed from an undefined variable cannot silently widen a destructive task to the whole fleet
   - purefa_workload - Name the fleet member a context-less delete or eradicate resolved to, before anything is removed from it
   - purefa_workload - Warn on every action, not only the destructive ones, when a workload name already exists on another fleet member, since a name is unique per member, not per fleet. A rename asks for both names, since renaming onto a name another member already holds produces two of it
-  - purefa_workload - Return the workload name and fleet member from a check-mode delete or eradicate, instead of an empty dict
+  - purefa_workload - Return the workload name and fleet member from a delete or an eradicate, in check mode and on a real run alike, instead of an empty dict. An eradication leaves nothing else to read, so those two keys are all it reports
   - module_utils/api_helpers - Add a generic ``wait_for`` polling helper, with backoff and timeout, for modules that wait on an asynchronous array operation
 
 bugfixes:
   - purefa_workload - ``placement`` now takes effect on every action; it was previously ignored outside of a ``recommendation``-based create. It remains a separate option from ``context`` rather than an alias, so naming both with different members is reported rather than one of them silently winning
+  - purefa_workload - Warn, rather than saying nothing, when ``recommendation``, ``volume_count``, ``volume_configuration`` or ``parameters`` is set on a task that does not read it. The warning names the action the task resolved to, so a ``state=present`` task that turned out to have nothing to create is told its parameters were not applied
   - purefa_workload - Stop ``state=expand`` from creating volumes for real while running in check mode
   - purefa_workload - Fixed idempotency with ``recommendation``, re-running found a new placement each time and created a duplicate workload instead of recognising the one already there
   - purefa_workload - Fixed fleet-wide idempotency for create, delete, and eradicate, which previously only checked the named member rather than the whole fleet
