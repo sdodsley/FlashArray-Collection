@@ -377,7 +377,6 @@ workload:
             sample: ['foo-vol1', 'foo-vol2']
 """
 
-from dataclasses import dataclass
 from typing import NamedTuple
 
 HAS_PURESTORAGE = True
@@ -1597,8 +1596,7 @@ def _resolve_member_to_search(module, array, fleet):
     return requested
 
 
-@dataclass(frozen=True)
-class WorkloadLookup:
+class WorkloadLookup(NamedTuple):
     """What the fleet says about this name, and how widely we asked
 
     Stores only what was read. Everything else is derived from matches, so nothing
