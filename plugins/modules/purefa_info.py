@@ -2855,26 +2855,26 @@ def generate_hgroups_dict(array, performance):
     hgroups_info = {}
     hgroups = list(array.get_host_groups().items)
     for hgroup in hgroups:
-        if hgroup.is_local:
-            name = hgroup.name
-            hgroups_info[name] = {
-                "hosts": [],
-                "pgs": [],
-                "vols": [],
-                "tags": [],
-                "snapshots": getattr(hgroup.space, "snapshots", None),
-                "data_reduction": getattr(hgroup.space, "data_reduction", None),
-                "thin_provisioning": getattr(hgroup.space, "thin_provisioning", None),
-                "total_physical": getattr(hgroup.space, "total_physical", None),
-                "total_provisioned": getattr(hgroup.space, "total_provisioned", None),
-                "total_reduction": getattr(hgroup.space, "total_reduction", None),
-                "unique": getattr(hgroup.space, "unique", None),
-                "virtual": getattr(hgroup.space, "virtual", None),
-                "used_provisioned": getattr(hgroup.space, "used_provisioned", None),
-                "total_used": getattr(hgroup.space, "total_used", None),
-                "destroyed": getattr(hgroup, "destroyed", False),
-                "time_remaining": getattr(hgroup, "time_remaining", None),
-            }
+        name = hgroup.name
+        hgroups_info[name] = {
+            "hosts": [],
+            "pgs": [],
+            "vols": [],
+            "tags": [],
+            "snapshots": getattr(hgroup.space, "snapshots", None),
+            "data_reduction": getattr(hgroup.space, "data_reduction", None),
+            "thin_provisioning": getattr(hgroup.space, "thin_provisioning", None),
+            "total_physical": getattr(hgroup.space, "total_physical", None),
+            "total_provisioned": getattr(hgroup.space, "total_provisioned", None),
+            "total_reduction": getattr(hgroup.space, "total_reduction", None),
+            "unique": getattr(hgroup.space, "unique", None),
+            "virtual": getattr(hgroup.space, "virtual", None),
+            "used_provisioned": getattr(hgroup.space, "used_provisioned", None),
+            "total_used": getattr(hgroup.space, "total_used", None),
+            "destroyed": getattr(hgroup, "destroyed", False),
+            "time_remaining": getattr(hgroup, "time_remaining", None),
+            "is_local": getattr(hgroup, "is_local", True),
+        }
     if LooseVersion(TAGS_API_VERSION) <= LooseVersion(array.get_rest_version()):
         hgroup_tags = list(array.get_host_groups_tags(resource_destroyed=False).items)
         for tag in hgroup_tags:
@@ -2889,7 +2889,7 @@ def generate_hgroups_dict(array, performance):
     if performance:
         hgs_performance = list(array.get_host_groups_performance().items)
         for perf in hgs_performance:
-            if ":" not in perf.name:
+            if perf.name in hgroups_info:
                 hgroups_info[perf.name]["performance"] = {
                     "bytes_per_mirrored_write": perf.bytes_per_mirrored_write,
                     "bytes_per_op": perf.bytes_per_op,
@@ -2919,10 +2919,7 @@ def generate_hgroups_dict(array, performance):
                 }
     hg_vols = list(array.get_connections().items)
     for hg_vol in hg_vols:
-        if (
-            getattr(hg_vol.host_group, "name", None)
-            and ":" not in hg_vol.host_group.name
-        ):
+        if getattr(hg_vol.host_group, "name", None) in hgroups_info:
             name = hg_vol.host_group.name
             vol_entry = {
                 "name": hg_vol.volume.name,
