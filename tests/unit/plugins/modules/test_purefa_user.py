@@ -61,10 +61,6 @@ from plugins.modules.purefa_user import (
     LOCAL_NAME_PATTERN,
 )
 
-# Referenced by name so the tests exercise the module's own patterns rather
-# than a copy that can drift out of step with them.
-AD_PATTERN = AD_NAME_PATTERN
-
 
 class TestGetUser:
     """Test cases for get_user function"""
@@ -555,17 +551,13 @@ class TestAdUsernameValidation:
     bounded enough that a name cannot widen which admins a request targets."""
 
     ACCEPTED = [
-        "meagan.gibbons",
         "first.last",
-        "EXPEDIENT\\meagan",
-        "meagan@expedient.com",
+        "jane.doe",
+        "COMPANY\\jane",
+        "jane@company.com",
         "svc_account-01",
         "a",
         "A" * 128,
-        # A directory service names its own users and is not limited to
-        # ASCII. The array looks these up quite happily - it answers with
-        # "Unable to find specified user", an existence error, not a
-        # complaint about the name.
         "josé.garcía",
         "Ωmega.user",
     ]
@@ -589,11 +581,14 @@ class TestAdUsernameValidation:
 
     def test_accepts_real_directory_formats(self):
         for name in self.ACCEPTED:
-            assert AD_PATTERN.match(name), "should accept %r" % (name,)
+            assert AD_NAME_PATTERN.match(name), "should accept %r" % (name,)
 
     def test_rejects_separators_and_whitespace(self):
         for name, why in self.REJECTED:
-            assert not AD_PATTERN.match(name), "should reject %r (%s)" % (name, why)
+            assert not AD_NAME_PATTERN.match(name), "should reject %r (%s)" % (
+                name,
+                why,
+            )
 
 
 class TestNameValidationIsApplied:
@@ -625,7 +620,7 @@ class TestNameValidationIsApplied:
         """The name in issue #1060 must reach the array"""
         import pytest
 
-        mock_module = self._module("meagan.gibbons", ad_user=True)
+        mock_module = self._module("first.last", ad_user=True)
         mock_ansible_module.return_value = mock_module
         mock_array = Mock()
         # An AD user with no array-side state is not returned by get_admins
@@ -662,7 +657,7 @@ class TestNameValidationIsApplied:
         """The local account rules still apply to local users"""
         import pytest
 
-        mock_module = self._module("meagan.gibbons", ad_user=False)
+        mock_module = self._module("first.last", ad_user=False)
         mock_ansible_module.return_value = mock_module
         mock_get_array.return_value = Mock()
 
@@ -693,7 +688,7 @@ class TestNameValidationIsApplied:
         """The local rules are untouched by the AD work"""
         assert LOCAL_NAME_PATTERN.match("ansible")
         assert LOCAL_NAME_PATTERN.match("svc-ansible")
-        assert not LOCAL_NAME_PATTERN.match("meagan.gibbons")
+        assert not LOCAL_NAME_PATTERN.match("first.last")
         assert not LOCAL_NAME_PATTERN.match("Ansible")
 
 

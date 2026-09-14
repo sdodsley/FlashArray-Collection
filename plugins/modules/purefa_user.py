@@ -172,16 +172,8 @@ from ansible_collections.everpure.flasharray.plugins.module_utils.api_helpers im
     check_response,
 )
 
-# Purity's rules for the local account names the array itself creates.
 LOCAL_NAME_PATTERN = re.compile("^[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?$")
-
-# A directory service names its own users, so the array's local rules do not
-# apply and neither does any list of permitted characters - a name may be in
-# any script. What a name may not contain is a character that changes which
-# admins the request targets: the SDK joins names with commas, so a single
-# name containing one is sent, and acted on, as two. \A and \Z rather than
-# ^ and $, because $ also matches before a trailing newline, which a name
-# read with lookup('file', ...) will have.
+# Deny only illegal characters. \Z not $, which permits a trailing newline from file lookups.
 AD_NAME_PATTERN = re.compile(r"\A[^\s,/?&#]{1,128}\Z")
 
 
