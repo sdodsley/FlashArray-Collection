@@ -56,7 +56,14 @@ from plugins.modules.purefa_user import (
     delete_local_user,
     delete_ad_user,
     update_ad_user,
+    main,
+    AD_NAME_PATTERN,
+    LOCAL_NAME_PATTERN,
 )
+
+# Referenced by name so the tests exercise the module's own patterns rather
+# than a copy that can drift out of step with them.
+AD_PATTERN = AD_NAME_PATTERN
 
 
 class TestGetUser:
@@ -555,6 +562,12 @@ class TestAdUsernameValidation:
         "svc_account-01",
         "a",
         "A" * 128,
+        # A directory service names its own users and is not limited to
+        # ASCII. The array looks these up quite happily - it answers with
+        # "Unable to find specified user", an existence error, not a
+        # complaint about the name.
+        "josé.garcía",
+        "Ωmega.user",
     ]
 
     REJECTED = [
@@ -566,32 +579,175 @@ class TestAdUsernameValidation:
         ("alice&role=array_admin", "ampersand"),
         ("alice?x=1", "query separator"),
         ("alice/../pureuser", "slash"),
+        ("alice#fragment", "fragment separator"),
         ("alice\nbob", "newline"),
+        # $ matches before a trailing newline, so this needs \Z. A name read
+        # with lookup('file', ...) carries one.
+        ("alice\n", "trailing newline"),
         ("A" * 129, "over the length bound"),
     ]
 
-    @staticmethod
-    def _pattern():
-        import re
-
-        return re.compile(r"^[A-Za-z0-9._@\\-]{1,128}$")
-
     def test_accepts_real_directory_formats(self):
-        pat = self._pattern()
         for name in self.ACCEPTED:
-            assert pat.match(name), f"should accept {name!r}"
+            assert AD_PATTERN.match(name), f"should accept {name!r}"
 
     def test_rejects_separators_and_whitespace(self):
-        pat = self._pattern()
         for name, why in self.REJECTED:
-            assert not pat.match(name), f"should reject {name!r} ({why})"
+            assert not AD_PATTERN.match(name), f"should reject {name!r} ({why})"
 
-    def test_pattern_matches_the_module(self):
-        """Guard against the module's pattern drifting from this test's copy."""
-        import re
-        from pathlib import Path
 
-        src = Path("plugins/modules/purefa_user.py").read_text()
-        found = re.search(r'ad_pattern = re\.compile\(r"([^"]+)"\)', src)
-        assert found, "ad_pattern not found in the module"
-        assert found.group(1) == self._pattern().pattern
+class TestNameValidationIsApplied:
+    """The patterns reach the real code path - carried from #1061"""
+
+    def _module(self, name, ad_user):
+        mock_module = Mock()
+        mock_module.check_mode = False
+        mock_module.fail_json.side_effect = SystemExit(1)
+        mock_module.exit_json.side_effect = SystemExit(0)
+        mock_module.params = {
+            "name": name,
+            "ad_user": ad_user,
+            "state": "present",
+            "role": "readonly",
+            "password": None,
+            "old_password": None,
+            "api": False,
+            "timeout": "0",
+            "public_key": None,
+        }
+        return mock_module
+
+    @patch("plugins.modules.purefa_user.get_array")
+    @patch("plugins.modules.purefa_user.AnsibleModule")
+    def test_ad_username_with_dot_is_accepted(
+        self, mock_ansible_module, mock_get_array
+    ):
+        """The name in issue #1060 must reach the array"""
+        import pytest
+
+        mock_module = self._module("meagan.gibbons", ad_user=True)
+        mock_ansible_module.return_value = mock_module
+        mock_array = Mock()
+        # An AD user with no array-side state is not returned by get_admins
+        mock_array.get_admins.return_value = Mock(status_code=400)
+        mock_get_array.return_value = mock_array
+
+        with pytest.raises(SystemExit):
+            main()
+
+        mock_module.fail_json.assert_not_called()
+
+    @patch("plugins.modules.purefa_user.get_array")
+    @patch("plugins.modules.purefa_user.AnsibleModule")
+    def test_ad_username_with_comma_is_rejected(
+        self, mock_ansible_module, mock_get_array
+    ):
+        """A comma would target two admins, so it must not reach the array"""
+        import pytest
+
+        mock_module = self._module("alice,pureuser", ad_user=True)
+        mock_ansible_module.return_value = mock_module
+        mock_get_array.return_value = Mock()
+
+        with pytest.raises(SystemExit):
+            main()
+
+        mock_module.fail_json.assert_called_once()
+
+    @patch("plugins.modules.purefa_user.get_array")
+    @patch("plugins.modules.purefa_user.AnsibleModule")
+    def test_local_username_with_dot_is_still_rejected(
+        self, mock_ansible_module, mock_get_array
+    ):
+        """The local account rules still apply to local users"""
+        import pytest
+
+        mock_module = self._module("meagan.gibbons", ad_user=False)
+        mock_ansible_module.return_value = mock_module
+        mock_get_array.return_value = Mock()
+
+        with pytest.raises(SystemExit):
+            main()
+
+        mock_module.fail_json.assert_called_once()
+        assert "lowercase" in mock_module.fail_json.call_args[1]["msg"]
+
+    @patch("plugins.modules.purefa_user.get_array")
+    @patch("plugins.modules.purefa_user.AnsibleModule")
+    def test_local_username_uppercase_is_still_rejected(
+        self, mock_ansible_module, mock_get_array
+    ):
+        """Uppercase local names are still rejected"""
+        import pytest
+
+        mock_module = self._module("Ansible", ad_user=False)
+        mock_ansible_module.return_value = mock_module
+        mock_get_array.return_value = Mock()
+
+        with pytest.raises(SystemExit):
+            main()
+
+        mock_module.fail_json.assert_called_once()
+
+    def test_local_pattern_is_unchanged(self):
+        """The local rules are untouched by the AD work"""
+        assert LOCAL_NAME_PATTERN.match("ansible")
+        assert LOCAL_NAME_PATTERN.match("svc-ansible")
+        assert not LOCAL_NAME_PATTERN.match("meagan.gibbons")
+        assert not LOCAL_NAME_PATTERN.match("Ansible")
+
+
+class TestApiTokenCheckMode:
+    """Check mode must not revoke a live API token - carried from #1061"""
+
+    @patch("plugins.modules.purefa_user.check_response")
+    @patch("plugins.modules.purefa_user.convert_time_to_millisecs")
+    def test_ad_user_token_not_recreated_in_check_mode(
+        self, mock_convert_time, mock_check_response
+    ):
+        """An AD user's token survives a --check run"""
+        mock_convert_time.return_value = 3600000
+        mock_module = Mock()
+        mock_module.check_mode = True
+        mock_module.params = {
+            "name": "ad-user",
+            "api": True,
+            "timeout": "1h",
+            "public_key": None,
+        }
+        mock_array = Mock()
+
+        update_ad_user(mock_module, mock_array, user=Mock())
+
+        mock_array.delete_admins_api_tokens.assert_not_called()
+        mock_array.post_admins_api_tokens.assert_not_called()
+        assert mock_module.exit_json.call_args[1]["changed"] is True
+
+    @patch("plugins.modules.purefa_user.check_response")
+    @patch("plugins.modules.purefa_user.convert_time_to_millisecs")
+    def test_local_user_token_not_recreated_in_check_mode(
+        self, mock_convert_time, mock_check_response
+    ):
+        """An existing local user's token survives a --check run"""
+        mock_convert_time.return_value = 0
+        mock_module = Mock()
+        mock_module.check_mode = True
+        mock_module.params = {
+            "name": "ansible",
+            "role": "readonly",
+            "password": None,
+            "old_password": None,
+            "api": True,
+            "timeout": "0",
+            "public_key": None,
+        }
+        mock_array = Mock()
+        mock_user = Mock()
+        mock_user.role = Mock()
+        mock_user.role.name = "readonly"
+
+        create_local_user(mock_module, mock_array, user=mock_user)
+
+        mock_array.delete_admins_api_tokens.assert_not_called()
+        mock_array.post_admins_api_tokens.assert_not_called()
+        assert mock_module.exit_json.call_args[1]["changed"] is True

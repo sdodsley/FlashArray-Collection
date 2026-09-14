@@ -172,6 +172,18 @@ from ansible_collections.everpure.flasharray.plugins.module_utils.api_helpers im
     check_response,
 )
 
+# Purity's rules for the local account names the array itself creates.
+LOCAL_NAME_PATTERN = re.compile("^[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?$")
+
+# A directory service names its own users, so the array's local rules do not
+# apply and neither does any list of permitted characters - a name may be in
+# any script. What a name may not contain is a character that changes which
+# admins the request targets: the SDK joins names with commas, so a single
+# name containing one is sent, and acted on, as two. \A and \Z rather than
+# ^ and $, because $ also matches before a trailing newline, which a name
+# read with lookup('file', ...) will have.
+AD_NAME_PATTERN = re.compile(r"\A[^\s,/?&#]{1,128}\Z")
+
 
 def get_user(module, array):
     """Return Local User Account or None"""
@@ -236,14 +248,15 @@ def create_local_user(module, array, user):
                 )
         if module.params["api"]:
             api_changed = True
-            ttl = convert_time_to_millisecs(module.params["timeout"])
-            res = array.delete_admins_api_tokens(names=[module.params["name"]])
-            check_response(res, module, "Failed to delete original API token")
-            res = array.post_admins_api_tokens(
-                names=[module.params["name"]], timeout=ttl
-            )
-            check_response(res, module, "Failed to recreate API token")
-            api_token = list(res.items)[0].api_token.token
+            if not module.check_mode:
+                ttl = convert_time_to_millisecs(module.params["timeout"])
+                res = array.delete_admins_api_tokens(names=[module.params["name"]])
+                check_response(res, module, "Failed to delete original API token")
+                res = array.post_admins_api_tokens(
+                    names=[module.params["name"]], timeout=ttl
+                )
+                check_response(res, module, "Failed to recreate API token")
+                api_token = list(res.items)[0].api_token.token
         if module.params["role"] and module.params["role"] != getattr(
             user.role, "name", None
         ):
@@ -376,15 +389,14 @@ def main():
 
     state = module.params["state"]
     array = get_array(module)
-    pattern = re.compile("^[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?$")
-    ad_pattern = re.compile(r"^[A-Za-z0-9._@\\-]{1,128}$")
     if module.params["ad_user"]:
-        if not ad_pattern.match(module.params["name"]):
+        if not AD_NAME_PATTERN.match(module.params["name"]):
             module.fail_json(
                 msg="name must contain a minimum of 1 and a maximum of 128 "
-                "characters (alphanumeric, or any of `.`, `_`, `@`, `\\`, `-`)."
+                "characters, and must not contain whitespace or any of "
+                "`,`, `/`, `?`, `&`, `#`."
             )
-    elif not pattern.match(module.params["name"]):
+    elif not LOCAL_NAME_PATTERN.match(module.params["name"]):
         module.fail_json(
             msg="name must contain a minimum of 1 and a maximum of 32 characters "
             "(alphanumeric or `-`). All letters must be lowercase."
