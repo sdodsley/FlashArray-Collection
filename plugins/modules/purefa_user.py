@@ -372,11 +372,12 @@ def main():
     state = module.params["state"]
     array = get_array(module)
     pattern = re.compile("^[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?$")
-    if not pattern.match(module.params["name"]):
-        module.fail_json(
-            msg="name must contain a minimum of 1 and a maximum of 32 characters "
-            "(alphanumeric or `-`). All letters must be lowercase."
-        )
+    if not module.params["ad_user"]:
+        if not pattern.match(module.params["name"]):
+            module.fail_json(
+                msg="name must contain a minimum of 1 and a maximum of 32 characters "
+                "(alphanumeric or `-`). All letters must be lowercase."
+            )
     user = get_user(module, array)
     local_user = getattr(user, "is_local", False)
     if state == "present" and not local_user and module.params["ad_user"]:
