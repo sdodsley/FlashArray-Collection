@@ -589,11 +589,11 @@ class TestAdUsernameValidation:
 
     def test_accepts_real_directory_formats(self):
         for name in self.ACCEPTED:
-            assert AD_PATTERN.match(name), f"should accept {name!r}"
+            assert AD_PATTERN.match(name), "should accept %r" % (name,)
 
     def test_rejects_separators_and_whitespace(self):
         for name, why in self.REJECTED:
-            assert not AD_PATTERN.match(name), f"should reject {name!r} ({why})"
+            assert not AD_PATTERN.match(name), "should reject %r (%s)" % (name, why)
 
 
 class TestNameValidationIsApplied:
