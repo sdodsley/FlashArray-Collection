@@ -252,6 +252,7 @@ class TestUpdateAdUser:
             "timeout": "1h",
             "public_key": None,
         }
+        mock_module.check_mode = False
         mock_array = Mock()
 
         # Mock API token response
@@ -285,6 +286,7 @@ class TestUpdateAdUser:
             "timeout": "1h",
             "public_key": None,
         }
+        mock_module.check_mode = False
         mock_array = Mock()
         mock_user = Mock()
 
@@ -313,6 +315,7 @@ class TestUpdateAdUser:
             "api": False,
             "public_key": "ssh-rsa AAAAB...",
         }
+        mock_module.check_mode = False
         mock_array = Mock()
         mock_array.patch_admins.return_value = Mock(status_code=200)
 
@@ -320,6 +323,86 @@ class TestUpdateAdUser:
 
         mock_array.patch_admins.assert_called_once()
         mock_module.exit_json.assert_called_once()
+        call_kwargs = mock_module.exit_json.call_args[1]
+        assert call_kwargs["changed"] is True
+
+    @patch("plugins.modules.purefa_user.check_response")
+    def test_update_ad_user_masked_key_always_patches(self, mock_check_response):
+        """The array masks a stored key as ****, so setting one always reports changed"""
+        mock_module = Mock()
+        mock_module.params = {
+            "name": "ad-user",
+            "api": False,
+            "public_key": "ssh-ed25519 AAAAC3...",
+        }
+        mock_module.check_mode = False
+        mock_array = Mock()
+        mock_user = Mock()
+        mock_user.public_key = "****"
+
+        update_ad_user(mock_module, mock_array, user=mock_user)
+
+        mock_array.patch_admins.assert_called_once()
+        call_kwargs = mock_module.exit_json.call_args[1]
+        assert call_kwargs["changed"] is True
+
+    @patch("plugins.modules.purefa_user.check_response")
+    def test_update_ad_user_removal_is_idempotent(self, mock_check_response):
+        """Removing a key that is already absent reports no change"""
+        mock_module = Mock()
+        mock_module.params = {
+            "name": "ad-user",
+            "api": False,
+            "public_key": "",
+        }
+        mock_module.check_mode = False
+        mock_array = Mock()
+        mock_user = Mock()
+        mock_user.public_key = ""
+
+        update_ad_user(mock_module, mock_array, user=mock_user)
+
+        mock_array.patch_admins.assert_not_called()
+        call_kwargs = mock_module.exit_json.call_args[1]
+        assert call_kwargs["changed"] is False
+
+    @patch("plugins.modules.purefa_user.check_response")
+    def test_update_ad_user_removal_of_existing_key(self, mock_check_response):
+        """Removing a key that is set patches with an empty string"""
+        mock_module = Mock()
+        mock_module.params = {
+            "name": "ad-user",
+            "api": False,
+            "public_key": "",
+        }
+        mock_module.check_mode = False
+        mock_array = Mock()
+        mock_user = Mock()
+        mock_user.public_key = "****"
+
+        update_ad_user(mock_module, mock_array, user=mock_user)
+
+        mock_array.patch_admins.assert_called_once()
+        call_kwargs = mock_module.exit_json.call_args[1]
+        assert call_kwargs["changed"] is True
+
+    @patch("plugins.modules.purefa_user.check_response")
+    def test_update_ad_user_public_key_check_mode(self, mock_check_response):
+        """Test update_ad_user reports a change without calling the array in check mode"""
+        mock_module = Mock()
+        mock_module.params = {
+            "name": "ad-user",
+            "api": False,
+            "public_key": "ssh-rsa NEWKEY...",
+        }
+        mock_module.check_mode = True
+        mock_array = Mock()
+        mock_user = Mock()
+        mock_user.public_key = "****"
+
+        update_ad_user(mock_module, mock_array, user=mock_user)
+
+        mock_array.patch_admins.assert_not_called()
         call_kwargs = mock_module.exit_json.call_args[1]
         assert call_kwargs["changed"] is True
 
@@ -458,3 +541,57 @@ class TestCreateLocalUserExtended:
         mock_module.exit_json.assert_called_once()
         call_kwargs = mock_module.exit_json.call_args[1]
         assert call_kwargs["changed"] is False
+
+
+class TestAdUsernameValidation:
+    """The AD name pattern from #1060: permissive enough for a directory,
+    bounded enough that a name cannot widen which admins a request targets."""
+
+    ACCEPTED = [
+        "meagan.gibbons",
+        "first.last",
+        "EXPEDIENT\\meagan",
+        "meagan@expedient.com",
+        "svc_account-01",
+        "a",
+        "A" * 128,
+    ]
+
+    REJECTED = [
+        ("alice,bob", "comma splits into two names on the wire"),
+        ("alice bob", "whitespace"),
+        ("", "empty despite required=True"),
+        (" alice", "leading whitespace"),
+        ("alice ", "trailing whitespace"),
+        ("alice&role=array_admin", "ampersand"),
+        ("alice?x=1", "query separator"),
+        ("alice/../pureuser", "slash"),
+        ("alice\nbob", "newline"),
+        ("A" * 129, "over the length bound"),
+    ]
+
+    @staticmethod
+    def _pattern():
+        import re
+
+        return re.compile(r"^[A-Za-z0-9._@\\-]{1,128}$")
+
+    def test_accepts_real_directory_formats(self):
+        pat = self._pattern()
+        for name in self.ACCEPTED:
+            assert pat.match(name), f"should accept {name!r}"
+
+    def test_rejects_separators_and_whitespace(self):
+        pat = self._pattern()
+        for name, why in self.REJECTED:
+            assert not pat.match(name), f"should reject {name!r} ({why})"
+
+    def test_pattern_matches_the_module(self):
+        """Guard against the module's pattern drifting from this test's copy."""
+        import re
+        from pathlib import Path
+
+        src = Path("plugins/modules/purefa_user.py").read_text()
+        found = re.search(r'ad_pattern = re\.compile\(r"([^"]+)"\)', src)
+        assert found, "ad_pattern not found in the module"
+        assert found.group(1) == self._pattern().pattern

@@ -1,0 +1,15 @@
+minor_changes:
+  - purefa_user - Document that setting ``public_key`` is not idempotent. The array does not
+    expose the actual public key value, so it cannot be compared against the provided key so a
+    task that sets one always reports as changed, same as passwords. Removing a key is idempotent.
+bugfixes:
+  - purefa_user - Fixed an AD user being rejected when their name does not meet Purity's local
+    username rules, such as the ``first.last`` form used by a directory service. A name is now
+    checked against the local pattern only when ``ad_user`` is false; an AD name is checked against
+    a wider pattern that accepts ``first.last``, ``DOMAIN\user`` and ``user@domain.com`` while
+    still excluding separators, whitespace and control characters.
+  - 'purefa_user - Fixed ``public_key: ""`` being silently ignored for an AD user, so the documented
+    way to remove a key now works. Uses the same logic as the local user task.'
+  - purefa_user - Fixed ``check_mode`` making real changes for an AD user, where a run would delete
+    and recreate the API token and change the SSH key despite the module declaring check mode
+    support. The same issue was present for the SSH key of a local user.
