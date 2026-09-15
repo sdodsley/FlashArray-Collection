@@ -173,8 +173,11 @@ from ansible_collections.everpure.flasharray.plugins.module_utils.api_helpers im
 )
 
 LOCAL_NAME_PATTERN = re.compile("^[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?$")
-# Deny only illegal characters. \Z not $, which permits a trailing newline from file lookups.
-AD_NAME_PATTERN = re.compile(r"\A[^\s,/?&#]{1,128}\Z")
+# Deny only illegal characters: the separators the array splits or routes on,
+# whitespace, and the C0/C1 control ranges. \Z rather than $, because $ would
+# match before a trailing newline, which a name read with lookup("file", ...)
+# carries.
+AD_NAME_PATTERN = re.compile(r"\A[^\s\x00-\x1f\x7f-\x9f,/?&#]{1,128}\Z")
 
 
 def get_user(module, array):
@@ -331,26 +334,24 @@ def delete_local_user(module, array):
 
 def delete_ad_user(module, array, user):
     """Delete AD User Account references"""
-    changed = False
-    if not module.check_mode:
-        if user:
-            changed = True
-            res = array.delete_admins_api_tokens(names=[module.params["name"]])
+    changed = bool(user)
+    if changed and not module.check_mode:
+        res = array.delete_admins_api_tokens(names=[module.params["name"]])
+        check_response(
+            res,
+            module,
+            f"AD Account {module.params['name']} API token deletion failed",
+        )
+        if hasattr(user, "public_key"):
+            res = array.patch_admins(
+                names=[module.params["name"]],
+                admin=AdminPatch(public_key=""),
+            )
             check_response(
                 res,
                 module,
-                f"AD Account {module.params['name']} API token deletion failed",
+                f"AD Account {module.params['name']} public key deletion failed",
             )
-            if hasattr(user, "public_key"):
-                res = array.patch_admins(
-                    names=[module.params["name"]],
-                    admin=AdminPatch(public_key=""),
-                )
-                check_response(
-                    res,
-                    module,
-                    f"AD Account {module.params['name']} public key deletion failed",
-                )
     module.exit_json(changed=changed)
 
 
@@ -385,8 +386,8 @@ def main():
         if not AD_NAME_PATTERN.match(module.params["name"]):
             module.fail_json(
                 msg="name must contain a minimum of 1 and a maximum of 128 "
-                "characters, and must not contain whitespace or any of "
-                "`,`, `/`, `?`, `&`, `#`."
+                "characters, and must not contain whitespace, control "
+                "characters, or any of `,`, `/`, `?`, `&`, `#`."
             )
     elif not LOCAL_NAME_PATTERN.match(module.params["name"]):
         module.fail_json(

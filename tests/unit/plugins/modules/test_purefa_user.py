@@ -161,7 +161,7 @@ class TestDeleteAdUser:
         mock_array.delete_admins_api_tokens.assert_not_called()
 
     def test_delete_ad_user_check_mode(self):
-        """Test delete_ad_user in check mode"""
+        """Check mode reports the removal without performing it"""
         mock_module = Mock()
         mock_module.check_mode = True
         mock_module.params = {"name": "ad-user"}
@@ -169,6 +169,19 @@ class TestDeleteAdUser:
         mock_user = Mock()
 
         delete_ad_user(mock_module, mock_array, user=mock_user)
+
+        mock_module.exit_json.assert_called_once_with(changed=True)
+        mock_array.delete_admins_api_tokens.assert_not_called()
+        mock_array.patch_admins.assert_not_called()
+
+    def test_delete_ad_user_check_mode_no_user(self):
+        """Nothing to remove still reports no change in check mode"""
+        mock_module = Mock()
+        mock_module.check_mode = True
+        mock_module.params = {"name": "ad-user"}
+        mock_array = Mock()
+
+        delete_ad_user(mock_module, mock_array, user=None)
 
         mock_module.exit_json.assert_called_once_with(changed=False)
         mock_array.delete_admins_api_tokens.assert_not_called()
@@ -362,6 +375,32 @@ class TestUpdateAdUser:
         mock_array = Mock()
         mock_user = Mock()
         mock_user.public_key = ""
+
+        update_ad_user(mock_module, mock_array, user=mock_user)
+
+        mock_array.patch_admins.assert_not_called()
+        call_kwargs = mock_module.exit_json.call_args[1]
+        assert call_kwargs["changed"] is False
+
+    @patch("plugins.modules.purefa_user.check_response")
+    def test_update_ad_user_removal_idempotent_when_sdk_raises(
+        self, mock_check_response
+    ):
+        """An unset key raises AttributeError, it does not read back as ''
+
+        The SDK model's __getattribute__ raises for any field that is not set,
+        which is what getattr(user, "public_key", "") is there to absorb. A
+        Mock told to return "" cannot exercise that.
+        """
+        mock_module = Mock()
+        mock_module.params = {
+            "name": "ad-user",
+            "api": False,
+            "public_key": "",
+        }
+        mock_module.check_mode = False
+        mock_array = Mock()
+        mock_user = Mock(spec=["name", "role"])
 
         update_ad_user(mock_module, mock_array, user=mock_user)
 
@@ -577,6 +616,12 @@ class TestAdUsernameValidation:
         # with lookup('file', ...) carries one.
         ("alice\n", "trailing newline"),
         ("A" * 129, "over the length bound"),
+        # \s covers whitespace, not the control ranges
+        ("nul\x00byte", "NUL"),
+        ("bell\x07", "C0 control character"),
+        ("esc\x1b[0m", "terminal escape sequence"),
+        ("del\x7f", "DEL"),
+        ("c1\x9f", "C1 control character"),
     ]
 
     def test_accepts_real_directory_formats(self):
