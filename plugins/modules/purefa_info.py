@@ -1637,6 +1637,8 @@ def generate_del_snap_dict(array):
             "remote": [],
             "time_remaining": getattr(snap, "time_remaining", None),
         }
+        if ":" in snapshot and "::" not in snapshot:
+            snap_info[snapshot]["is_local"] = False
         snap_info[snapshot]["snapshot_space"] = getattr(snap.space, "snapshots", None)
         snap_info[snapshot]["used_provisioned"] = getattr(
             snap.space, "used_provisioned", None
@@ -1959,6 +1961,7 @@ def generate_host_dict(array, performance):
             "destroyed": getattr(host, "destroyed", None),
             "time_remaining": getattr(host, "time_remaining", None),
             "vlan": getattr(host, "vlan", None),
+            "is_local": getattr(host, "is_local", True),
         }
         # Report which array target ports each host initiator is logged into.
         # An empty list means the identifier is not logged into any port, so
@@ -2096,6 +2099,7 @@ def generate_del_pgroups_dict(array):
             "virtual": getattr(pgroup.space, "virtual", None),
             "replication": getattr(pgroup.space, "replication", None),
             "used_provisioned": getattr(pgroup.space, "used_provisioned", None),
+            "is_local": getattr(pgroup, "is_local", True),
             "tags": [],
         }
         pgroup_transfers_res = array.get_protection_group_snapshots_transfer(
@@ -2220,6 +2224,7 @@ def generate_pgroups_dict(array):
             "virtual": getattr(pgroup.space, "virtual", None),
             "replication": getattr(pgroup.space, "replication", None),
             "used_provisioned": getattr(pgroup.space, "used_provisioned", None),
+            "is_local": getattr(pgroup, "is_local", True),
             "tags": [],
         }
         pgroup_transfers_res = array.get_protection_group_snapshots_transfer(
@@ -3066,6 +3071,7 @@ def generate_fleet_dict(array):
             fleet_info[fleet_name]["members"][name] = {
                 "status": member.status,
                 "status_details": member.status_details,
+                "is_local": getattr(member.member, "is_local", None),
                 "role": (
                     "fleet_coordinator" if hasattr(member, "coordinator_of") else None
                 ),
