@@ -56,6 +56,9 @@ from plugins.modules.purefa_user import (
     delete_local_user,
     delete_ad_user,
     update_ad_user,
+    main,
+    AD_NAME_PATTERN,
+    LOCAL_NAME_PATTERN,
 )
 
 
@@ -158,7 +161,7 @@ class TestDeleteAdUser:
         mock_array.delete_admins_api_tokens.assert_not_called()
 
     def test_delete_ad_user_check_mode(self):
-        """Test delete_ad_user in check mode"""
+        """Check mode reports the removal without performing it"""
         mock_module = Mock()
         mock_module.check_mode = True
         mock_module.params = {"name": "ad-user"}
@@ -166,6 +169,19 @@ class TestDeleteAdUser:
         mock_user = Mock()
 
         delete_ad_user(mock_module, mock_array, user=mock_user)
+
+        mock_module.exit_json.assert_called_once_with(changed=True)
+        mock_array.delete_admins_api_tokens.assert_not_called()
+        mock_array.patch_admins.assert_not_called()
+
+    def test_delete_ad_user_check_mode_no_user(self):
+        """Nothing to remove still reports no change in check mode"""
+        mock_module = Mock()
+        mock_module.check_mode = True
+        mock_module.params = {"name": "ad-user"}
+        mock_array = Mock()
+
+        delete_ad_user(mock_module, mock_array, user=None)
 
         mock_module.exit_json.assert_called_once_with(changed=False)
         mock_array.delete_admins_api_tokens.assert_not_called()
@@ -252,6 +268,7 @@ class TestUpdateAdUser:
             "timeout": "1h",
             "public_key": None,
         }
+        mock_module.check_mode = False
         mock_array = Mock()
 
         # Mock API token response
@@ -285,6 +302,7 @@ class TestUpdateAdUser:
             "timeout": "1h",
             "public_key": None,
         }
+        mock_module.check_mode = False
         mock_array = Mock()
         mock_user = Mock()
 
@@ -313,6 +331,7 @@ class TestUpdateAdUser:
             "api": False,
             "public_key": "ssh-rsa AAAAB...",
         }
+        mock_module.check_mode = False
         mock_array = Mock()
         mock_array.patch_admins.return_value = Mock(status_code=200)
 
@@ -320,6 +339,112 @@ class TestUpdateAdUser:
 
         mock_array.patch_admins.assert_called_once()
         mock_module.exit_json.assert_called_once()
+        call_kwargs = mock_module.exit_json.call_args[1]
+        assert call_kwargs["changed"] is True
+
+    @patch("plugins.modules.purefa_user.check_response")
+    def test_update_ad_user_masked_key_always_patches(self, mock_check_response):
+        """The array masks a stored key as ****, so setting one always reports changed"""
+        mock_module = Mock()
+        mock_module.params = {
+            "name": "ad-user",
+            "api": False,
+            "public_key": "ssh-ed25519 AAAAC3...",
+        }
+        mock_module.check_mode = False
+        mock_array = Mock()
+        mock_user = Mock()
+        mock_user.public_key = "****"
+
+        update_ad_user(mock_module, mock_array, user=mock_user)
+
+        mock_array.patch_admins.assert_called_once()
+        call_kwargs = mock_module.exit_json.call_args[1]
+        assert call_kwargs["changed"] is True
+
+    @patch("plugins.modules.purefa_user.check_response")
+    def test_update_ad_user_removal_is_idempotent(self, mock_check_response):
+        """Removing a key that is already absent reports no change"""
+        mock_module = Mock()
+        mock_module.params = {
+            "name": "ad-user",
+            "api": False,
+            "public_key": "",
+        }
+        mock_module.check_mode = False
+        mock_array = Mock()
+        mock_user = Mock()
+        mock_user.public_key = ""
+
+        update_ad_user(mock_module, mock_array, user=mock_user)
+
+        mock_array.patch_admins.assert_not_called()
+        call_kwargs = mock_module.exit_json.call_args[1]
+        assert call_kwargs["changed"] is False
+
+    @patch("plugins.modules.purefa_user.check_response")
+    def test_update_ad_user_removal_idempotent_when_sdk_raises(
+        self, mock_check_response
+    ):
+        """An unset key raises AttributeError, it does not read back as ''
+
+        The SDK model's __getattribute__ raises for any field that is not set,
+        which is what getattr(user, "public_key", "") is there to absorb. A
+        Mock told to return "" cannot exercise that.
+        """
+        mock_module = Mock()
+        mock_module.params = {
+            "name": "ad-user",
+            "api": False,
+            "public_key": "",
+        }
+        mock_module.check_mode = False
+        mock_array = Mock()
+        mock_user = Mock(spec=["name", "role"])
+
+        update_ad_user(mock_module, mock_array, user=mock_user)
+
+        mock_array.patch_admins.assert_not_called()
+        call_kwargs = mock_module.exit_json.call_args[1]
+        assert call_kwargs["changed"] is False
+
+    @patch("plugins.modules.purefa_user.check_response")
+    def test_update_ad_user_removal_of_existing_key(self, mock_check_response):
+        """Removing a key that is set patches with an empty string"""
+        mock_module = Mock()
+        mock_module.params = {
+            "name": "ad-user",
+            "api": False,
+            "public_key": "",
+        }
+        mock_module.check_mode = False
+        mock_array = Mock()
+        mock_user = Mock()
+        mock_user.public_key = "****"
+
+        update_ad_user(mock_module, mock_array, user=mock_user)
+
+        mock_array.patch_admins.assert_called_once()
+        call_kwargs = mock_module.exit_json.call_args[1]
+        assert call_kwargs["changed"] is True
+
+    @patch("plugins.modules.purefa_user.check_response")
+    def test_update_ad_user_public_key_check_mode(self, mock_check_response):
+        """Test update_ad_user reports a change without calling the array in check mode"""
+        mock_module = Mock()
+        mock_module.params = {
+            "name": "ad-user",
+            "api": False,
+            "public_key": "ssh-rsa NEWKEY...",
+        }
+        mock_module.check_mode = True
+        mock_array = Mock()
+        mock_user = Mock()
+        mock_user.public_key = "****"
+
+        update_ad_user(mock_module, mock_array, user=mock_user)
+
+        mock_array.patch_admins.assert_not_called()
         call_kwargs = mock_module.exit_json.call_args[1]
         assert call_kwargs["changed"] is True
 
@@ -458,3 +583,211 @@ class TestCreateLocalUserExtended:
         mock_module.exit_json.assert_called_once()
         call_kwargs = mock_module.exit_json.call_args[1]
         assert call_kwargs["changed"] is False
+
+
+class TestAdUsernameValidation:
+    """The AD name pattern from #1060: permissive enough for a directory,
+    bounded enough that a name cannot widen which admins a request targets."""
+
+    ACCEPTED = [
+        "first.last",
+        "jane.doe",
+        "COMPANY\\jane",
+        "jane@company.com",
+        "svc_account-01",
+        "a",
+        "A" * 128,
+        "josé.garcía",
+        "Ωmega.user",
+    ]
+
+    REJECTED = [
+        ("alice,bob", "comma splits into two names on the wire"),
+        ("alice bob", "whitespace"),
+        ("", "empty despite required=True"),
+        (" alice", "leading whitespace"),
+        ("alice ", "trailing whitespace"),
+        ("alice&role=array_admin", "ampersand"),
+        ("alice?x=1", "query separator"),
+        ("alice/../pureuser", "slash"),
+        ("alice#fragment", "fragment separator"),
+        ("alice\nbob", "newline"),
+        # $ matches before a trailing newline, so this needs \Z. A name read
+        # with lookup('file', ...) carries one.
+        ("alice\n", "trailing newline"),
+        ("A" * 129, "over the length bound"),
+        # \s covers whitespace, not the control ranges
+        ("nul\x00byte", "NUL"),
+        ("bell\x07", "C0 control character"),
+        ("esc\x1b[0m", "terminal escape sequence"),
+        ("del\x7f", "DEL"),
+        ("c1\x9f", "C1 control character"),
+    ]
+
+    def test_accepts_real_directory_formats(self):
+        for name in self.ACCEPTED:
+            assert AD_NAME_PATTERN.match(name), "should accept %r" % (name,)
+
+    def test_rejects_separators_and_whitespace(self):
+        for name, why in self.REJECTED:
+            assert not AD_NAME_PATTERN.match(name), "should reject %r (%s)" % (
+                name,
+                why,
+            )
+
+
+class TestNameValidationIsApplied:
+    """The patterns reach the real code path - carried from #1061"""
+
+    def _module(self, name, ad_user):
+        mock_module = Mock()
+        mock_module.check_mode = False
+        mock_module.fail_json.side_effect = SystemExit(1)
+        mock_module.exit_json.side_effect = SystemExit(0)
+        mock_module.params = {
+            "name": name,
+            "ad_user": ad_user,
+            "state": "present",
+            "role": "readonly",
+            "password": None,
+            "old_password": None,
+            "api": False,
+            "timeout": "0",
+            "public_key": None,
+        }
+        return mock_module
+
+    @patch("plugins.modules.purefa_user.get_array")
+    @patch("plugins.modules.purefa_user.AnsibleModule")
+    def test_ad_username_with_dot_is_accepted(
+        self, mock_ansible_module, mock_get_array
+    ):
+        """The name in issue #1060 must reach the array"""
+        import pytest
+
+        mock_module = self._module("first.last", ad_user=True)
+        mock_ansible_module.return_value = mock_module
+        mock_array = Mock()
+        # An AD user with no array-side state is not returned by get_admins
+        mock_array.get_admins.return_value = Mock(status_code=400)
+        mock_get_array.return_value = mock_array
+
+        with pytest.raises(SystemExit):
+            main()
+
+        mock_module.fail_json.assert_not_called()
+
+    @patch("plugins.modules.purefa_user.get_array")
+    @patch("plugins.modules.purefa_user.AnsibleModule")
+    def test_ad_username_with_comma_is_rejected(
+        self, mock_ansible_module, mock_get_array
+    ):
+        """A comma would target two admins, so it must not reach the array"""
+        import pytest
+
+        mock_module = self._module("alice,pureuser", ad_user=True)
+        mock_ansible_module.return_value = mock_module
+        mock_get_array.return_value = Mock()
+
+        with pytest.raises(SystemExit):
+            main()
+
+        mock_module.fail_json.assert_called_once()
+
+    @patch("plugins.modules.purefa_user.get_array")
+    @patch("plugins.modules.purefa_user.AnsibleModule")
+    def test_local_username_with_dot_is_still_rejected(
+        self, mock_ansible_module, mock_get_array
+    ):
+        """The local account rules still apply to local users"""
+        import pytest
+
+        mock_module = self._module("first.last", ad_user=False)
+        mock_ansible_module.return_value = mock_module
+        mock_get_array.return_value = Mock()
+
+        with pytest.raises(SystemExit):
+            main()
+
+        mock_module.fail_json.assert_called_once()
+        assert "lowercase" in mock_module.fail_json.call_args[1]["msg"]
+
+    @patch("plugins.modules.purefa_user.get_array")
+    @patch("plugins.modules.purefa_user.AnsibleModule")
+    def test_local_username_uppercase_is_still_rejected(
+        self, mock_ansible_module, mock_get_array
+    ):
+        """Uppercase local names are still rejected"""
+        import pytest
+
+        mock_module = self._module("Ansible", ad_user=False)
+        mock_ansible_module.return_value = mock_module
+        mock_get_array.return_value = Mock()
+
+        with pytest.raises(SystemExit):
+            main()
+
+        mock_module.fail_json.assert_called_once()
+
+    def test_local_pattern_is_unchanged(self):
+        """The local rules are untouched by the AD work"""
+        assert LOCAL_NAME_PATTERN.match("ansible")
+        assert LOCAL_NAME_PATTERN.match("svc-ansible")
+        assert not LOCAL_NAME_PATTERN.match("first.last")
+        assert not LOCAL_NAME_PATTERN.match("Ansible")
+
+
+class TestApiTokenCheckMode:
+    """Check mode must not revoke a live API token - carried from #1061"""
+
+    @patch("plugins.modules.purefa_user.check_response")
+    @patch("plugins.modules.purefa_user.convert_time_to_millisecs")
+    def test_ad_user_token_not_recreated_in_check_mode(
+        self, mock_convert_time, mock_check_response
+    ):
+        """An AD user's token survives a --check run"""
+        mock_convert_time.return_value = 3600000
+        mock_module = Mock()
+        mock_module.check_mode = True
+        mock_module.params = {
+            "name": "ad-user",
+            "api": True,
+            "timeout": "1h",
+            "public_key": None,
+        }
+        mock_array = Mock()
+
+        update_ad_user(mock_module, mock_array, user=Mock())
+
+        mock_array.delete_admins_api_tokens.assert_not_called()
+        mock_array.post_admins_api_tokens.assert_not_called()
+        assert mock_module.exit_json.call_args[1]["changed"] is True
+
+    @patch("plugins.modules.purefa_user.check_response")
+    @patch("plugins.modules.purefa_user.convert_time_to_millisecs")
+    def test_local_user_token_not_recreated_in_check_mode(
+        self, mock_convert_time, mock_check_response
+    ):
+        """An existing local user's token survives a --check run"""
+        mock_convert_time.return_value = 0
+        mock_module = Mock()
+        mock_module.check_mode = True
+        mock_module.params = {
+            "name": "ansible",
+            "role": "readonly",
+            "password": None,
+            "old_password": None,
+            "api": True,
+            "timeout": "0",
+            "public_key": None,
+        }
+        mock_array = Mock()
+        mock_user = Mock()
+        mock_user.role = Mock()
+        mock_user.role.name = "readonly"
+
+        create_local_user(mock_module, mock_array, user=mock_user)
+
+        mock_array.delete_admins_api_tokens.assert_not_called()
+        mock_array.post_admins_api_tokens.assert_not_called()
+        assert mock_module.exit_json.call_args[1]["changed"] is True

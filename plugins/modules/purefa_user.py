@@ -32,7 +32,7 @@ options:
     choices: [ absent, present ]
   name:
     description:
-    - The name of the local user account
+      - The name of the user account.
     type: str
     required: true
   role:
@@ -94,7 +94,7 @@ EXAMPLES = r"""
   debug:
     msg: "API Token: {{ result['user_info']['user_api'] }}"
 
-- name: Overwrite/add SSH public key for existing user
+- name: Overwrite/add SSH public key for existing user (NOT IDEMPOTENT)
   everpure.flasharray.purefa_user:
     name: ansible
     role: array_admin
@@ -125,7 +125,7 @@ EXAMPLES = r"""
     fa_url: 10.10.10.2
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
 
-- name: Create an API token (TTL of 2 days) and assign a public key to an AD user
+- name: Create an API token (TTL of 2 days) and assign a public key to an AD user (NOT IDEMPOTENT)
   everpure.flasharray.purefa_user:
     name: ansible-ad
     ad_user: true
@@ -171,6 +171,13 @@ from ansible_collections.everpure.flasharray.plugins.module_utils.common import 
 from ansible_collections.everpure.flasharray.plugins.module_utils.api_helpers import (
     check_response,
 )
+
+LOCAL_NAME_PATTERN = re.compile("^[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?$")
+# Deny only illegal characters: the separators the array splits or routes on,
+# whitespace, and the C0/C1 control ranges. \Z rather than $, because $ would
+# match before a trailing newline, which a name read with lookup("file", ...)
+# carries.
+AD_NAME_PATTERN = re.compile(r"\A[^\s\x00-\x1f\x7f-\x9f,/?&#]{1,128}\Z")
 
 
 def get_user(module, array):
@@ -236,14 +243,15 @@ def create_local_user(module, array, user):
                 )
         if module.params["api"]:
             api_changed = True
-            ttl = convert_time_to_millisecs(module.params["timeout"])
-            res = array.delete_admins_api_tokens(names=[module.params["name"]])
-            check_response(res, module, "Failed to delete original API token")
-            res = array.post_admins_api_tokens(
-                names=[module.params["name"]], timeout=ttl
-            )
-            check_response(res, module, "Failed to recreate API token")
-            api_token = list(res.items)[0].api_token.token
+            if not module.check_mode:
+                ttl = convert_time_to_millisecs(module.params["timeout"])
+                res = array.delete_admins_api_tokens(names=[module.params["name"]])
+                check_response(res, module, "Failed to delete original API token")
+                res = array.post_admins_api_tokens(
+                    names=[module.params["name"]], timeout=ttl
+                )
+                check_response(res, module, "Failed to recreate API token")
+                api_token = list(res.items)[0].api_token.token
         if module.params["role"] and module.params["role"] != getattr(
             user.role, "name", None
         ):
@@ -265,11 +273,12 @@ def create_local_user(module, array, user):
             "public_key"
         ] != getattr(user, "public_key", ""):
             key_changed = True
-            res = array.patch_admins(
-                names=[module.params["name"]],
-                admin=AdminPatch(public_key=module.params["public_key"]),
-            )
-            check_response(res, module, "Failed to change SSH key")
+            if not module.check_mode:
+                res = array.patch_admins(
+                    names=[module.params["name"]],
+                    admin=AdminPatch(public_key=module.params["public_key"]),
+                )
+                check_response(res, module, "Failed to change SSH key")
         changed = bool(passwd_changed or role_changed or api_changed or key_changed)
     module.exit_json(changed=changed, user_info=api_token)
 
@@ -279,31 +288,35 @@ def update_ad_user(module, array, user):
     api_token = "No API token created"
     api_changed = ssh_changed = False
     if module.params["api"]:
-        if user:
-            api_changed = True
-            ttl = convert_time_to_millisecs(module.params["timeout"])
-            res = array.delete_admins_api_tokens(names=[module.params["name"]])
-            check_response(res, module, "Failed to delete original API token")
+        api_changed = True
+        ttl = convert_time_to_millisecs(module.params["timeout"])
+        if not module.check_mode:
+            if user:
+                res = array.delete_admins_api_tokens(names=[module.params["name"]])
+                check_response(res, module, "Failed to delete original API token")
             res = array.post_admins_api_tokens(
                 names=[module.params["name"]], timeout=ttl
             )
-            check_response(res, module, "Failed to recreate API token")
-            api_token = list(res.items)[0].api_token.token
-        else:
-            api_changed = True
-            ttl = convert_time_to_millisecs(module.params["timeout"])
-            res = array.post_admins_api_tokens(
-                names=[module.params["name"]], timeout=ttl
+            check_response(
+                res,
+                module,
+                (
+                    "Failed to recreate API token"
+                    if user
+                    else "Failed to create API token"
+                ),
             )
-            check_response(res, module, "Failed to create API token")
             api_token = list(res.items)[0].api_token.token
-    if module.params["public_key"]:
+    if module.params["public_key"] is not None and module.params[
+        "public_key"
+    ] != getattr(user, "public_key", ""):
         ssh_changed = True
-        res = array.patch_admins(
-            names=[module.params["name"]],
-            admin=AdminPatch(public_key=module.params["public_key"]),
-        )
-        check_response(res, module, "Failed to add SSH key")
+        if not module.check_mode:
+            res = array.patch_admins(
+                names=[module.params["name"]],
+                admin=AdminPatch(public_key=module.params["public_key"]),
+            )
+            check_response(res, module, "Failed to add SSH key")
     changed = bool(api_changed or ssh_changed)
     module.exit_json(changed=changed, user_info=api_token)
 
@@ -321,26 +334,24 @@ def delete_local_user(module, array):
 
 def delete_ad_user(module, array, user):
     """Delete AD User Account references"""
-    changed = False
-    if not module.check_mode:
-        if user:
-            changed = True
-            res = array.delete_admins_api_tokens(names=[module.params["name"]])
+    changed = bool(user)
+    if changed and not module.check_mode:
+        res = array.delete_admins_api_tokens(names=[module.params["name"]])
+        check_response(
+            res,
+            module,
+            f"AD Account {module.params['name']} API token deletion failed",
+        )
+        if hasattr(user, "public_key"):
+            res = array.patch_admins(
+                names=[module.params["name"]],
+                admin=AdminPatch(public_key=""),
+            )
             check_response(
                 res,
                 module,
-                f"AD Account {module.params['name']} API token deletion failed",
+                f"AD Account {module.params['name']} public key deletion failed",
             )
-            if hasattr(user, "public_key"):
-                res = array.patch_admins(
-                    names=[module.params["name"]],
-                    admin=AdminPatch(public_key=""),
-                )
-                check_response(
-                    res,
-                    module,
-                    f"AD Account {module.params['name']} public key deletion failed",
-                )
     module.exit_json(changed=changed)
 
 
@@ -371,8 +382,14 @@ def main():
 
     state = module.params["state"]
     array = get_array(module)
-    pattern = re.compile("^[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?$")
-    if not pattern.match(module.params["name"]):
+    if module.params["ad_user"]:
+        if not AD_NAME_PATTERN.match(module.params["name"]):
+            module.fail_json(
+                msg="name must contain a minimum of 1 and a maximum of 128 "
+                "characters, and must not contain whitespace, control "
+                "characters, or any of `,`, `/`, `?`, `&`, `#`."
+            )
+    elif not LOCAL_NAME_PATTERN.match(module.params["name"]):
         module.fail_json(
             msg="name must contain a minimum of 1 and a maximum of 32 characters "
             "(alphanumeric or `-`). All letters must be lowercase."
