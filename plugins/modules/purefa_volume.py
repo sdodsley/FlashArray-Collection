@@ -1702,7 +1702,7 @@ def main():
         pattern = re.compile("^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$")
         if ":" in module.params["pgroup"]:
             if "::" in module.params["pgroup"]:
-                pgname = module.params["pgroup"].split("::")[1]
+                pgname = module.params["pgroup"].split("::")[-1]
             else:
                 pgname = module.params["pgroup"].split(":")[1]
             if not pattern.match(pgname):
@@ -1724,7 +1724,7 @@ def main():
             if not get_pod(module, array):
                 module.fail_json(
                     msg="Pod {0} does not exist.".format(
-                        module.params["pgroup"].split("::")[0]
+                        "::".join(module.params["pgroup"].split("::")[:-1])
                     )
                 )
         if not pgroup:

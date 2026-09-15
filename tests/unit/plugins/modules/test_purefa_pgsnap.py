@@ -1190,6 +1190,43 @@ class TestGetPgroupvolume:
 
         assert result == "pod1::vol1"
 
+    @patch("plugins.modules.purefa_pgsnap.LooseVersion", side_effect=LooseVersion)
+    def test_get_pgroupvolume_realm_pod_volume(self, mock_lv):
+        """Test get_pgroupvolume for a pod inside a realm
+
+        Containers nest, so the volume to restore has to be qualified with the
+        whole container. Taking split("::")[0] qualified it with the realm
+        alone, as myrealm::vol1, which never matched.
+        """
+        from plugins.modules.purefa_pgsnap import get_pgroupvolume
+
+        mock_module = Mock()
+        mock_module.params = {
+            "name": "myrealm::pod1::pg1",
+            "context": "",
+            "restore": "vol1",
+        }
+        mock_array = Mock()
+        mock_array.get_rest_version.return_value = "2.38"
+
+        mock_pgroup = Mock()
+        mock_pgroup.host_count = 0
+        mock_pgroup.host_group_count = 0
+        mock_array.get_protection_groups.return_value = Mock(
+            status_code=200, items=[mock_pgroup]
+        )
+
+        mock_vol_entry = Mock()
+        mock_vol_entry.member = Mock()
+        mock_vol_entry.member.name = "myrealm::pod1::vol1"
+        mock_array.get_protection_groups_volumes.return_value = Mock(
+            status_code=200, items=[mock_vol_entry]
+        )
+
+        result = get_pgroupvolume(mock_module, mock_array)
+
+        assert result == "myrealm::pod1::vol1"
+
 
 class TestDeleteOffloadSnapshot:
     """Test cases for delete_offload_snapshot function"""

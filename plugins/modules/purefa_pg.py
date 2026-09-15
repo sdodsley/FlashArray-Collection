@@ -244,7 +244,7 @@ CONTEXT_API_VERSION = "2.38"
 
 def get_pod(module, array):
     """Get ActiveCluster Pod"""
-    pod_name = module.params["name"].split("::")[0]
+    pod_name = "::".join(module.params["name"].split("::")[:-1])
     res = get_with_context(
         array, "get_pods", CONTEXT_API_VERSION, module, names=[pod_name]
     )
@@ -983,7 +983,7 @@ def main():
         )
     if ":" in module.params["name"]:
         if "::" in module.params["name"]:
-            pgname = module.params["name"].split("::")[1]
+            pgname = module.params["name"].split("::")[-1]
         else:
             pgname = module.params["name"].split(":")[1]
         if not pattern.match(pgname):
@@ -1006,7 +1006,7 @@ def main():
         if not get_pod(module, array):
             module.fail_json(
                 msg="Pod {0} does not exist.".format(
-                    module.params["name"].split("::")[0]
+                    "::".join(module.params["name"].split("::")[:-1])
                 )
             )
 

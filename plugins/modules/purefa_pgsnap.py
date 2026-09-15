@@ -394,7 +394,9 @@ def get_pgroupvolume(module, array):
         volumes = list(set(volumes))
         if "::" in module.params["name"]:
             restore_volume = (
-                module.params["name"].split("::")[0] + "::" + module.params["restore"]
+                "::".join(module.params["name"].split("::")[:-1])
+                + "::"
+                + module.params["restore"]
             )
         else:
             restore_volume = module.params["restore"]

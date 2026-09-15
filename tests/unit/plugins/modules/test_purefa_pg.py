@@ -2283,6 +2283,63 @@ class TestMain:
     @patch("plugins.modules.purefa_pg.get_pgroup")
     @patch("plugins.modules.purefa_pg.get_array")
     @patch("plugins.modules.purefa_pg.AnsibleModule")
+    def test_main_pod_not_exists_in_realm(
+        self,
+        mock_ansible,
+        mock_get_array,
+        mock_get_pg,
+        mock_get_pending,
+        mock_get_pod,
+        mock_check_response,
+        mock_lv,
+    ):
+        """Test the failure names the whole container for a pod inside a realm
+
+        Containers nest, so the pod is myrealm::pod1, not myrealm. The message
+        previously named the realm alone.
+        """
+        import pytest
+
+        mock_module = Mock()
+        mock_module.params = {
+            "name": "myrealm::pod1::test-pg",
+            "rename": None,
+            "state": "present",
+            "volume": None,
+            "host": None,
+            "hostgroup": None,
+            "target": None,
+            "safe_mode": False,
+            "eradicate": False,
+            "enabled": True,
+            "context": "",
+        }
+        mock_module.check_mode = False
+        mock_module.fail_json.side_effect = SystemExit(1)
+        mock_ansible.return_value = mock_module
+        mock_array = Mock()
+        mock_array.get_rest_version.return_value = "2.38"
+        mock_array.get_arrays.return_value.items = [Mock()]
+        mock_get_array.return_value = mock_array
+        mock_get_pg.return_value = None
+        mock_get_pending.return_value = None
+        mock_get_pod.return_value = None
+
+        with pytest.raises(SystemExit):
+            main()
+
+        mock_module.fail_json.assert_called()
+        assert "Pod myrealm::pod1 does not exist" in str(
+            mock_module.fail_json.call_args
+        )
+
+    @patch("plugins.modules.purefa_pg.LooseVersion", side_effect=LooseVersion)
+    @patch("plugins.modules.purefa_pg.check_response")
+    @patch("plugins.modules.purefa_pg.get_pod")
+    @patch("plugins.modules.purefa_pg.get_pending_pgroup")
+    @patch("plugins.modules.purefa_pg.get_pgroup")
+    @patch("plugins.modules.purefa_pg.get_array")
+    @patch("plugins.modules.purefa_pg.AnsibleModule")
     def test_main_host_validation_context_api(
         self,
         mock_ansible,
