@@ -1,0 +1,21 @@
+minor_changes:
+  - purefa_info - The C(hgroups) subset now reports every host group the array can see, including
+    those it does not own. A host group belonging to another member of the fleet is reported with a
+    single-colon prefix - C(<array>:<host group>), or C(<realm on that array>:<host group>) - and
+    these were previously dropped from the returned dict. A playbook that loops over C(hgroups)
+    and acts on each name will now be handed those names, which modules such as C(purefa_hostgroup)
+    reject as not conforming to the naming convention. Filter on the new C(is_local) key to act
+    only on the host groups the array owns.
+  - purefa_info - Report C(is_local) for each host group in the C(hgroups) subset, matching
+    C(hosts), C(pgroups) and C(fleet). A host group in a realm on this array uses a double colon,
+    as C(<realm>::<host group>), and is reported C(is_local) true, so filtering on the key keeps
+    realm-scoped host groups and drops only those another array owns.
+  - purefa_info - Populate C(performance) and C(vols) for host groups the array does not own. Both
+    loops skipped any name containing a colon, which was how they avoided a KeyError on the host
+    groups the filter had excluded; they now test dict membership, as the C(hosts) and C(pgs) loops
+    already did.
+
+bugfixes:
+  - purefa_info - Fix the C(hgroups) subset raising a KeyError when a host group the array does not
+    own carries a tag. The tag loop indexed the returned dict by resource name without a guard, but
+    the host group itself had been filtered out of that dict.
