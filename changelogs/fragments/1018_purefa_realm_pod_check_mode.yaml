@@ -1,3 +1,0 @@
-bugfixes:
-  - purefa_realm - Do not create the realm when running in check mode
-  - purefa_pod - Do not create or modify default protection when running in check mode
