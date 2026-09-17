@@ -13,7 +13,6 @@ The Everpure FlashArray collection consists of the latest versions of the FlashA
 
 ## Requirements
 
-- Ansible 2.16 or later
 - Everpure FlashArray system running Purity 6.1.0 or later
     - some modules require higher versions of Purity
 - Some modules require specific Purity versions
@@ -28,7 +27,9 @@ The Everpure FlashArray collection consists of the latest versions of the FlashA
 
 ## Installation
 
-Before using this collection, you need to install it with the Ansible Galaxy command-line tool:
+As Red Hat Ansible Certified Content, this collection is available from
+[Red Hat Ansible Automation Hub](https://console.redhat.com/ansible/automation-hub/repo/published/everpure/flasharray).
+Once your Automation Hub credentials are configured in `ansible.cfg`, install it with:
 
 ```
 ansible-galaxy collection install everpure.flasharray
@@ -41,7 +42,7 @@ collections:
   - name: everpure.flasharray
 ```
 
-Note that if you install the collection from Ansible Galaxy, it will not be upgraded automatically when you upgrade the Ansible package. 
+Note that the collection is not upgraded automatically when you upgrade the Ansible Automation Platform.
 
 To upgrade the collection to the latest available version, run the following command:
 
@@ -55,7 +56,14 @@ You can also install a specific version of the collection, for example, if you n
 ansible-galaxy collection install everpure.flasharray:==1.0.0
 ```
 
-See [using Ansible collections](https://docs.ansible.com/ansible/devel/user_guide/collections_using.html) for more details.
+For configuring Automation Hub as a collection source, see
+[Configuring Red Hat automation hub as your primary source](https://docs.redhat.com/en/documentation/red_hat_ansible_automation_platform/2.5/html/getting_started_with_automation_hub/proc-configure-automation-hub-server).
+
+The collection is also published on
+[Ansible Galaxy](https://galaxy.ansible.com/ui/repo/published/everpure/flasharray/)
+for community users. See
+[using Ansible collections](https://docs.ansible.com/ansible/devel/user_guide/collections_using.html)
+for more details.
 
 ## Use Cases
 
@@ -86,7 +94,11 @@ Community-Only help may be available on the [Ansible Forum](https://forum.ansibl
 
 ## Release Notes
 
-Release notes for this collection can be found [here](https://github.com/Everpure-Ansible/FlashArray-Collection/releases)
+The full changelog is shipped with the collection as `CHANGELOG.rst` and is also available
+[in the repository](https://github.com/Everpure-Ansible/FlashArray-Collection/blob/master/CHANGELOG.rst).
+
+Per-release notes can be found on the
+[releases page](https://github.com/Everpure-Ansible/FlashArray-Collection/releases).
 
 ## Related Information
 ### Known Issues
@@ -180,4 +192,4 @@ All modules are idempotent with the exception of modules that change or set pass
 
 ## Author
 
-This collection was created in 2019 by [Simon Dodsley](https://github.com/sdodsley) for, and on behalf of, the [Everpure Ansible Team](pure-ansible-team@everpuredata.com)
+This collection was created in 2019 by [Simon Dodsley](https://github.com/sdodsley) for, and on behalf of, the [Everpure Ansible Team](mailto:pure-ansible-team@everpuredata.com)

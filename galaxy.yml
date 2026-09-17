@@ -22,7 +22,6 @@ build_ignore:
   - tests/integration
   - tests/unit
   - extensions/molecule
-  - changelogs
   - docs
   - collections
   - .github
@@ -33,3 +32,13 @@ build_ignore:
   - .pytest_cache
   - .pre-commit-config.yaml
   - settings.json
+  # Release archives. ansible-galaxy already skips its own
+  # everpure-flasharray-*.tar.gz, which is why only the retired
+  # purestorage-namespaced archive was picked up into 1.45.0.
+  - "*.tar.gz"
+  - "*.tgz"
+  - "*.zip"
+  # Repository-only dotfiles that are not user facing
+  - .gitignore
+  - .git-blame-ignore-revs
+  - .yamllint
