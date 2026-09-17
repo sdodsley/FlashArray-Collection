@@ -166,6 +166,21 @@ plugins:
       name: purefa_kmip
       namespace: ''
       version_added: 1.10.0
+    purefa_lds:
+      description: Manage Everpure FlashArray local directory services
+      name: purefa_lds
+      namespace: ''
+      version_added: 1.45.0
+    purefa_localgroup:
+      description: Manage Everpure FlashArray local groups
+      name: purefa_localgroup
+      namespace: ''
+      version_added: 1.45.0
+    purefa_localuser:
+      description: Manage Everpure FlashArray local users
+      name: purefa_localuser
+      namespace: ''
+      version_added: 1.45.0
     purefa_logging:
       description: Manage Everpure FlashArray Audit and Session logs
       name: purefa_logging
@@ -256,6 +271,11 @@ plugins:
       name: purefa_saml
       namespace: ''
       version_added: 1.12.0
+    purefa_server:
+      description: Manage Everpure FlashArray file servers
+      name: purefa_server
+      namespace: ''
+      version_added: 1.45.0
     purefa_sessions:
       description: List FlashArray Sessions
       name: purefa_sessions
@@ -306,6 +326,11 @@ plugins:
       name: purefa_syslog_settings
       namespace: ''
       version_added: 1.10.0
+    purefa_tags:
+      description: Manage Everpure FlashArray resource tags
+      name: purefa_tags
+      namespace: ''
+      version_added: 1.45.0
     purefa_tgroup:
       description: Manage topology groups on Everpure FlashArrays
       name: purefa_tgroup
@@ -356,9 +381,14 @@ plugins:
       name: purefa_workload
       namespace: ''
       version_added: 1.33.0
+    purefa_zte:
+      description: Perform Zero Touch Erasure (ZTE) on a FlashArray
+      name: purefa_zte
+      namespace: ''
+      version_added: 1.44.0
   netconf: {}
   shell: {}
   strategy: {}
   test: {}
   vars: {}
-version: 1.44.0
+version: 1.45.0

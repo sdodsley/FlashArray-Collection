@@ -4,6 +4,120 @@ Everpure.Flasharray Release Notes
 
 .. contents:: Topics
 
+v1.45.0
+=======
+
+Minor Changes
+-------------
+
+- Completed the rename to Everpure in the remaining user-visible strings, including the documentation fragment shown by ``ansible-doc`` for every module, the FlashArray authentication failure message, and the title of the generated changelog
+- api_helpers - Add put_with_context, the verb alias the helper family was missing. PUT endpoints were previously reached through get_with_context.
+- module_utils/api_helpers - Add a generic ``wait_for`` polling helper, with backoff and timeout, for modules that wait on an asynchronous array operation
+- purefa_export - Add ``server`` so an export can be created, found and deleted on a file server, as managed by the new ``purefa_server`` module. Requires REST API 2.44
+- purefa_info - Add C(software) subset, reporting software versions, the patch catalogue and upgrade installation steps.
+- purefa_info - Add C(support) subset, reporting support diagnostics and a summary of the system manifest.
+- purefa_info - Add ``logged_in_ports`` to each host in the ``hosts`` subset, mapping every host WWN/IQN/NQN to the array target ports it is currently logged into
+- purefa_info - Populate C(performance) and C(vols) for host groups the array does not own. Both loops skipped any name containing a colon, which was how they avoided a KeyError on the host groups the filter had excluded; they now test dict membership, as the C(hosts) and C(pgs) loops already did.
+- purefa_info - Report C(is_local) for each fleet member in the C(fleet) subset, identifying which member is the array being queried.
+- purefa_info - Report C(is_local) for each host group in the C(hgroups) subset, matching C(hosts), C(pgroups) and C(fleet). A host group in a realm on this array uses a double colon, as C(<realm>::<host group>), and is reported C(is_local) true, so filtering on the key keeps realm-scoped host groups and drops only those another array owns.
+- purefa_info - Report C(is_local) for each host in the C(hosts) subset. On an array in a synchronous replication relationship, C(get_hosts) also returns the peer array's hosts, named C(<peer array>:<host>). These were indistinguishable from local hosts in the returned dict, so a playbook looping over C(hosts) would pass a remote host name to a module such as C(purefa_host), which rejects it as not conforming to the host naming convention. Filter on C(is_local) to act only on hosts owned by the array being queried.
+- purefa_info - Report C(is_local) for each protection group in the C(pgroups) and C(deleted_pgroups) subsets, for the same reason.
+- purefa_info - Report per-directory quotas, and the directory user and group quotas and listings, in the C(filesystems) subset.
+- purefa_info - Report replication throughput and lag in the C(replication) subset, covering pod replica links, pods, protection groups and snapshot transfers.
+- purefa_info - The C(hgroups) subset now reports every host group the array can see, including those it does not own. A host group belonging to another member of the fleet is reported with a single-colon prefix - C(<array>:<host group>), or C(<realm on that array>:<host group>) - and these were previously dropped from the returned dict. A playbook that loops over C(hgroups) and acts on each name will now be handed those names, which modules such as C(purefa_hostgroup) reject as not conforming to the naming convention. Filter on the new C(is_local) key to act only on the host groups the array owns.
+- purefa_inventory - Adds ``slot`` to each interface in the ``interfaces`` subset, reporting the PCI Express slot number that hosts the port.
+- purefa_inventory - Hardware components without a dedicated dict of their own are now reported in a new ``other`` dict, keyed by component name and carrying the component ``type``, rather than being dropped from the inventory. This covers ``direct_compress_accelerator``, ``sas_module`` and ``storage_shelf``, as well as any component type the array reports in future.
+- purefa_inventory - Reports ``nvram_bay`` hardware components in the ``drives`` subset, so NVRAM devices carry ``identify_enabled`` and ``serial`` like every other drive. nvram_bays are already captured in this dict by the ``array.get_drives()`` pass but would otherwise be missing the ``identify_enabled`` key.
+- purefa_inventory - Temperature sensors are now reported in the ``temperature`` dict, which was previously initialized but always empty. They continue to be reported in ``controllers`` as well, so this is a backwards compatible addition.
+- purefa_inventory - The contents of the ``other`` dict are not stable. A component reported there may be moved into a dedicated dict in a future release, so match on the ``type`` key rather than assuming a component stays in ``other``.
+- purefa_user - Document that setting ``public_key`` is not idempotent. The array does not expose the actual public key value, so it cannot be compared against the provided key so a task that sets one always reports as changed, same as passwords. Removing a key is idempotent.
+- purefa_volume_tags - Warn that the module is superseded by M(everpure.flasharray.purefa_tags), which manages volume tags as well as tags on every other taggable resource.
+- purefa_workload - A task naming neither ``context`` nor ``placement`` now fails, naming the members involved, when two or more fleet members hold the workload name. In 1.44.0 it acted on the copy held by the array receiving the request, which is not necessarily the one intended. A playbook that relied on that behaviour needs an explicit ``context`` or ``placement``.
+- purefa_workload - Add ``wait`` and ``wait_timeout`` so a task waits for the array to finish before returning, on by default and required whenever ``host`` is set
+- purefa_workload - Name the fleet member a context-less delete or eradicate resolved to, before anything is removed from it
+- purefa_workload - Refuse an explicitly empty ``context`` rather than reading it as unset, so that a value computed from an undefined variable cannot silently widen a destructive task to the whole fleet
+- purefa_workload - Return a ``workload`` dict on every action describing the resulting fleet member, status, and volumes, instead of only ``changed``
+- purefa_workload - Return the workload name and fleet member from a delete or an eradicate, in check mode and on a real run alike. An eradication leaves nothing else to read, so those two keys are all it reports
+- purefa_workload - Warn on every action, not only the destructive ones, when a workload name already exists on another fleet member, since a name is unique per member, not per fleet. A rename asks for both names, since renaming onto a name another member already holds produces two of it
+- purefa_workload - ``context``/``placement`` now default to the whole fleet rather than to the array receiving the request, which is also what naming the fleet itself means: "the workload with this name, wherever it is in the fleet". Only works for a create when it is used together with ``recommendation``.
+- purefa_workload - ``eradicate: true`` is now refused on any state but ``absent``, and ``host`` is refused together with ``rename``. Both were previously accepted and ignored, so a playbook setting either will now fail rather than silently doing nothing with it.
+
+Deprecated Features
+-------------------
+
+- purefa_inventory - Reporting temperature sensors in the ``controllers`` dict is deprecated and will be removed in the next major release. Use the ``temperature`` dict instead, so that ``controllers`` holds only controllers.
+
+Bugfixes
+--------
+
+- purefa_audits - Fixed the ``pytz`` requirement check never firing, so a missing ``pytz`` failed with ``NameError`` instead of reporting the missing requirement
+- purefa_directory - Fix rename so that re-running a rename task reports no change, instead of failing with a path collision or creating a duplicate directory under the original name.
+- purefa_directory - Report a failure when the parent file system is destroyed, rather than silently reporting no change for a rename that the array would refuse.
+- purefa_eula - Fixed the already-signed check, which used ``hasattr(current_eula, "signature.accepted")``. ``hasattr`` does not traverse attributes, so the test was always false and the EULA was re-signed on every run, always reporting ``changed``. It now checks ``signature.accepted``, which the array returns as ``null`` until the EULA is accepted
+- purefa_fs - Fix rename so that re-running a rename task reports no change, instead of recreating the file system under its original name.
+- purefa_host - Reconcile a host's WWNs, IQNs and NQNs by adding only missing initiators and removing only unwanted ones, so one can be dropped by omitting it and those that stay are untouched
+- purefa_info - Added missing ``total_effective`` to destroyed volumes, which is already returned for live volumes
+- purefa_info - Fix TypeError gathering the ``hosts`` subset for hosts that have preferred arrays set, as ``preferred_arrays`` is a list of references not a dict
+- purefa_info - Fix destroyed volume snapshots always being reported with C(is_local) set to true in the C(deleted_snapshots) subset. A snapshot replicated from another array is now correctly reported as not local, matching the behaviour of the C(snapshots) subset.
+- purefa_info - Fix the C(admins) subset, and therefore C(all), crashing on an array whose administrators have no public key. The field is null by default and the SDK raises rather than returning None.
+- purefa_info - Fix the C(hgroups) subset raising a KeyError when a host group the array does not own carries a tag. The tag loop indexed the returned dict by resource name without a guard, but the host group itself had been filtered out of that dict.
+- purefa_info - Fixed ``AttributeError`` traceback when an array returns a null space value, which aborted the whole gather. The SDK client is created with ``model_attribute_error_on_none`` at its default of ``True``, so reading a declared-but-null field raises instead of returning ``None``. All space attribute reads are now guarded, affecting the ``volumes``, ``snapshots``, ``pods``, ``vgroups``, ``filesystems`` and ``capacity`` subsets
+- purefa_info - Fixed ``data_reduction``, ``total_reduction`` and ``used_provisioned`` being returned as single-element lists instead of numbers, caused by a trailing comma wrapping the value in a tuple, for volumes, volume groups and volume snapshots
+- purefa_inventory - Fixes the ``serial`` and ``identify_enabled`` of each drive being dropped from the ``drives`` subset, as the ``array.get_drives()`` pass overwrote the value already collected from the matching ``drive_bay`` hardware component.
+- purefa_network - Fixed ``AttributeError`` reading the MTU or the service list of an interface the array reports as null
+- purefa_network - Fixed ``AttributeError`` setting an address on an interface that has no gateway configured
+- purefa_network - Fixed ``AttributeError`` updating an interface that has no subinterfaces, such as any plain physical port
+- purefa_network - Fixed ``AttributeError`` when setting an address without a gateway on an interface that has no gateway configured
+- purefa_network - Fixed a compatible existing gateway being rejected with "Gateway and subnet are not compatible" when changing the address of an interface without also supplying a gateway
+- purefa_network - Fixed removing an address or gateway from an ethernet interface always reporting ``changed``
+- purefa_pg - Fix a protection group in a pod that is itself in a realm, named C(realm::pod::pgroup), being treated as though the realm were the pod. Containers nest, so the pod is C(realm::pod), but the pod existence check looked for a pod named after the realm alone and failed with "Pod <realm> does not exist", and the naming convention check validated the pod name rather than the protection group name.
+- purefa_pgsnap - Fix C(restore) from a protection group in a pod that is itself in a realm. The volume to restore was qualified with the realm alone, as C(realm::volume), rather than with the whole container, so it never matched a volume in the protection group.
+- purefa_policy - Fix AttributeError updating a password policy when the array returns null for fields such as ``lockout_duration``, by reading them safely and treating null as not configured
+- purefa_policy - Fix rename so that re-running a rename task reports no change, instead of recreating the policy under its original name.
+- purefa_policy - Fix rename to report a change in check mode, rather than always reporting no change.
+- purefa_policy - Gate ``max_password_age`` behind FlashArray REST API 2.39, the version that introduced it, so a clear error is returned instead of an unsupported-field failure on older arrays
+- purefa_sessions - Fixed the ``pytz`` requirement check never firing, so a missing ``pytz`` failed with ``NameError`` instead of reporting the missing requirement
+- purefa_smtp - Fixed ``encryption_mode`` not being cleared when set to an empty string
+- purefa_smtp - Fixed ``state=absent`` always reporting ``changed`` even when the SMTP settings were already cleared
+- purefa_smtp - Fixed the module always reporting ``changed`` when any SMTP setting is left unconfigured on the array
+- purefa_user - Fixed ``check_mode`` making real changes for an AD user, where a run would delete and recreate the API token and change the SSH key despite the module declaring check mode support. The same issue was present for both the API token and the SSH key of an existing local user.
+- purefa_user - Fixed ``check_mode`` reporting no change from ``state: absent`` for an AD user that has array-side state to remove. ``changed`` was assigned inside the check mode guard, so a ``--check`` run reported nothing while a real run reported a change.
+- purefa_user - Fixed ``public_key: ""`` being silently ignored for an AD user, so the documented way to remove a key now works. Uses the same logic as the local user task.
+- purefa_user - Fixed an AD user being rejected when their name does not meet Purity's local username rules, such as the ``first.last`` form used by a directory service. A name is now checked against the local pattern only when ``ad_user`` is false. An AD name may use any script, so that a directory is free to name its own users, and is rejected only for the characters that would change which admins the request targets - whitespace, C0 and C1 control characters, and any of ``,``, ``/``, ``?``, ``&``, ``#`` - or for being empty or over 128 characters.
+- purefa_volume - Fix the same mishandling of a C(realm::pod::pgroup) value passed to the C(pgroup) option, where the naming convention check validated the pod name rather than the protection group name, and the pod existence failure named the realm alone.
+- purefa_volume_tags - Accept C(keys) as an alias for I(tag), matching the option name used by M(everpure.flasharray.purefa_tags).
+- purefa_volume_tags - Fix I(state=absent) so that it actually removes tags. The keys from I(kvp) were compared as single-element tuples against key strings, so nothing ever matched and the module reported no change.
+- purefa_volume_tags - Fix the I(tag) option, which was documented and accepted but never read, so removing tags by key did nothing. Used on its own it also raised a TypeError.
+- purefa_workload - Connect ``host`` on a re-run of a ``recommendation``-based create, which previously returned before the host was connected
+- purefa_workload - Connect or disconnect ``host`` only where needed, so naming a host already connected to some of the workload's volumes no longer fails
+- purefa_workload - Fail on an array error during the workload lookup instead of reading any non-200 response as the workload being absent, which could let a create duplicate an existing workload
+- purefa_workload - Fail with a clear message instead of a traceback or crash when a workload cannot be found, its volumes cannot be listed, or Fusion cannot find a placement
+- purefa_workload - Fail, rather than reporting no change having added nothing, when ``state=expand`` targets a destroyed workload
+- purefa_workload - Fail, rather than reporting no change, when ``state=expand`` targets a workload that does not exist
+- purefa_workload - Fixed a bug which caused imposible renames to create or recover a workload
+- purefa_workload - Fixed fleet-wide idempotency for create, delete, and eradicate, which previously only checked the named member rather than the whole fleet
+- purefa_workload - Fixed idempotency with ``recommendation``, re-running found a new placement each time and created a duplicate workload instead of recognising the one already there
+- purefa_workload - Recover a since-destroyed workload found by a ``recommendation``-based create, instead of reporting no change
+- purefa_workload - Refuse ``rename`` together with ``state=absent`` or ``state=expand``, rather than silently ignoring it
+- purefa_workload - Reject ``volume_count: 0`` during an expand operation. This is a bugfix for a regression introduced in 1.0.34.
+- purefa_workload - Require ``preset`` for ``state=expand``, and fail with a message naming the option, rather than reporting that preset ``None`` does not exist
+- purefa_workload - Restrict the fleet member list to the fleet in use, so the two halves of a fleet-wide search cannot look at different sets of arrays on an array belonging to more than one fleet
+- purefa_workload - Stop ``state=absent`` with both ``host`` and ``eradicate: true`` from eradicating a destroyed workload. Naming a host makes the task a disconnect, and the volumes went with the workload, so the task now reports no change with a warning
+- purefa_workload - Stop ``state=expand`` from creating volumes for real while running in check mode
+- purefa_workload - Stop a create using ``recommendation`` from failing with an internal error when no context is named
+- purefa_workload - Warn, rather than saying nothing, when ``volume_count``, ``volume_configuration`` or ``parameters`` is set on a task that does not read it.
+- purefa_workload - ``placement`` now takes effect on every action; it was previously ignored outside of a ``recommendation``-based create.
+- purefa_workload - ``preset`` is only read when creating or expanding a workload, so omitting it on a delete, rename, recover, or host operation no longer raises a TypeError
+
+New Modules
+-----------
+
+- everpure.flasharray.purefa_lds - Manage Everpure FlashArray local directory services
+- everpure.flasharray.purefa_localgroup - Manage Everpure FlashArray local groups
+- everpure.flasharray.purefa_localuser - Manage Everpure FlashArray local users
+- everpure.flasharray.purefa_server - Manage Everpure FlashArray file servers
+- everpure.flasharray.purefa_tags - Manage Everpure FlashArray resource tags
+
 v1.44.0
 =======
 

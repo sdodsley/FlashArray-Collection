@@ -1,8 +1,0 @@
-minor_changes:
-  - purefa_inventory - Hardware components without a dedicated dict of their own are now reported in
-    a new ``other`` dict, keyed by component name and carrying the component ``type``, rather than
-    being dropped from the inventory. This covers ``direct_compress_accelerator``, ``sas_module``
-    and ``storage_shelf``, as well as any component type the array reports in future.
-  - purefa_inventory - The contents of the ``other`` dict are not stable. A component reported there
-    may be moved into a dedicated dict in a future release, so match on the ``type`` key rather than
-    assuming a component stays in ``other``.
