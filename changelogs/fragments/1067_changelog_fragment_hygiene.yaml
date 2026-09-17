@@ -1,4 +1,0 @@
-trivial:
-  - changelogs - Removed the changelog fragments that a release had already consumed, and set
-    ``keep_fragments`` to false so that a release removes the fragments it publishes. No user
-    facing change; ``changelogs/changelog.yaml`` already holds the change text.
