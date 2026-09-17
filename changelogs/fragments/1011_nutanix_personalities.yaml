@@ -1,2 +1,0 @@
-minor_changes:
-  - purefa_host - Add ``nutanix-mgmt`` and ``nutanix-cluster`` host personalities, supported from REST API 2.50 and higher.

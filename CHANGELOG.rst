@@ -1,6 +1,6 @@
-====================================
-Purestorage.Flasharray Release Notes
-====================================
+=================================
+Everpure.Flasharray Release Notes
+=================================
 
 .. contents:: Topics
 
