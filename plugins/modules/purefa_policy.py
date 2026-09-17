@@ -394,8 +394,8 @@ EXAMPLES = r"""
   everpure.flasharray.purefa_policy:
     name: foo
     directory:
-     - "foo:root"
-     - "bar:bin"
+      - "foo:root"
+      - "bar:bin"
     policy: quota
     quota_limit: 10G
     fa_url: 10.10.10.2
@@ -420,7 +420,7 @@ EXAMPLES = r"""
   everpure.flasharray.purefa_policy:
     name: quota1
     directory:
-     - "foo:bar"
+      - "foo:bar"
     state: absent
     policy: quota
     fa_url: 10.10.10.2

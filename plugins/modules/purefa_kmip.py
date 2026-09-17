@@ -63,8 +63,8 @@ EXAMPLES = r"""
     certificate: bar
     ca_certificate: "{{lookup('file', 'example.crt') }}"
     uris:
-    - 1.1.1.1:8888
-    - 2.3.3.3:9999
+      - 1.1.1.1:8888
+      - 2.3.3.3:9999
     fa_url: 10.10.10.2
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
 
@@ -80,8 +80,8 @@ EXAMPLES = r"""
     name: foo
     ca_certificate: "{{lookup('file', 'example2.crt') }}"
     uris:
-    - 3.3.3.3:8888
-    - 4.4.4.4:9999
+      - 3.3.3.3:8888
+      - 4.4.4.4:9999
     fa_url: 10.10.10.2
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
 """

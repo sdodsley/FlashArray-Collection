@@ -87,8 +87,8 @@ EXAMPLES = r"""
     namespace: test
     copyable: false
     kvp:
-    - 'key1:value1'
-    - 'key2:value2'
+      - 'key1:value1'
+      - 'key2:value2'
     fa_url: 10.10.10.2
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
 
@@ -97,7 +97,7 @@ EXAMPLES = r"""
     name: foo
     namespace: test
     tag:
-    - key1
+      - key1
     fa_url: 10.10.10.2
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
     state: absent
@@ -107,7 +107,7 @@ EXAMPLES = r"""
     name: foo
     namespace: test
     kvp:
-    - 'key1:value2'
+      - 'key1:value2'
     fa_url: 10.10.10.2
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
     state: present

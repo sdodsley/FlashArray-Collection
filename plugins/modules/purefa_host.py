@@ -246,8 +246,8 @@ EXAMPLES = r"""
   everpure.flasharray.purefa_host:
     name: bar
     wwns:
-    - 00:00:00:00:00:00:00:00
-    - 11:11:11:11:11:11:11:11
+      - 00:00:00:00:00:00:00:00
+      - 11:11:11:11:11:11:11:11
     fa_url: 10.10.10.2
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
 
@@ -255,7 +255,7 @@ EXAMPLES = r"""
   everpure.flasharray.purefa_host:
     name: bar
     iqn:
-    - iqn.1994-05.com.redhat:7d366003913
+      - iqn.1994-05.com.redhat:7d366003913
     fa_url: 10.10.10.2
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
 
@@ -263,7 +263,7 @@ EXAMPLES = r"""
   everpure.flasharray.purefa_host:
     name: bar
     nqn:
-    - nqn.2014-08.com.vendor:nvme:nvm-subsystem-sn-d78432
+      - nqn.2014-08.com.vendor:nvme:nvm-subsystem-sn-d78432
     fa_url: 10.10.10.2
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
 
@@ -271,10 +271,10 @@ EXAMPLES = r"""
   everpure.flasharray.purefa_host:
     name: bar
     iqn:
-    - iqn.1994-05.com.redhat:7d366003914
+      - iqn.1994-05.com.redhat:7d366003914
     wwns:
-    - 00:00:00:00:00:00:00:01
-    - 11:11:11:11:11:11:11:12
+      - 00:00:00:00:00:00:00:01
+      - 11:11:11:11:11:11:11:12
     fa_url: 10.10.10.2
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
 
@@ -298,8 +298,8 @@ EXAMPLES = r"""
   everpure.flasharray.purefa_host:
     name: foo
     preferred_array:
-    - array1
-    - array2
+      - array1
+      - array2
     fa_url: 10.10.10.2
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
 
