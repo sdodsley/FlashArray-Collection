@@ -4,6 +4,24 @@ Everpure.Flasharray Release Notes
 
 .. contents:: Topics
 
+v1.45.1
+=======
+
+Minor Changes
+-------------
+
+- CI - The certification workflow now also builds the collection and runs sanity against the built artifact, not only the source tree. Automation Hub tests what ``build_ignore`` produces, so this is the only way to catch this class of problem before submission.
+- README - The Installation section now describes installing from Red Hat Ansible Automation Hub, the Release Notes section points at the changelog shipped with the collection, the redundant ``ansible-core`` requirement is dropped because it is declared in ``meta/runtime.yml``, and the author line uses a ``mailto:`` URL rather than a bare address as a link target.
+- README.rst - Replaced the badge URLs that still pointed at the retired Pure-Storage-Ansible organisation, and removed a substitution that was defined but never used.
+- collection - The ``changelogs`` directory is no longer excluded from the build, so ``changelogs/changelog.yaml`` ships alongside the rendered ``CHANGELOG.rst``, matching the everpure.flashblade collection.
+
+Bugfixes
+--------
+
+- collection - Fixed ``ansible-test sanity`` failing the ``ignores`` test on the built collection. ``galaxy.yml`` excludes ``tests/unit`` from the build, but ``tests/sanity/ignore-2.16.txt`` still referenced three files in that directory, and an ignore entry whose target does not exist is an error. The ignore file is no longer needed and has been removed.
+- collection - Fixed ``tests/config.yaml`` never being read. ``ansible-test`` looks for ``tests/config.yml``, so ``python_requires`` was not applied and the Python 2.7 compile and import tests still ran, which is why 129 ignore entries existed to suppress them. The file is renamed and now declares ``>=3.9``, matching the Python version the collection supports.
+- collection - Fixed a release archive of a previous version being shipped inside the collection. ``purestorage-flasharray-1.43.0.tar.gz`` was installed onto every system that installed 1.45.0. Archives and repository-only dotfiles are now excluded by ``build_ignore``.
+
 v1.45.0
 =======
 
