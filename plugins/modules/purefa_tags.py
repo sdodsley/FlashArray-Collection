@@ -122,8 +122,8 @@ EXAMPLES = r"""
     resource_type: host
     name: foo
     kvp:
-    - env:production
-    - owner:infra
+      - env:production
+      - owner:infra
     fa_url: 10.10.10.2
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
 
@@ -131,7 +131,7 @@ EXAMPLES = r"""
   everpure.flasharray.purefa_tags:
     resource_type: array
     kvp:
-    - site:london
+      - site:london
     fa_url: 10.10.10.2
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
 
@@ -140,7 +140,7 @@ EXAMPLES = r"""
     resource_type: volume_group
     name: bar
     kvp:
-    - backup:nightly
+      - backup:nightly
     copyable: true
     fa_url: 10.10.10.2
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
@@ -151,7 +151,7 @@ EXAMPLES = r"""
     name: pgroup1
     namespace: reporting
     kvp:
-    - tier:gold
+      - tier:gold
     fa_url: 10.10.10.2
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
 
@@ -160,7 +160,7 @@ EXAMPLES = r"""
     resource_type: volume
     name: foo
     kvp:
-    - env:production
+      - env:production
     copyable: true
     fa_url: 10.10.10.2
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
@@ -170,8 +170,8 @@ EXAMPLES = r"""
     resource_type: host
     name: foo
     keys:
-    - env
-    - owner
+      - env
+      - owner
     state: absent
     fa_url: 10.10.10.2
     api_token: e31060a7-21fc-e277-6240-25983c6c4592

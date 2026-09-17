@@ -122,9 +122,9 @@ EXAMPLES = r"""
     username: Administrator
     password: Password
     kerberos_servers:
-    - kdc.acme.com
+      - kdc.acme.com
     directory_servers:
-    - ldap.acme.com
+      - ldap.acme.com
     fa_url: 10.10.10.2
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
 
