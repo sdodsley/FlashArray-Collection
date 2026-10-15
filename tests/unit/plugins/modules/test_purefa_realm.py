@@ -374,11 +374,11 @@ class TestRenameRealmSuccess:
         mock_module.check_mode = False
         mock_module.params = {"name": "old-realm", "rename": "new-realm"}
         mock_array = Mock()
-        mock_array.patch_realm.return_value = Mock(status_code=200)
+        mock_array.patch_realms.return_value = Mock(status_code=200)
 
         rename_realm(mock_module, mock_array)
 
-        mock_array.patch_realm.assert_called_once()
+        mock_array.patch_realms.assert_called_once()
         mock_module.exit_json.assert_called_once_with(changed=True)
 
 
