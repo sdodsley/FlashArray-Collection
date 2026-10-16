@@ -182,7 +182,7 @@ def get_realm(module, array):
 def rename_realm(module, array):
     changed = True
     if not module.check_mode:
-        res = array.patch_realm(
+        res = array.patch_realms(
             names=[module.params["name"]],
             realm=RealmPatch(name=module.params["rename"]),
         )

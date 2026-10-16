@@ -887,11 +887,11 @@ class TestRecoverSnapshotSuccess:
         }
         mock_array = Mock()
         mock_array.get_rest_version.return_value = "2.38"
-        mock_array.patch_volume_snapshot.return_value = Mock(status_code=200)
+        mock_array.patch_volume_snapshots.return_value = Mock(status_code=200)
 
         recover_snapshot(mock_module, mock_array)
 
-        mock_array.patch_volume_snapshot.assert_called_once()
+        mock_array.patch_volume_snapshots.assert_called_once()
         mock_module.exit_json.assert_called_once_with(changed=True)
 
 
@@ -1110,11 +1110,11 @@ class TestRecoverSnapshotExtended:
         }
         mock_array = Mock()
         mock_array.get_rest_version.return_value = "2.38"
-        mock_array.patch_volume_snapshot.return_value = Mock(status_code=200)
+        mock_array.patch_volume_snapshots.return_value = Mock(status_code=200)
 
         recover_snapshot(mock_module, mock_array)
 
-        mock_array.patch_volume_snapshot.assert_called_once()
+        mock_array.patch_volume_snapshots.assert_called_once()
         mock_module.exit_json.assert_called_once_with(changed=True)
 
 
@@ -1315,11 +1315,11 @@ class TestRecoverSnapshotPaths:
         }
         mock_array = Mock()
         mock_array.get_rest_version.return_value = "2.38"
-        mock_array.patch_volume_snapshot.return_value = Mock(status_code=200)
+        mock_array.patch_volume_snapshots.return_value = Mock(status_code=200)
 
         recover_snapshot(mock_module, mock_array)
 
-        mock_array.patch_volume_snapshot.assert_called_once()
+        mock_array.patch_volume_snapshots.assert_called_once()
         mock_module.exit_json.assert_called_once_with(changed=True)
 
     @patch("plugins.modules.purefa_snap.LooseVersion", side_effect=LooseVersion)
@@ -1335,11 +1335,11 @@ class TestRecoverSnapshotPaths:
         }
         mock_array = Mock()
         mock_array.get_rest_version.return_value = "2.20"
-        mock_array.patch_volume_snapshot.return_value = Mock(status_code=200)
+        mock_array.patch_volume_snapshots.return_value = Mock(status_code=200)
 
         recover_snapshot(mock_module, mock_array)
 
-        mock_array.patch_volume_snapshot.assert_called_once()
+        mock_array.patch_volume_snapshots.assert_called_once()
         mock_module.exit_json.assert_called_once_with(changed=True)
 
     @patch("plugins.modules.purefa_snap.LooseVersion", side_effect=LooseVersion)
@@ -1358,7 +1358,7 @@ class TestRecoverSnapshotPaths:
         mock_array.get_rest_version.return_value = "2.20"
         mock_error = Mock()
         mock_error.message = "Snapshot not found"
-        mock_array.patch_volume_snapshot.return_value = Mock(
+        mock_array.patch_volume_snapshots.return_value = Mock(
             status_code=400, errors=[mock_error]
         )
 

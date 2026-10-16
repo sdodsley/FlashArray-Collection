@@ -497,7 +497,7 @@ def recover_snapshot(module, array):
         if not module.check_mode:
             res = patch_with_context(
                 array,
-                "patch_volume_snapshot",
+                "patch_volume_snapshots",
                 CONTEXT_API_VERSION,
                 module,
                 names=[snapname],
