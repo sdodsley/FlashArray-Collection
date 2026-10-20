@@ -13,8 +13,8 @@ jobs:
   build:
     name: Build flasharray on Ansible ${{ matrix.ansible }} (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
-    fast-fail: false
     strategy:
+      fail-fast: false
       matrix:
         # ansible-core versions worth testing in October 2026: 2.16 is the
         # default core of AAP 2.5/2.6/2.7 and the lowest requires_ansible
@@ -67,8 +67,8 @@ jobs:
   unit-tests:
     name: Unit Tests (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
-    fast-fail: false
     strategy:
+      fail-fast: false
       matrix:
         python-version:
           - "3.12"
