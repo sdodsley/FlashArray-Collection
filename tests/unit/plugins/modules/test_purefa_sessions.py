@@ -133,6 +133,37 @@ class TestGetFilterString:
 
         assert "end_time<=0" in result
 
+    def test_get_filter_string_malformed_start_fails(self):
+        """A malformed start fails the module instead of a strptime traceback"""
+        import pytest
+
+        mock_module = Mock()
+        mock_module.params = {"start": "2024-13-45", "end": None}
+        mock_module.fail_json.side_effect = SystemExit(1)
+
+        with pytest.raises(SystemExit):
+            _get_filter_string(mock_module, "+00:00")
+
+        mock_module.fail_json.assert_called_once()
+        msg = mock_module.fail_json.call_args[1]["msg"]
+        assert "start value 2024-13-45 is not a valid date/time" in msg
+        assert "YYYY-MM-DD hh:mm:ss" in msg
+
+    def test_get_filter_string_malformed_end_fails(self):
+        """A malformed end fails the module instead of a strptime traceback"""
+        import pytest
+
+        mock_module = Mock()
+        mock_module.params = {"start": None, "end": "yesterday"}
+        mock_module.fail_json.side_effect = SystemExit(1)
+
+        with pytest.raises(SystemExit):
+            _get_filter_string(mock_module, "+00:00")
+
+        mock_module.fail_json.assert_called_once()
+        msg = mock_module.fail_json.call_args[1]["msg"]
+        assert "end value yesterday is not a valid date/time" in msg
+
 
 def _mock_datetime_now(*args, **kwargs):
     """Return a mock datetime that supports strftime and fromtimestamp"""

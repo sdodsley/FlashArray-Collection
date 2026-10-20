@@ -36,7 +36,81 @@ sys.modules[
     "ansible_collections.everpure.flasharray.plugins.module_utils.api_helpers"
 ] = MagicMock()
 
-from plugins.modules.purefa_ra import main, enable_ra, disable_ra
+from plugins.modules.purefa_ra import (
+    main,
+    enable_ra,
+    disable_ra,
+    test_ra as ra_test_func,
+)
+
+
+class TestTestRa:
+    """Test cases for test_ra function"""
+
+    def test_test_ra_full_result(self):
+        """A fully populated TestResult is reported field by field"""
+        mock_module = Mock()
+        mock_array = Mock()
+
+        mock_component = Mock()
+        mock_component.enabled = True
+        mock_component.success = True
+        mock_component.component_address = "10.0.0.1"
+        mock_component.component_name = "ct0"
+        mock_component.description = "Remote assist"
+        mock_component.destination = "ra.example.com"
+        mock_component.result_details = "OK"
+        mock_component.test_type = "connectivity"
+        mock_component.resource = Mock()
+        mock_component.resource.name = "array1"
+        mock_array.get_support_test.return_value = Mock(
+            status_code=200, items=[mock_component]
+        )
+
+        ra_test_func(mock_module, mock_array)
+
+        mock_module.exit_json.assert_called_once()
+        call_kwargs = mock_module.exit_json.call_args[1]
+        # Running a test is read-only
+        assert call_kwargs["changed"] is False
+        result = call_kwargs["test_response"][0]
+        assert result["enabled"] == "true"
+        assert result["success"] == "true"
+        assert result["resource_name"] == "array1"
+        assert result["component_name"] == "ct0"
+
+    def test_test_ra_sparse_result(self):
+        """A TestResult without resource or optional fields must not crash.
+
+        Purity 6.10.6 returns TestResult objects that carry no ``resource``
+        and omit several other fields; the SDK model raises AttributeError
+        for anything the array did not send.
+        """
+        mock_module = Mock()
+        mock_array = Mock()
+
+        mock_component = Mock(spec=["enabled", "success", "component_name"])
+        mock_component.enabled = False
+        mock_component.success = False
+        mock_component.component_name = "ct1"
+        mock_array.get_support_test.return_value = Mock(
+            status_code=200, items=[mock_component]
+        )
+
+        ra_test_func(mock_module, mock_array)
+
+        mock_module.exit_json.assert_called_once()
+        call_kwargs = mock_module.exit_json.call_args[1]
+        assert call_kwargs["changed"] is False
+        result = call_kwargs["test_response"][0]
+        assert result["enabled"] == "false"
+        assert result["success"] == "false"
+        assert result["component_name"] == "ct1"
+        assert result["resource_name"] is None
+        assert result["component_address"] is None
+        assert result["destination"] is None
+        assert result["test_type"] is None
+        assert result["result_details"] == ""
 
 
 class TestEnableRa:

@@ -55,6 +55,7 @@ sys.modules[
 from unittest.mock import patch
 
 from plugins.modules.purefa_network import (
+    main,
     delete_interface,
     update_fc_interface,
     update_interface,
@@ -3896,3 +3897,212 @@ class TestIsFcInterface:
 
     def test_a_vif_has_no_controller_prefix(self):
         assert _is_fc_interface("filevif1") is False
+
+
+def _main_params(**overrides):
+    """Params as main() sees them for a play naming just an interface"""
+    params = {
+        "name": "filevif1",
+        "state": "present",
+        "address": None,
+        "gateway": None,
+        "mtu": None,
+        "servicelist": None,
+        "interface": None,
+        "subinterfaces": None,
+        "subordinates": None,
+        "subnet": None,
+        "enabled": True,
+        "server": None,
+    }
+    params.update(overrides)
+    return params
+
+
+def _run_main(params, interface_exists):
+    """Run main() against an array that does or does not know the interface"""
+    mock_module = Mock()
+    mock_module.check_mode = False
+    mock_module.params = params
+    mock_module.fail_json.side_effect = SystemExit(1)
+    mock_module.exit_json.side_effect = SystemExit(0)
+    mock_array = Mock()
+    mock_array.get_controllers.return_value = Mock(items=[Mock(model="FA-X70R3")])
+    mock_array.get_network_interfaces.return_value = Mock(
+        status_code=200 if interface_exists else 400
+    )
+    with patch(
+        "plugins.modules.purefa_network.AnsibleModule", return_value=mock_module
+    ), patch(
+        "plugins.modules.purefa_network.get_array", return_value=mock_array
+    ), patch(
+        "plugins.modules.purefa_network.create_interface"
+    ) as mock_create, patch(
+        "plugins.modules.purefa_network.delete_interface"
+    ) as mock_delete:
+        try:
+            main()
+        except SystemExit:
+            pass
+    return mock_module, mock_create, mock_delete
+
+
+class TestMainDeleteMissingInterface:
+    """state: absent on an interface that is already gone is a no-op"""
+
+    def test_absent_without_interface_type_is_idempotent(self):
+        """Used to fail with "Invalid network interface specified" """
+        mock_module, mock_create, mock_delete = _run_main(
+            _main_params(name="faqa_vif", state="absent"), interface_exists=False
+        )
+
+        mock_module.fail_json.assert_not_called()
+        mock_delete.assert_not_called()
+        mock_module.exit_json.assert_called_once_with(changed=False)
+
+    def test_absent_on_existing_interface_still_deletes(self):
+        mock_module, mock_create, mock_delete = _run_main(
+            _main_params(name="faqa_vif", state="absent"), interface_exists=True
+        )
+
+        mock_delete.assert_called_once()
+
+    def test_present_on_missing_interface_still_fails(self):
+        mock_module, mock_create, mock_delete = _run_main(
+            _main_params(name="faqa_vif"), interface_exists=False
+        )
+
+        mock_module.fail_json.assert_called_once_with(
+            msg="Invalid network interface specified."
+        )
+
+
+class TestMainVirtualInterfaceName:
+    """The array rejects virtual interface names containing a hyphen"""
+
+    def test_vif_with_hyphen_fails_with_a_reason(self):
+        mock_module, mock_create, mock_delete = _run_main(
+            _main_params(name="faqa-vif", interface="vif", subinterfaces=["eth6"]),
+            interface_exists=False,
+        )
+
+        mock_module.fail_json.assert_called_once()
+        msg = mock_module.fail_json.call_args[1]["msg"]
+        assert "faqa-vif" in msg
+        assert "hyphens" in msg
+        mock_create.assert_not_called()
+
+    def test_lacp_with_hyphen_fails_with_a_reason(self):
+        mock_module, mock_create, mock_delete = _run_main(
+            _main_params(name="lacp-bond", interface="lacp", subordinates=["ct0.eth6"]),
+            interface_exists=False,
+        )
+
+        mock_module.fail_json.assert_called_once()
+        assert "hyphens" in mock_module.fail_json.call_args[1]["msg"]
+
+    def test_vif_without_hyphen_is_created(self):
+        mock_module, mock_create, mock_delete = _run_main(
+            _main_params(name="faqa_vif", interface="vif", subinterfaces=["eth6"]),
+            interface_exists=False,
+        )
+
+        mock_module.fail_json.assert_not_called()
+        mock_create.assert_called_once()
+
+    def test_absent_vif_with_hyphen_is_not_rejected(self):
+        """Nothing with a hyphen can exist, so deleting it is just a no-op"""
+        mock_module, mock_create, mock_delete = _run_main(
+            _main_params(name="faqa-vif", interface="vif", state="absent"),
+            interface_exists=False,
+        )
+
+        mock_module.fail_json.assert_not_called()
+        mock_module.exit_json.assert_called_once_with(changed=False)
+
+
+class TestUpdateInterfaceNoGatewayPatchBody:
+    """Only the changing IP settings are sent for an interface with no gateway"""
+
+    @patch("plugins.modules.purefa_network.check_response")
+    @patch("plugins.modules.purefa_network.NetworkinterfacepatchEth")
+    def test_mtu_only_change_sends_only_mtu(self, mock_eth_model, mock_check):
+        """The patch carried address/mtu/netmask of None and a gateway of "::"
+        when only the MTU was changing
+        """
+        import pytest
+
+        mock_module = Mock()
+        mock_module.check_mode = False
+        mock_module.exit_json.side_effect = SystemExit(0)
+        params = _bringup_params()
+        params["address"] = None
+        params["mtu"] = 9000
+        mock_module.params = params
+        mock_array = Mock()
+        mock_array.get_network_interfaces.return_value = Mock(
+            status_code=200, items=[_eth_interface(FakeEth(mtu=1500))]
+        )
+        mock_array.patch_network_interfaces.return_value = Mock(status_code=200)
+
+        with pytest.raises(SystemExit):
+            update_interface(mock_module, mock_array)
+
+        mock_eth_model.assert_called_once_with(mtu=9000)
+        mock_module.exit_json.assert_called_once_with(changed=True)
+
+    @patch("plugins.modules.purefa_network.check_response")
+    @patch("plugins.modules.purefa_network.NetworkinterfacepatchEth")
+    def test_enable_only_change_sends_no_eth_patch(self, mock_eth_model, mock_check):
+        import pytest
+
+        mock_module = Mock()
+        mock_module.check_mode = False
+        mock_module.exit_json.side_effect = SystemExit(0)
+        params = _bringup_params()
+        params["address"] = None
+        params["mtu"] = None
+        mock_module.params = params
+        interface = _eth_interface(FakeEth(mtu=1500))
+        interface.enabled = False
+        mock_array = Mock()
+        mock_array.get_network_interfaces.return_value = Mock(
+            status_code=200, items=[interface]
+        )
+        mock_array.patch_network_interfaces.return_value = Mock(status_code=200)
+
+        with pytest.raises(SystemExit):
+            update_interface(mock_module, mock_array)
+
+        mock_eth_model.assert_not_called()
+        # The enable patch alone
+        assert mock_array.patch_network_interfaces.call_count == 1
+        mock_module.exit_json.assert_called_once_with(changed=True)
+
+    @patch("plugins.modules.purefa_network.check_response")
+    @patch("plugins.modules.purefa_network.NetworkinterfacepatchEth")
+    def test_address_change_sends_address_netmask_and_cleared_gateway(
+        self, mock_eth_model, mock_check
+    ):
+        import pytest
+
+        mock_module = Mock()
+        mock_module.check_mode = False
+        mock_module.exit_json.side_effect = SystemExit(0)
+        params = _bringup_params()
+        params["mtu"] = None
+        mock_module.params = params
+        mock_array = Mock()
+        mock_array.get_network_interfaces.return_value = Mock(
+            status_code=200, items=[_eth_interface(FakeEth(mtu=1500))]
+        )
+        mock_array.patch_network_interfaces.return_value = Mock(status_code=200)
+
+        with pytest.raises(SystemExit):
+            update_interface(mock_module, mock_array)
+
+        sent = mock_eth_model.call_args[1]
+        assert sent["address"] == "10.21.200.10"
+        assert "netmask" in sent
+        assert sent["gateway"] == "0.0.0.0"
+        assert "mtu" not in sent

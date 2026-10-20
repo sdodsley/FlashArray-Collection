@@ -160,3 +160,93 @@ class TestMain:
 
         mock_array.patch_support.assert_not_called()
         mock_module.exit_json.assert_called_once_with(changed=False)
+
+
+def _enabled_array(phonehome_excludes):
+    """An array on REST 2.50 with phonehome enabled and the given excludes"""
+    mock_array = Mock()
+    mock_array.get_rest_version.return_value = "2.50"
+    mock_support = Mock()
+    mock_support.phonehome_enabled = True
+    mock_support.phonehome_excludes = phonehome_excludes
+    mock_array.get_support.return_value = Mock(items=[mock_support])
+    mock_array.patch_support.return_value = Mock(status_code=200)
+    return mock_array
+
+
+class TestExcludes:
+    """Test cases for the excludes comparison on REST >= 2.47"""
+
+    @patch("plugins.modules.purefa_phonehome.LooseVersion")
+    @patch("plugins.modules.purefa_phonehome.get_array")
+    @patch("plugins.modules.purefa_phonehome.AnsibleModule")
+    @patch("plugins.modules.purefa_phonehome.HAS_PURESTORAGE", True)
+    def test_excludes_omitted_is_not_a_change(
+        self, mock_ansible_module, mock_get_array, mock_loose_version
+    ):
+        """An omitted excludes must not be compared with the array's []"""
+        mock_module = Mock()
+        mock_module.check_mode = False
+        mock_module.params = {"state": "present", "excludes": None}
+        mock_ansible_module.return_value = mock_module
+        mock_array = _enabled_array([])
+        mock_get_array.return_value = mock_array
+        mock_loose_version.side_effect = float
+
+        main()
+
+        mock_array.patch_support.assert_not_called()
+        mock_module.exit_json.assert_called_once_with(changed=False)
+
+    @patch("plugins.modules.purefa_phonehome.LooseVersion")
+    @patch("plugins.modules.purefa_phonehome.get_array")
+    @patch("plugins.modules.purefa_phonehome.AnsibleModule")
+    @patch("plugins.modules.purefa_phonehome.HAS_PURESTORAGE", True)
+    def test_excludes_matching_is_not_a_change(
+        self, mock_ansible_module, mock_get_array, mock_loose_version
+    ):
+        """Excludes equal to the array's are not a change"""
+        mock_module = Mock()
+        mock_module.check_mode = False
+        mock_module.params = {
+            "state": "present",
+            "excludes": ["application-insights"],
+        }
+        mock_ansible_module.return_value = mock_module
+        mock_array = _enabled_array(["application-insights"])
+        mock_get_array.return_value = mock_array
+        mock_loose_version.side_effect = float
+
+        main()
+
+        mock_array.patch_support.assert_not_called()
+        mock_module.exit_json.assert_called_once_with(changed=False)
+
+    @patch("plugins.modules.purefa_phonehome.check_response")
+    @patch("plugins.modules.purefa_phonehome.LooseVersion")
+    @patch("plugins.modules.purefa_phonehome.get_array")
+    @patch("plugins.modules.purefa_phonehome.AnsibleModule")
+    @patch("plugins.modules.purefa_phonehome.HAS_PURESTORAGE", True)
+    def test_excludes_differing_is_a_change(
+        self,
+        mock_ansible_module,
+        mock_get_array,
+        mock_loose_version,
+        mock_check_response,
+    ):
+        """Supplied excludes that differ from the array's are applied"""
+        mock_module = Mock()
+        mock_module.check_mode = False
+        mock_module.params = {
+            "state": "present",
+            "excludes": ["application-insights"],
+        }
+        mock_ansible_module.return_value = mock_module
+        mock_array = _enabled_array([])
+        mock_get_array.return_value = mock_array
+        mock_loose_version.side_effect = float
+
+        main()
+
+        mock_array.patch_support.assert_called_once()
+        mock_module.exit_json.assert_called_once_with(changed=True)

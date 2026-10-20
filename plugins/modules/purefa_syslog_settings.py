@@ -136,11 +136,8 @@ def main():
         array, "get_syslog_servers_settings", CONTEXT_VERSION, module
     )
     current = list(res.items)[0]
-    try:
-        if hasattr(current, "ca_certificate"):
-            pass
-    except AttributeError:
-        current.ca_certificate = None
+    # The SDK model raises AttributeError when no CA certificate is set
+    current_cert = getattr(current, "ca_certificate", None) or None
     if current.tls_audit_enabled != module.params["tls_audit"]:
         changed = True
         new_tls = module.params["tls_audit"]
@@ -154,13 +151,11 @@ def main():
     new_cert = ""  # Initialize for pylint
     if module.params["ca_certificate"]:
         if module.params["ca_certificate"].upper() == "DELETE":
-            if hasattr(current, "ca_certificate"):
+            if current_cert:
                 cert_change = changed = True
                 new_cert = ""
-        elif (
-            hasattr(current, "ca_certificate")
-            and current.ca_certificate != module.params["ca_certificate"]
-        ):
+        elif current_cert != module.params["ca_certificate"]:
+            # Applies whether a certificate is being added or replaced
             cert_change = changed = True
             new_cert = module.params["ca_certificate"]
     if changed and not module.check_mode:

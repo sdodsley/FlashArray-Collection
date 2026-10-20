@@ -226,30 +226,42 @@ def update_multi_dns(module, array):
     if module.params["domain"] and current_dns.domain != module.params["domain"]:
         new_dns.domain = module.params["domain"]
         changed = True
-    if module.params["service"] and current_dns.services != [module.params["service"]]:
+    # A configuration can serve more than one service (the management
+    # configuration reports ['management', 'file'] once file services are
+    # enabled), so the requested service only has to be among them
+    if module.params["service"] and module.params["service"] not in (
+        current_dns.services or []
+    ):
         module.fail_json(msg="Changing service type is not permitted")
     if module.params["nameservers"] and sorted(current_dns.nameservers) != sorted(
         module.params["nameservers"]
     ):
         new_dns.nameservers = module.params["nameservers"]
         changed = True
-    if (module.params["source"] or module.params["source"] == "") and getattr(
-        current_dns.source, "name", ""
-    ) != module.params["source"]:
-        new_dns.source.name = module.params["source"]
+    # A configuration with no source has no source attribute at all on the
+    # SDK model, so it has to be read with a default rather than assigned to
+    if (
+        module.params["source"] is not None
+        and getattr(getattr(current_dns, "source", None), "name", "")
+        != module.params["source"]
+    ):
         changed = True
     if changed and not module.check_mode:
+        patch_settings = {
+            "domain": new_dns.domain,
+            "nameservers": new_dns.nameservers,
+        }
+        # Only send the source when one was asked for, otherwise an
+        # unchanged configuration would have its source replaced by None
+        if module.params["source"] is not None:
+            patch_settings["source"] = ReferenceNoId(name=module.params["source"])
         res = get_with_context(
             array,
             "patch_dns",
             CONTEXT_API_VERSION,
             module,
             names=[module.params["name"]],
-            dns=DnsPatch(
-                domain=new_dns.domain,
-                nameservers=new_dns.nameservers,
-                source=ReferenceNoId(name=module.params["source"]),
-            ),
+            dns=DnsPatch(**patch_settings),
         )
         check_response(
             res, module, f"Update to DNS service {module.params['name']} failed"
@@ -261,15 +273,16 @@ def delete_multi_dns(module, array):
     """Delete a DNS configuration"""
     changed = True
     if module.params["name"] == "management":
-        res = get_with_context(
-            array,
-            "patch_dns",
-            CONTEXT_API_VERSION,
-            module,
-            names=[module.params["name"]],
-            dns=DnsPatch(domain="", nameservers=[]),
-        )
-        check_response(res, module, "Management DNS configuration not deleted")
+        if not module.check_mode:
+            res = get_with_context(
+                array,
+                "patch_dns",
+                CONTEXT_API_VERSION,
+                module,
+                names=[module.params["name"]],
+                dns=DnsPatch(domain="", nameservers=[]),
+            )
+            check_response(res, module, "Management DNS configuration not deleted")
     else:
         if not module.check_mode:
             res = get_with_context(
@@ -368,8 +381,12 @@ def main():
         for config in configs:
             if config.name == module.params["name"]:
                 exists = True
+        # Only redirect a create. Redirecting a delete of an unknown name
+        # would clear the management DNS configuration instead of being a
+        # no-op, which is what happens when `service: file` is left off
         if (
-            module.params["service"] == "management"
+            state == "present"
+            and module.params["service"] == "management"
             and module.params["name"] != "management"
             and not exists
         ):

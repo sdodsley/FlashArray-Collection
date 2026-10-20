@@ -33,6 +33,7 @@ options:
     description:
     - State of the component identification LED
     type: bool
+    required: true
 extends_documentation_fragment:
 - everpure.flasharray.everpure.fa
 """
@@ -76,7 +77,7 @@ def main():
     argument_spec = purefa_argument_spec()
     argument_spec.update(
         dict(
-            enabled=dict(type="bool"),
+            enabled=dict(type="bool", required=True),
             name=dict(type="str", required=True),
         )
     )
@@ -88,25 +89,28 @@ def main():
     array = get_array(module)
     changed = False
     res = array.get_hardware(names=[module.params["name"]])
-    if res.status_code == 200:
-        id_state = getattr(list(res.items)[0], "identify_enabled", None)
-        if id_state is not None and id_state != module.params["enabled"]:
-            changed = True
-            if not module.check_mode:
-                # HardwarePatch is the request model. Hardware is the response
-                # model and serialises to an empty body, which the array
-                # rejects with "No operation was specified".
-                res = array.patch_hardware(
-                    names=[module.params["name"]],
-                    hardware=flasharray.HardwarePatch(
-                        identify_enabled=module.params["enabled"]
-                    ),
-                )
-                check_response(
-                    res,
-                    module,
-                    f"Failed to set identification LED for {module.params['name']}",
-                )
+    if res.status_code != 200:
+        module.fail_json(
+            msg=f"Hardware component {module.params['name']} does not exist"
+        )
+    id_state = getattr(list(res.items)[0], "identify_enabled", None)
+    if id_state is not None and id_state != module.params["enabled"]:
+        changed = True
+        if not module.check_mode:
+            # identify_enabled is read-only on the Hardware model, so a
+            # Hardware body serialises to {} and the array answers
+            # "No operation was specified"; HardwarePatch carries the field
+            res = array.patch_hardware(
+                names=[module.params["name"]],
+                hardware=flasharray.HardwarePatch(
+                    identify_enabled=module.params["enabled"]
+                ),
+            )
+            check_response(
+                res,
+                module,
+                f"Failed to set identification LED for {module.params['name']}",
+            )
 
     module.exit_json(changed=changed)
 

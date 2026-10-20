@@ -27,7 +27,7 @@ options:
   sso:
     description:
     - Enable or disable the array Single Sign-On from Pure1 Manage
-    default: false
+    - When omitted the current setting is left unchanged.
     type: bool
   max_login:
     description:
@@ -42,6 +42,8 @@ options:
     description:
     - Account lockout duration, in seconds, after max_login exceeded
     - Range between 1 second and 90 days (7776000 seconds)
+    - Set to 0 to clear an existing lockout duration.
+    - When omitted the current setting is left unchanged.
     type: int
 extends_documentation_fragment:
 - everpure.flasharray.everpure.fa
@@ -87,7 +89,7 @@ def main():
     argument_spec = purefa_argument_spec()
     argument_spec.update(
         dict(
-            sso=dict(type="bool", default=False),
+            sso=dict(type="bool"),
             max_login=dict(type="int"),
             min_password=dict(type="int", default=1, no_log=False),
             lockout=dict(type="int"),
@@ -98,15 +100,21 @@ def main():
 
     if not HAS_PURESTORAGE:
         module.fail_json(msg="py-pure-client sdk is required for this module")
-    if module.params["lockout"] and not 1 <= module.params["lockout"] <= 7776000:
+    if (
+        module.params["lockout"] is not None
+        and module.params["lockout"] != 0
+        and not 1 <= module.params["lockout"] <= 7776000
+    ):
         module.fail_json(msg="Lockout must be between 1 and 7776000 seconds")
     array = get_array(module)
     api_version = array.get_rest_version()
     changed = False
     if LooseVersion(MIN_API_VERSION) <= LooseVersion(api_version):
         current_settings = list(array.get_admins_settings().items)[0]
+        # sso is tri-state: None leaves the array setting alone, so that
+        # False can be used to switch Single Sign-On off
         if (
-            module.params["sso"]
+            module.params["sso"] is not None
             and module.params["sso"] != current_settings.single_sign_on_enabled
         ):
             changed = True
@@ -122,16 +130,12 @@ def main():
         else:
             min_password = current_settings.min_password_length
         lockout = getattr(current_settings, "lockout_duration", None)
-        if (
-            lockout
-            and module.params["lockout"]
-            and lockout != module.params["lockout"] * 1000
-        ):
-            changed = True
-            lockout = module.params["lockout"] * 1000
-        elif not lockout and module.params["lockout"]:
-            changed = True
-            lockout = module.params["lockout"] * 1000
+        if module.params["lockout"] is not None:
+            # lockout: 0 clears the duration; the array reports a cleared
+            # duration by omitting the field, so None and 0 are the same state
+            if (lockout or 0) != module.params["lockout"] * 1000:
+                changed = True
+                lockout = module.params["lockout"] * 1000
         max_login = getattr(current_settings, "max_login_attempts", None)
         if (
             max_login
@@ -144,30 +148,17 @@ def main():
             changed = True
             max_login = module.params["max_login"]
         if changed and not module.check_mode:
+            settings = {
+                "single_sign_on_enabled": sso,
+                "min_password_length": min_password,
+            }
+            # A lockout of 0 must still be sent, so that it clears the
+            # duration rather than being dropped as a falsy value
+            if lockout is not None:
+                settings["lockout_duration"] = lockout
             if max_login:
-                admin = AdminSettings(
-                    single_sign_on_enabled=sso,
-                    min_password_length=min_password,
-                    max_login_attempts=max_login,
-                )
-            if lockout:
-                admin = AdminSettings(
-                    single_sign_on_enabled=sso,
-                    min_password_length=min_password,
-                    lockout_duration=lockout,
-                )
-            if lockout and max_login:
-                admin = AdminSettings(
-                    single_sign_on_enabled=sso,
-                    min_password_length=min_password,
-                    lockout_duration=lockout,
-                    max_login_attempts=max_login,
-                )
-            if not lockout and not max_login:
-                admin = AdminSettings(
-                    single_sign_on_enabled=sso,
-                    min_password_length=min_password,
-                )
+                settings["max_login_attempts"] = max_login
+            admin = AdminSettings(**settings)
             res = array.patch_admins_settings(admin_settings=admin)
             check_response(res, module, "Failed to change Global Admin settings")
     else:

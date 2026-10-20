@@ -111,7 +111,7 @@ class TestDeleteSmtp:
         mock_array.get_smtp_servers.return_value.items = [
             FakeSmtpServer(
                 name="smtp",
-                sender_domain="None",
+                sender_domain=None,
                 relay_host=None,
                 encryption_mode=None,
                 user_name=None,
@@ -125,6 +125,25 @@ class TestDeleteSmtp:
 
         mock_array.patch_smtp_servers.assert_not_called()
         mock_module.exit_json.assert_called_once_with(changed=False)
+
+    @patch("plugins.modules.purefa_smtp.SmtpServer")
+    @patch("plugins.modules.purefa_smtp.check_response")
+    def test_delete_smtp_sends_empty_sender_domain(
+        self, mock_check_response, mock_smtp_server
+    ):
+        """state=absent clears sender_domain rather than writing "None" """
+        mock_module = Mock()
+        mock_module.check_mode = False
+        mock_array = Mock()
+        mock_array.get_smtp_servers.return_value.items = [configured_smtp()]
+        mock_array.patch_smtp_servers.return_value = Mock(status_code=200)
+
+        delete_smtp(mock_module, mock_array)
+
+        assert mock_smtp_server.call_args.kwargs["sender_domain"] == ""
+        assert mock_smtp_server.call_args.kwargs["user_name"] == ""
+        assert mock_smtp_server.call_args.kwargs["password"] == ""
+        mock_module.exit_json.assert_called_once_with(changed=True)
 
 
 class TestCreateSmtp:
@@ -493,6 +512,113 @@ class TestCreateSmtpIdempotency:
         mock_array = Mock()
         # user_name, sender_username, subject_prefix and body_prefix were never
         # configured, so the array returns them as null
+        mock_array.get_smtp_servers.return_value.items = [configured_smtp()]
+
+        create_smtp(mock_module, mock_array)
+
+        mock_array.patch_smtp_servers.assert_not_called()
+        mock_module.exit_json.assert_called_once_with(changed=False)
+
+
+def fully_configured_smtp():
+    """A FakeSmtpServer with every setting configured"""
+    return FakeSmtpServer(
+        name="smtp",
+        sender_domain="test.com",
+        relay_host="relay.test.com",
+        encryption_mode="starttls",
+        user_name="smtp_user",
+        sender_username="array",
+        subject_prefix="[FA]",
+        body_prefix="Alert:",
+    )
+
+
+def _params(**overrides):
+    """create_smtp parameters with nothing supplied except the overrides"""
+    params = {
+        "sender_domain": None,
+        "relay_host": None,
+        "user": None,
+        "password": None,
+        "encryption_mode": None,
+        "sender": None,
+        "subject_prefix": None,
+        "body_prefix": None,
+    }
+    params.update(overrides)
+    return params
+
+
+class TestCreateSmtpClearFields:
+    """An empty string clears sender, subject_prefix, body_prefix and user"""
+
+    @patch("plugins.modules.purefa_smtp.SmtpServer")
+    @patch("plugins.modules.purefa_smtp.check_response")
+    def test_clear_sender(self, mock_check_response, mock_smtp_server):
+        """sender: "" clears the sender local-part"""
+        mock_module = Mock()
+        mock_module.check_mode = False
+        mock_module.params = _params(sender="")
+        mock_array = Mock()
+        mock_array.get_smtp_servers.return_value.items = [fully_configured_smtp()]
+        mock_array.patch_smtp_servers.return_value = Mock(status_code=200)
+
+        create_smtp(mock_module, mock_array)
+
+        mock_array.patch_smtp_servers.assert_called_once()
+        kwargs = mock_smtp_server.call_args.kwargs
+        assert kwargs["sender_username"] == ""
+        # Untouched settings keep their current values
+        assert kwargs["subject_prefix"] == "[FA]"
+        assert kwargs["body_prefix"] == "Alert:"
+        assert "password" not in kwargs
+        mock_module.exit_json.assert_called_once_with(changed=True)
+
+    @patch("plugins.modules.purefa_smtp.SmtpServer")
+    @patch("plugins.modules.purefa_smtp.check_response")
+    def test_clear_subject_and_body_prefix(self, mock_check_response, mock_smtp_server):
+        """Empty prefixes clear the prefixes"""
+        mock_module = Mock()
+        mock_module.check_mode = False
+        mock_module.params = _params(subject_prefix="", body_prefix="")
+        mock_array = Mock()
+        mock_array.get_smtp_servers.return_value.items = [fully_configured_smtp()]
+        mock_array.patch_smtp_servers.return_value = Mock(status_code=200)
+
+        create_smtp(mock_module, mock_array)
+
+        kwargs = mock_smtp_server.call_args.kwargs
+        assert kwargs["subject_prefix"] == ""
+        assert kwargs["body_prefix"] == ""
+        assert kwargs["sender_username"] == "array"
+        mock_module.exit_json.assert_called_once_with(changed=True)
+
+    @patch("plugins.modules.purefa_smtp.SmtpServer")
+    @patch("plugins.modules.purefa_smtp.check_response")
+    def test_clear_user(self, mock_check_response, mock_smtp_server):
+        """user: "" with password: "" clears the credentials"""
+        mock_module = Mock()
+        mock_module.check_mode = False
+        mock_module.params = _params(user="", password="")
+        mock_array = Mock()
+        mock_array.get_smtp_servers.return_value.items = [fully_configured_smtp()]
+        mock_array.patch_smtp_servers.return_value = Mock(status_code=200)
+
+        create_smtp(mock_module, mock_array)
+
+        kwargs = mock_smtp_server.call_args.kwargs
+        assert kwargs["user_name"] == ""
+        assert kwargs["password"] == ""
+        mock_module.exit_json.assert_called_once_with(changed=True)
+
+    def test_clear_already_cleared_is_idempotent(self):
+        """Clearing settings that are already unset reports no change"""
+        mock_module = Mock()
+        mock_module.check_mode = False
+        mock_module.params = _params(sender="", subject_prefix="", body_prefix="")
+        mock_array = Mock()
+        # configured_smtp() has these three settings unset
         mock_array.get_smtp_servers.return_value.items = [configured_smtp()]
 
         create_smtp(mock_module, mock_array)

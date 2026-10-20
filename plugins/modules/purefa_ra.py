@@ -88,30 +88,30 @@ DURATION_API = "2.35"
 def test_ra(module, array):
     """Test support/remote assist configuration"""
     test_response = []
-    response = list(array.get_support_test().items)
-    for component in response:
-        if component.enabled:
-            enabled = "true"
-        else:
-            enabled = "false"
-        if component.success:
-            success = "true"
-        else:
-            success = "false"
+    res = array.get_support_test()
+    check_response(res, module, "Remote Assist test")
+    # The TestResult model only carries the fields the array chose to report,
+    # so every field is read with a default. In particular ``resource`` is
+    # absent on some Purity versions.
+    for component in list(res.items):
+        enabled = "true" if getattr(component, "enabled", False) else "false"
+        success = "true" if getattr(component, "success", False) else "false"
+        resource = getattr(component, "resource", None)
         test_response.append(
             {
-                "component_address": component.component_address,
-                "component_name": component.component_name,
-                "description": component.description,
-                "destination": component.destination,
+                "component_address": getattr(component, "component_address", None),
+                "component_name": getattr(component, "component_name", None),
+                "description": getattr(component, "description", None),
+                "destination": getattr(component, "destination", None),
                 "enabled": enabled,
                 "result_details": getattr(component, "result_details", ""),
                 "success": success,
-                "test_type": component.test_type,
-                "resource_name": component.resource.name,
+                "test_type": getattr(component, "test_type", None),
+                "resource_name": getattr(resource, "name", None),
             }
         )
-    module.exit_json(changed=True, test_response=test_response)
+    # Running a test does not modify the array
+    module.exit_json(changed=False, test_response=test_response)
 
 
 def enable_ra(module, array):

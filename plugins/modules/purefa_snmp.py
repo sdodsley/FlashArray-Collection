@@ -22,9 +22,12 @@ short_description: Configure FlashArray SNMP Managers
 description:
 - Manage SNMP managers on a Everpure FlashArray.
 - Changing of a named SNMP managers version is not supported.
-- This module is not idempotent and will always modify an
-  existing SNMP manager due to hidden parameters that cannot
-  be compared to the play parameters.
+- For an existing SNMP v2c manager only I(host) and I(notification) are
+  compared. The array returns the community string masked, so a change to
+  only I(community) cannot be detected and is not applied; delete and
+  recreate the manager to change its community string.
+- An existing SNMP v3 manager is always modified, as the passphrases are
+  returned masked and cannot be compared to the play parameters.
 author:
 - Everpure Ansible Team (@sdodsley) <pure-ansible-team@everpuredata.com>
 options:
@@ -148,30 +151,32 @@ except ImportError:
 def test_manager(module, array):
     """Test SNMP manager configuration"""
     test_response = []
-    response = list(array.get_snmp_managers_test(names=[module.params["name"]]).items)
-    for component in response:
-        if component.enabled:
-            enabled = "true"
-        else:
-            enabled = "false"
-        if component.success:
-            success = "true"
-        else:
-            success = "false"
+    res = array.get_snmp_managers_test(names=[module.params["name"]])
+    # An unreachable manager makes the array return an error response,
+    # which has no items to iterate over.
+    check_response(res, module, f"Test of SNMP manager {module.params['name']}")
+    # The TestResult model only carries the fields the array chose to report,
+    # so every field is read with a default (resource in particular may be
+    # absent).
+    for component in list(res.items):
+        enabled = "true" if getattr(component, "enabled", False) else "false"
+        success = "true" if getattr(component, "success", False) else "false"
+        resource = getattr(component, "resource", None)
         test_response.append(
             {
-                "component_address": component.component_address,
-                "component_name": component.component_name,
-                "description": component.description,
-                "destination": component.destination,
+                "component_address": getattr(component, "component_address", None),
+                "component_name": getattr(component, "component_name", None),
+                "description": getattr(component, "description", None),
+                "destination": getattr(component, "destination", None),
                 "enabled": enabled,
                 "result_details": getattr(component, "result_details", ""),
                 "success": success,
-                "test_type": component.test_type,
-                "resource_name": component.resource.name,
+                "test_type": getattr(component, "test_type", None),
+                "resource_name": getattr(resource, "name", None),
             }
         )
-    module.exit_json(changed=True, test_response=test_response)
+    # Running a test does not modify the array
+    module.exit_json(changed=False, test_response=test_response)
 
 
 def update_manager(module, array):
@@ -187,8 +192,14 @@ def update_manager(module, array):
     if mgr.version != module.params["version"]:
         module.fail_json(msg="Changing an SNMP managers version is not supported.")
     elif module.params["version"] == "v2c":
-        changed = True
-        if not module.check_mode:
+        # The community string is returned masked, so only the readable
+        # fields can be compared.
+        if (
+            getattr(mgr, "host", None) != module.params["host"]
+            or getattr(mgr, "notification", None) != module.params["notification"]
+        ):
+            changed = True
+        if changed and not module.check_mode:
             res = array.patch_snmp_managers(
                 names=module.params["name"],
                 snmp_manager=SnmpManagerPatch(
@@ -374,8 +385,8 @@ def create_manager(module, array):
             ):
                 res = array.post_snmp_managers(
                     names=module.params["name"],
-                    host=module.params["host"],
-                    snmp_managers=SnmpManagerPost(
+                    snmp_manager=SnmpManagerPost(
+                        host=module.params["host"],
                         notification=module.params["notification"],
                         version=module.params["version"],
                         v3=SnmpV3Post(
@@ -396,8 +407,8 @@ def create_manager(module, array):
             ):
                 res = array.post_snmp_managers(
                     names=module.params["name"],
-                    host=module.params["host"],
                     snmp_manager=SnmpManagerPost(
+                        host=module.params["host"],
                         notification=module.params["notification"],
                         version=module.params["version"],
                         v3=SnmpV3Post(
@@ -464,13 +475,12 @@ def main():
     if module.params["version"] == "v3":
         if not module.params["user"]:
             module.fail_json(msg="version is v3 but the following is missing: user")
-        if module.params["auth_passphrase"] and (
-            8 > len(module.params["auth_passphrase"]) > 32
+        if module.params["auth_passphrase"] and not (
+            8 <= len(module.params["auth_passphrase"]) <= 32
         ):
             module.fail_json(msg="auth_password must be between 8 and 32 characters")
-        if (
-            module.params["privacy_passphrase"]
-            and 8 > len(module.params["privacy_passphrase"]) > 63
+        if module.params["privacy_passphrase"] and not (
+            8 <= len(module.params["privacy_passphrase"]) <= 63
         ):
             module.fail_json(msg="privacy_password must be between 8 and 63 characters")
     else:

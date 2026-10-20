@@ -97,8 +97,9 @@ class TestListCapacity:
 
         list_capacity(mock_module, mock_array)
 
+        # Listing the expansion points is read-only
         mock_module.exit_json.assert_called_once_with(
-            changed=True, available=[1024, 2048]
+            changed=False, available=[1024, 2048]
         )
 
 
@@ -149,3 +150,30 @@ class TestUpdateCapacity:
 
         mock_module.fail_json.assert_called_once()
         assert "not available" in str(mock_module.fail_json.call_args)
+        # The hint must name the real choice, which is "show" not "list"
+        assert "state: show" in mock_module.fail_json.call_args[1]["msg"]
+
+
+class TestMainSdkMissing:
+    """Tests for the SDK-missing message in main"""
+
+    @patch("plugins.modules.purefa_cbsexpand.get_array")
+    @patch("plugins.modules.purefa_cbsexpand.AnsibleModule")
+    @patch("plugins.modules.purefa_cbsexpand.HAS_PURESTORAGE", False)
+    def test_main_missing_sdk_message(self, mock_ansible_module, mock_get_array):
+        """The SDK-missing message must not mention an unrelated parameter"""
+        from plugins.modules.purefa_cbsexpand import main
+
+        mock_module = Mock()
+        mock_module.params = {"state": "show", "capacity": None}
+        mock_module.fail_json.side_effect = SystemExit(1)
+        mock_ansible_module.return_value = mock_module
+
+        try:
+            main()
+        except SystemExit:
+            pass
+
+        mock_module.fail_json.assert_called_once_with(
+            msg="py-pure-client sdk is required for this module"
+        )

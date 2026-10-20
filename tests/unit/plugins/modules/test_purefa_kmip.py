@@ -114,7 +114,8 @@ class TestKmipTest:
         mock_array.get_kmip_test.assert_called_once_with(names=["kmip1"])
         mock_module.exit_json.assert_called_once()
         call_args = mock_module.exit_json.call_args
-        assert call_args[1]["changed"] is True
+        # Running a test is read-only
+        assert call_args[1]["changed"] is False
         assert len(call_args[1]["test_response"]) == 1
         assert call_args[1]["test_response"][0]["enabled"] == "true"
         assert call_args[1]["test_response"][0]["success"] == "true"
@@ -145,6 +146,55 @@ class TestKmipTest:
         call_args = mock_module.exit_json.call_args
         assert call_args[1]["test_response"][0]["enabled"] == "false"
         assert call_args[1]["test_response"][0]["success"] == "false"
+
+    def test_kmip_test_sparse_result(self):
+        """A TestResult without resource or optional fields must not crash"""
+        mock_module = Mock()
+        mock_module.params = {"name": "kmip1"}
+        mock_array = Mock()
+
+        mock_component = Mock(spec=["enabled", "success", "component_name"])
+        mock_component.enabled = True
+        mock_component.success = False
+        mock_component.component_name = "ct0"
+        mock_array.get_kmip_test.return_value = Mock(
+            status_code=200, items=[mock_component]
+        )
+
+        kmip_test(mock_module, mock_array)
+
+        result = mock_module.exit_json.call_args[1]["test_response"][0]
+        assert result["enabled"] == "true"
+        assert result["success"] == "false"
+        assert result["component_name"] == "ct0"
+        assert result["resource_name"] is None
+        assert result["destination"] is None
+        assert result["component_address"] is None
+        assert result["test_type"] is None
+        assert result["result_details"] == ""
+
+    @patch("plugins.modules.purefa_kmip.check_response")
+    def test_kmip_test_error_response(self, mock_check_response):
+        """An error response is handed to check_response before .items is read"""
+        import pytest
+
+        mock_module = Mock()
+        mock_module.params = {"name": "kmip1"}
+        mock_module.fail_json.side_effect = SystemExit(1)
+        mock_array = Mock()
+        error_response = Mock(spec=["status_code", "errors"])
+        error_response.status_code = 400
+        error_response.errors = [Mock(message="boom")]
+        mock_array.get_kmip_test.return_value = error_response
+        mock_check_response.side_effect = lambda res, module, op: module.fail_json(
+            msg=op
+        )
+
+        with pytest.raises(SystemExit):
+            kmip_test(mock_module, mock_array)
+
+        assert mock_check_response.call_args[0][0] is error_response
+        mock_module.exit_json.assert_not_called()
 
 
 class TestCreateKmip:

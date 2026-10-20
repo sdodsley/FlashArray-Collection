@@ -862,3 +862,67 @@ class TestMain:
 
         mock_module.fail_json.assert_called_once()
         assert "provided together" in mock_module.fail_json.call_args.kwargs["msg"]
+
+
+class TestDeleteRuleScoped:
+    """A rule delete is looked up within its policy and needs a real match"""
+
+    @patch(f"{MODULE_PATH}.delete_with_context")
+    @patch(f"{MODULE_PATH}.get_with_context")
+    def test_lookup_is_scoped_to_the_policy(self, mock_get, mock_delete):
+        mock_module = Mock()
+        mock_module.check_mode = False
+        mock_module.params = _base_params(rule_name="restricted.1")
+        mock_get.return_value = Mock(status_code=200, items=[_rule_obj()])
+        mock_delete.return_value = Mock(status_code=200)
+
+        delete_policy(mock_module, Mock())
+
+        lookup = mock_get.call_args.kwargs
+        assert lookup["policy_names"] == ["restricted"]
+        assert lookup["names"] == ["restricted.1"]
+        mock_delete.assert_called_once()
+        mock_module.exit_json.assert_called_once_with(changed=True)
+
+    @patch(f"{MODULE_PATH}.delete_with_context")
+    @patch(f"{MODULE_PATH}.get_with_context")
+    def test_empty_200_means_already_deleted(self, mock_get, mock_delete):
+        """A 200 with no items was treated as the rule still existing, so the
+        second run of the same delete reported changed again
+        """
+        mock_module = Mock()
+        mock_module.check_mode = False
+        mock_module.params = _base_params(rule_name="restricted.1")
+        mock_module.exit_json.side_effect = Exception("exit_json called")
+        mock_get.return_value = Mock(status_code=200, items=[])
+
+        try:
+            delete_policy(mock_module, Mock())
+        except Exception:
+            pass
+
+        mock_module.exit_json.assert_called_once_with(changed=False)
+        mock_delete.assert_not_called()
+
+    @patch(f"{MODULE_PATH}.get_with_context")
+    def test_named_rule_update_lookup_is_scoped(self, mock_get):
+        mock_module = Mock()
+        mock_module.check_mode = False
+        mock_module.params = _base_params(rule_name="restricted.1", effect="deny")
+        mock_module.fail_json.side_effect = Exception("fail_json called")
+        policy_obj = Mock()
+        policy_obj.enabled = True
+        mock_get.side_effect = [
+            Mock(status_code=200, items=[policy_obj]),  # policy fetch
+            Mock(status_code=200, items=[]),  # rule fetch: empty 200
+        ]
+
+        try:
+            update_policy(mock_module, Mock())
+        except Exception:
+            pass
+
+        rule_lookup = mock_get.call_args_list[1].kwargs
+        assert rule_lookup["policy_names"] == ["restricted"]
+        mock_module.fail_json.assert_called_once()
+        assert "not found" in mock_module.fail_json.call_args.kwargs["msg"]

@@ -92,16 +92,27 @@ TZ_VERSION = "2.26"
 CONTEXT_VERSION = "2.38"
 
 
+def _to_timestamp(module, name, timezone):
+    """Convert the date/time in parameter ``name`` to epoch milliseconds"""
+    value = module.params[name] + " " + timezone
+    try:
+        return int(
+            1000
+            * datetime.datetime.timestamp(
+                datetime.datetime.strptime(value, "%Y-%m-%d %H:%M:%S %z")
+            )
+        )
+    except ValueError:
+        module.fail_json(
+            msg="{0} value {1} is not a valid date/time. "
+            'Expected format is "YYYY-MM-DD hh:mm:ss"'.format(name, module.params[name])
+        )
+
+
 def _get_filter_string(module, timezone):
     filter_string = ""
     if module.params["start"] and module.params["start"] != "0":
-        start = module.params["start"] + " " + timezone
-        start_timestamp = int(
-            1000
-            * datetime.datetime.timestamp(
-                datetime.datetime.strptime(start, "%Y-%m-%d %H:%M:%S %z")
-            )
-        )
+        start_timestamp = _to_timestamp(module, "start", timezone)
     else:
         start_timestamp = 0
     filter_string = "time>=" + str(start_timestamp)

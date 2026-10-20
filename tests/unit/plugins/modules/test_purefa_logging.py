@@ -87,7 +87,7 @@ class TestLoggingCheckMode:
     @patch("plugins.modules.purefa_logging.get_array")
     @patch("plugins.modules.purefa_logging.AnsibleModule")
     def test_audit_check_mode(self, mock_ansible_module, mock_get_array):
-        """Test audit log check mode returns changed=True with empty list"""
+        """Test audit log check mode returns changed=False with empty list"""
         mock_module = Mock()
         mock_module.check_mode = True
         mock_module.params = {
@@ -102,12 +102,12 @@ class TestLoggingCheckMode:
 
         main()
 
-        mock_module.exit_json.assert_called_once_with(changed=True, audits=[])
+        mock_module.exit_json.assert_called_once_with(changed=False, audits=[])
 
     @patch("plugins.modules.purefa_logging.get_array")
     @patch("plugins.modules.purefa_logging.AnsibleModule")
     def test_session_check_mode(self, mock_ansible_module, mock_get_array):
-        """Test session log check mode returns changed=True with empty list"""
+        """Test session log check mode returns changed=False with empty list"""
         mock_module = Mock()
         mock_module.check_mode = True
         mock_module.params = {
@@ -122,7 +122,7 @@ class TestLoggingCheckMode:
 
         main()
 
-        mock_module.exit_json.assert_called_once_with(changed=True, sessions=[])
+        mock_module.exit_json.assert_called_once_with(changed=False, sessions=[])
 
 
 class TestLoggingAuditRetrieval:
@@ -170,7 +170,7 @@ class TestLoggingAuditRetrieval:
 
         mock_module.exit_json.assert_called_once()
         call_args = mock_module.exit_json.call_args
-        assert call_args.kwargs["changed"] is True
+        assert call_args.kwargs["changed"] is False
         audits = call_args.kwargs["audits"]
         assert len(audits) == 1
         assert audits[0]["command"] == "purearray"
@@ -264,7 +264,7 @@ class TestLoggingSessionRetrieval:
 
         mock_module.exit_json.assert_called_once()
         call_args = mock_module.exit_json.call_args
-        assert call_args.kwargs["changed"] is True
+        assert call_args.kwargs["changed"] is False
         sessions = call_args.kwargs["sessions"]
         assert len(sessions) == 1
         assert sessions[0]["user"] == "admin"

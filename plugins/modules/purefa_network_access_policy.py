@@ -103,6 +103,11 @@ options:
     - When supplied with any of I(effect), I(client), I(interfaces), or I(index),
       updates the named rule with a partial patch. Attributes not supplied are
       left unchanged.
+    - Rule names are positional, of the form C(<policy>.<index>), and the array
+      renumbers the remaining rules when an earlier rule is deleted. Repeating a
+      delete by name after the rule is gone can therefore remove a different
+      rule; check the rule's attributes (or use the policy's rule list) before
+      re-running a delete.
     type: str
   context:
     description:
@@ -459,14 +464,18 @@ def update_policy(module, array):
             "get_policies_network_access_rules",
             CONTEXT_VERSION,
             module,
+            policy_names=[module.params["name"]],
             names=[module.params["rule_name"]],
         )
-        if res.status_code != 200:
+        current_rules = (
+            list(getattr(res, "items", None) or []) if res.status_code == 200 else []
+        )
+        if not current_rules:
             module.fail_json(
                 msg=f"Rule {module.params['rule_name']} not found in "
                 f"network-access policy {module.params['name']}"
             )
-        current_rule = list(res.items)[0]
+        current_rule = current_rules[0]
         current_interfaces = sorted(getattr(current_rule, "interfaces", []) or [])
         new_interfaces = (
             sorted(module.params["interfaces"])
@@ -671,14 +680,20 @@ def update_policy(module, array):
 def delete_policy(module, array):
     """Delete a rule or the whole network-access policy."""
     if module.params["rule_name"]:
+        # Scope the lookup to this policy and require a real match: a 200
+        # with no items is "not found" too, and an unscoped lookup by name
+        # alone can match a rule that does not belong to this policy
         check_res = get_with_context(
             array,
             "get_policies_network_access_rules",
             CONTEXT_VERSION,
             module,
+            policy_names=[module.params["name"]],
             names=[module.params["rule_name"]],
         )
-        if check_res.status_code != 200:
+        if check_res.status_code != 200 or not list(
+            getattr(check_res, "items", None) or []
+        ):
             module.exit_json(changed=False)
         changed = True
         if not module.check_mode:
