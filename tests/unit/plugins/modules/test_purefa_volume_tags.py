@@ -184,6 +184,7 @@ class TestUpdateTags:
         mock_tag = Mock()
         mock_tag.key = "env"
         mock_tag.value = "prod"
+        mock_tag.copyable = True
         current_tags = [mock_tag]
 
         update_tags(mock_module, mock_array, current_tags)
@@ -212,6 +213,7 @@ class TestUpdateTags:
         mock_tag = Mock()
         mock_tag.key = "env"
         mock_tag.value = "prod"
+        mock_tag.copyable = True
         current_tags = [mock_tag]
 
         update_tags(mock_module, mock_array, current_tags)
@@ -357,52 +359,108 @@ class TestDeleteTags:
         mock_delete.assert_not_called()
 
 
-class TestValuesWithColons:
-    """A value may contain colons; only the first colon splits key from value"""
+class TestQaFixes:
+    """Regression tests for defects found by the hardware QA suite"""
 
     @patch("plugins.modules.purefa_volume_tags.TagBatch")
     @patch("plugins.modules.purefa_volume_tags.check_response")
     @patch("plugins.modules.purefa_volume_tags.get_with_context")
-    def test_create_tag_keeps_the_whole_value(self, mock_gwc, mock_check, mock_tag):
-        """Test create_tag sends url=https://pure.example.com:8443, not url=https"""
+    def test_update_tags_copyable_only_change(
+        self, mock_get_with_context, mock_check_response, mock_tag_batch
+    ):
+        """A tag whose only difference is the copyable flag is rewritten"""
         mock_module = Mock()
         mock_module.params = {
             "name": "test-vol",
             "context": "",
-            "kvp": ["url:https://pure.example.com:8443", "when:2026-10-20T18:00:00Z"],
-            "copyable": True,
+            "kvp": ["env:prod"],
+            "copyable": False,
             "namespace": "default",
         }
         mock_module.check_mode = False
-        mock_gwc.return_value = Mock(status_code=200)
+        mock_array = Mock()
+        mock_get_with_context.return_value = Mock(status_code=200)
+        mock_tag = Mock()
+        mock_tag.key = "env"
+        mock_tag.value = "prod"
+        mock_tag.copyable = True
 
-        create_tag(mock_module, Mock())
+        update_tags(mock_module, mock_array, [mock_tag])
 
-        sent = {c.kwargs["key"]: c.kwargs["value"] for c in mock_tag.call_args_list}
-        assert sent == {
-            "url": "https://pure.example.com:8443",
-            "when": "2026-10-20T18:00:00Z",
-        }
+        mock_tag_batch.assert_called_once_with(
+            copyable=False, namespace="default", key="env", value="prod"
+        )
+        mock_module.exit_json.assert_called_once_with(changed=True)
 
     @patch("plugins.modules.purefa_volume_tags.TagBatch")
     @patch("plugins.modules.purefa_volume_tags.check_response")
     @patch("plugins.modules.purefa_volume_tags.get_with_context")
-    def test_update_tags_compares_the_whole_value(self, mock_gwc, mock_check, mock_tag):
-        """Test an existing url tag with a port is recognised as unchanged"""
+    def test_update_tags_value_with_colon(
+        self, mock_get_with_context, mock_check_response, mock_tag_batch
+    ):
+        """Values containing colons are kept whole"""
         mock_module = Mock()
         mock_module.params = {
             "name": "test-vol",
             "context": "",
-            "kvp": ["url:https://pure.example.com:8443"],
+            "kvp": ["url:https://example.com:8443"],
             "copyable": True,
             "namespace": "default",
         }
         mock_module.check_mode = False
-        current = Mock()
-        current.key = "url"
-        current.value = "https://pure.example.com:8443"
+        mock_array = Mock()
+        mock_get_with_context.return_value = Mock(status_code=200)
 
-        update_tags(mock_module, Mock(), [current])
+        update_tags(mock_module, mock_array, [])
 
-        mock_tag.assert_not_called()
+        mock_tag_batch.assert_called_once_with(
+            copyable=True,
+            namespace="default",
+            key="url",
+            value="https://example.com:8443",
+        )
+
+    @patch("plugins.modules.purefa_volume_tags.TagBatch")
+    @patch("plugins.modules.purefa_volume_tags.check_response")
+    @patch("plugins.modules.purefa_volume_tags.get_with_context")
+    def test_create_tag_value_with_colon(
+        self, mock_get_with_context, mock_check_response, mock_tag_batch
+    ):
+        """create_tag splits on the first colon only"""
+        mock_module = Mock()
+        mock_module.params = {
+            "name": "test-vol",
+            "context": "",
+            "kvp": ["when:12:30"],
+            "copyable": True,
+            "namespace": "default",
+        }
+        mock_module.check_mode = False
+        mock_array = Mock()
+        mock_get_with_context.return_value = Mock(status_code=200)
+
+        create_tag(mock_module, mock_array)
+
+        mock_tag_batch.assert_called_once_with(
+            copyable=True, namespace="default", key="when", value="12:30"
+        )
+
+    def test_update_tags_same_copyable_is_noop(self):
+        """Identical key, value and copyable flag reports no change"""
+        mock_module = Mock()
+        mock_module.params = {
+            "name": "test-vol",
+            "context": "",
+            "kvp": ["a:b:c"],
+            "copyable": True,
+            "namespace": "default",
+        }
+        mock_module.check_mode = False
+        mock_tag = Mock()
+        mock_tag.key = "a"
+        mock_tag.value = "b:c"
+        mock_tag.copyable = True
+
+        update_tags(mock_module, Mock(), [mock_tag])
+
         mock_module.exit_json.assert_called_once_with(changed=False)

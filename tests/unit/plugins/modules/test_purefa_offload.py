@@ -224,7 +224,8 @@ class TestCreateOffloadProtocols:
             "name": "azure-offload",
             "protocol": "azure",
             "container": "mycontainer",
-            "bucket": "mybucket",
+            "account": "myaccount",
+            "bucket": None,
             "secret": "secret123",
             "profile": None,
             "initialize": True,
@@ -238,6 +239,8 @@ class TestCreateOffloadProtocols:
         create_offload(mock_module, mock_array)
 
         mock_offload_azure.assert_called_once()
+        # The storage account comes from `account`, not `bucket`
+        assert mock_offload_azure.call_args.kwargs["account_name"] == "myaccount"
         mock_get_with_context.assert_called_once()
         mock_module.exit_json.assert_called_once_with(changed=True)
 
@@ -371,8 +374,8 @@ class TestCreateOffloadWithProfiles:
             "name": "azure-offload",
             "protocol": "azure",
             "container": "mycontainer",
-            ".bucket": "mybucket",  # Note: module has a typo using .bucket
-            "bucket": "mybucket",
+            "account": "myaccount",
+            "bucket": None,
             "secret": "secret123",
             "profile": "azure",
             "initialize": True,
@@ -386,6 +389,10 @@ class TestCreateOffloadWithProfiles:
         create_offload(mock_module, mock_array)
 
         mock_offload_azure.assert_called_once()
+        # This path used to read module.params[".bucket"] and raise KeyError
+        kwargs = mock_offload_azure.call_args.kwargs
+        assert kwargs["account_name"] == "myaccount"
+        assert kwargs["profile"] == "azure"
 
     @patch("plugins.modules.purefa_offload.check_response")
     @patch("plugins.modules.purefa_offload.get_with_context")
@@ -447,6 +454,66 @@ class TestCreateOffloadWithProfiles:
         create_offload(mock_module, mock_array)
 
         mock_offload_nfs.assert_called_once()
+
+    @patch("plugins.modules.purefa_offload.check_response")
+    @patch("plugins.modules.purefa_offload.get_with_context")
+    @patch("plugins.modules.purefa_offload.OffloadS3")
+    @patch("plugins.modules.purefa_offload.OffloadPost")
+    def test_profile_sent_on_rest_above_2_25(
+        self, mock_offload_post, mock_offload_s3, mock_get_with_context, mock_check
+    ):
+        """ "2.25" in "2.54" is a substring test; profiles were dropped on
+        every REST version other than 2.25 itself"""
+        mock_module = Mock()
+        mock_module.params = {
+            "name": "s3-offload",
+            "protocol": "s3",
+            "access_key": "access123",
+            "bucket": "mybucket",
+            "secret": "secret123",
+            "profile": "s3-aws",
+            "uri": "https://s3.example.com",
+            "auth_region": None,
+            "initialize": True,
+            "context": "",
+        }
+        mock_module.check_mode = False
+        mock_array = Mock()
+        mock_array.get_rest_version.return_value = "2.54"
+        mock_get_with_context.return_value = Mock(status_code=200)
+
+        create_offload(mock_module, mock_array)
+
+        assert mock_offload_s3.call_args.kwargs["profile"] == "s3-aws"
+
+    @patch("plugins.modules.purefa_offload.check_response")
+    @patch("plugins.modules.purefa_offload.get_with_context")
+    @patch("plugins.modules.purefa_offload.OffloadS3")
+    @patch("plugins.modules.purefa_offload.OffloadPost")
+    def test_profile_omitted_below_2_25(
+        self, mock_offload_post, mock_offload_s3, mock_get_with_context, mock_check
+    ):
+        mock_module = Mock()
+        mock_module.params = {
+            "name": "s3-offload",
+            "protocol": "s3",
+            "access_key": "access123",
+            "bucket": "mybucket",
+            "secret": "secret123",
+            "profile": "s3-aws",
+            "uri": "https://s3.example.com",
+            "auth_region": None,
+            "initialize": True,
+            "context": "",
+        }
+        mock_module.check_mode = False
+        mock_array = Mock()
+        mock_array.get_rest_version.return_value = "2.20"
+        mock_get_with_context.return_value = Mock(status_code=200)
+
+        create_offload(mock_module, mock_array)
+
+        assert "profile" not in mock_offload_s3.call_args.kwargs
 
 
 class TestMainFunction:

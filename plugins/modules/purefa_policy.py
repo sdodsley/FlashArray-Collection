@@ -49,6 +49,11 @@ options:
   smb_anon_allowed:
     description:
     - Specifies whether access to information is allowed for anonymous users
+    - The array requires every client rule of an SMB policy to share the same
+      anonymous access setting ("Access option must be the same for all SMB
+      export policy rules").
+    - Changing this on an existing client rule replaces the rule, as SMB client
+      rules cannot be modified in place.
     type: bool
     default: false
   client:
@@ -111,6 +116,8 @@ options:
   snap_client_name:
     description:
     - The customizable portion of the client visible snapshot name.
+    - When a rule with this client name already exists, differing I(snap_every),
+      I(snap_keep_for) or I(snap_at) values modify that rule in place.
     type: str
   snap_suffix:
     description:
@@ -152,6 +159,8 @@ options:
   quota_enforced:
     description:
     - Defines if the directory quota is enforced.
+    - The array refuses an unenforced rule whose I(quota_limit) exceeds 80% of an
+      enforced rule that has a notification target in the same policy.
     default: true
     type: bool
   ignore_usage:
@@ -497,6 +506,18 @@ try:
 except ImportError:
     HAS_PURESTORAGE = False
 
+try:
+    # Rule modification models only exist in newer py-pure-client releases
+    from pypureclient.flasharray import (
+        PolicyRuleNfsClientPatch,
+        PolicyrulenfsclientpatchRules,
+        PolicyRuleSnapshotPatch,
+        PolicyrulesnapshotpatchRules,
+    )
+except ImportError:
+    PolicyRuleNfsClientPatch = PolicyrulenfsclientpatchRules = None
+    PolicyRuleSnapshotPatch = PolicyrulesnapshotpatchRules = None
+
 from ansible.module_utils.basic import AnsibleModule
 from ansible_collections.everpure.flasharray.plugins.module_utils.purefa import (
     get_array,
@@ -545,7 +566,8 @@ def check_renamed_policy(module, array):
     )
     if res.status_code != 200:
         module.fail_json(msg=f"Policy {module.params['name']} not found to rename")
-    if list(res.items)[0].destroyed:
+    # Generic Policy objects carry no destroyed field; only typed ones do
+    if getattr(list(res.items)[0], "destroyed", False):
         module.fail_json(
             msg=f"Policy {module.params['rename']} exists, but in destroyed state"
         )
@@ -613,6 +635,20 @@ def rename_policy(module, array):
             )
         elif policy_type == "password":
             module.fail_json(msg="Password policy rename is not yet supported")
+        elif policy_type == "autodir":
+            res = patch_with_context(
+                array,
+                "patch_policies_autodir",
+                CONTEXT_VERSION,
+                module,
+                names=[module.params["name"]],
+                policy=policy_patch,
+            )
+            check_response(
+                res,
+                module,
+                f"Renaming autodir policy {module.params['name']} to {module.params['rename']}",
+            )
         else:  # quota
             res = patch_with_context(
                 array,
@@ -773,7 +809,7 @@ def delete_policy(module, array):
                                 CONTEXT_VERSION,
                                 module,
                                 member_names=[rem_dir],
-                                policy_names=module.params["name"],
+                                policy_names=[module.params["name"]],
                             )
                             if directory_removed.status_code != 200:
                                 module.fail_json(
@@ -851,7 +887,7 @@ def delete_policy(module, array):
                                 CONTEXT_VERSION,
                                 module,
                                 member_names=[rem_dir],
-                                policy_names=module.params["name"],
+                                policy_names=[module.params["name"]],
                             )
                             if directory_removed.status_code != 200:
                                 module.fail_json(
@@ -1337,6 +1373,45 @@ def create_policy(module, array, all_squash):
     module.exit_json(changed=changed)
 
 
+def nfs_rule_fields(module, api_version, all_squash):
+    """Return the NFS client rule attributes this REST version accepts"""
+    fields = {
+        "permission": module.params["nfs_permission"],
+        "access": module.params["nfs_access"],
+    }
+    if all_squash:
+        fields["anongid"] = module.params["anongid"]
+        fields["anonuid"] = module.params["anonuid"]
+    if module.params["nfs_version"] and LooseVersion(NFS_VERSION) <= LooseVersion(
+        api_version
+    ):
+        fields["nfs_version"] = module.params["nfs_version"]
+    if module.params["security"] and LooseVersion(SECURITY_VERSION) <= LooseVersion(
+        api_version
+    ):
+        fields["security"] = module.params["security"]
+    return fields
+
+
+def nfs_rule_differs(rule, fields):
+    """True when an existing NFS client rule does not match the request"""
+    for key, value in fields.items():
+        current = getattr(rule, key, None)
+        if key in ("nfs_version", "security"):
+            current = current if isinstance(current, (list, tuple)) else []
+            if sorted(value or []) != sorted(current):
+                return True
+        elif key in ("anonuid", "anongid"):
+            # Anonymous IDs only take effect when some squashing is active
+            if fields.get("access") != "no-root-squash" and str(value) != str(
+                current if current is not None else ""
+            ):
+                return True
+        elif value != current:
+            return True
+    return False
+
+
 def update_policy(module, array, api_version, all_squash):
     """Update an existing policy including add/remove rules"""
     changed = changed_dir = changed_rule = changed_enable = changed_quota = (
@@ -1380,12 +1455,13 @@ def update_policy(module, array, api_version, all_squash):
                     names=[module.params["name"]],
                     policy=PolicyNfsPatch(nfs_version=module.params["nfs_version"]),
                 )
-                if res.status_code != 200:
-                    module.exit_json(
-                        msg=f"Failed to change NFS version for NFS policy {module.params['name']}"
-                    )
+                check_response(
+                    res,
+                    module,
+                    f"Changing NFS version for NFS policy {module.params['name']}",
+                )
         if (
-            module.params["user_mapping"]
+            module.params["user_mapping"] is not None
             and current_user_map != module.params["user_mapping"]
         ):
             changed_user_map = True
@@ -1400,10 +1476,11 @@ def update_policy(module, array, api_version, all_squash):
                         user_mapping_enabled=module.params["user_mapping"]
                     ),
                 )
-                if res.status_code != 200:
-                    module.exit_json(
-                        msg=f"Failed to enable/disable User Mapping for NFS policy {module.params['name']}"
-                    )
+                check_response(
+                    res,
+                    module,
+                    f"Changing User Mapping for NFS policy {module.params['name']}",
+                )
         if current_enabled != module.params["enabled"]:
             changed_enable = True
             if not module.check_mode:
@@ -1415,10 +1492,11 @@ def update_policy(module, array, api_version, all_squash):
                     names=[module.params["name"]],
                     policy=PolicyPatch(enabled=module.params["enabled"]),
                 )
-                if res.status_code != 200:
-                    module.exit_json(
-                        msg=f"Failed to enable/disable NFS policy {module.params['name']}"
-                    )
+                check_response(
+                    res,
+                    module,
+                    f"Enabling/disabling NFS policy {module.params['name']}",
+                )
         if module.params["client"]:
             res = get_with_context(
                 array,
@@ -1427,119 +1505,21 @@ def update_policy(module, array, api_version, all_squash):
                 module,
                 policy_names=[module.params["name"]],
             )
-            rules = list(res.items)
-            if rules:
-                rule_name = ""
-                for rule in rules:
-                    if rule.client == module.params["client"]:
-                        rule_name = rule.name
-                        break
-                if not rule_name:
-                    if LooseVersion(NFS_VERSION) > LooseVersion(api_version):
-                        if all_squash:
-                            rules = PolicyrulenfsclientpostRules(
-                                permission=module.params["nfs_permission"],
-                                client=module.params["client"],
-                                anongid=module.params["anongid"],
-                                anonuid=module.params["anonuid"],
-                                access=module.params["nfs_access"],
-                            )
-                        else:
-                            rules = PolicyrulenfsclientpostRules(
-                                permission=module.params["nfs_permission"],
-                                client=module.params["client"],
-                                access=module.params["nfs_access"],
-                                nfs_version=module.params["nfs_version"],
-                            )
-                    elif (
-                        LooseVersion(SECURITY_VERSION)
-                        > LooseVersion(api_version)
-                        <= LooseVersion(NFS_VERSION)
-                    ):
-                        if all_squash:
-                            rules = PolicyrulenfsclientpostRules(
-                                permission=module.params["nfs_permission"],
-                                client=module.params["client"],
-                                anongid=module.params["anongid"],
-                                anonuid=module.params["anonuid"],
-                                access=module.params["nfs_access"],
-                                nfs_version=module.params["nfs_version"],
-                            )
-                        else:
-                            rules = PolicyrulenfsclientpostRules(
-                                permission=module.params["nfs_permission"],
-                                client=module.params["client"],
-                                access=module.params["nfs_access"],
-                            )
-                    else:
-                        if module.params["security"]:
-                            if all_squash:
-                                rules = PolicyrulenfsclientpostRules(
-                                    permission=module.params["nfs_permission"],
-                                    client=module.params["client"],
-                                    anongid=module.params["anongid"],
-                                    anonuid=module.params["anonuid"],
-                                    access=module.params["nfs_access"],
-                                    nfs_version=module.params["nfs_version"],
-                                    security=module.params["security"],
-                                )
-                            else:
-                                rules = PolicyrulenfsclientpostRules(
-                                    permission=module.params["nfs_permission"],
-                                    client=module.params["client"],
-                                    access=module.params["nfs_access"],
-                                    security=module.params["security"],
-                                    nfs_version=module.params["nfs_version"],
-                                )
-                        else:
-                            if all_squash:
-                                rules = PolicyrulenfsclientpostRules(
-                                    permission=module.params["nfs_permission"],
-                                    client=module.params["client"],
-                                    anongid=module.params["anongid"],
-                                    anonuid=module.params["anonuid"],
-                                    access=module.params["nfs_access"],
-                                    nfs_version=module.params["nfs_version"],
-                                )
-                            else:
-                                rules = PolicyrulenfsclientpostRules(
-                                    permission=module.params["nfs_permission"],
-                                    client=module.params["client"],
-                                    access=module.params["nfs_access"],
-                                    nfs_version=module.params["nfs_version"],
-                                )
-                    rule = PolicyRuleNfsClientPost(rules=[rules])
-                    changed_rule = True
-                    if not module.check_mode:
-                        res = post_with_context(
-                            array,
-                            "post_policies_nfs_client_rules",
-                            CONTEXT_VERSION,
-                            module,
-                            policy_names=[module.params["name"]],
-                            rules=rule,
+            rules = list(res.items) if res.status_code == 200 else []
+            current_rule = None
+            for rule in rules:
+                if rule.client == module.params["client"]:
+                    current_rule = rule
+                    break
+            fields = nfs_rule_fields(module, api_version, all_squash)
+            if current_rule is None:
+                rule = PolicyRuleNfsClientPost(
+                    rules=[
+                        PolicyrulenfsclientpostRules(
+                            client=module.params["client"], **fields
                         )
-                        check_response(
-                            res,
-                            module,
-                            f"Creating new rule for NFS policy {module.params['name']}",
-                        )
-            else:
-                if all_squash:
-                    rules = PolicyrulenfsclientpostRules(
-                        permission=module.params["nfs_permission"],
-                        anongid=module.params["anongid"],
-                        anonuid=module.params["anonuid"],
-                        client=module.params["client"],
-                        access=module.params["nfs_access"],
-                    )
-                else:
-                    rules = PolicyrulenfsclientpostRules(
-                        permission=module.params["nfs_permission"],
-                        client=module.params["client"],
-                        access=module.params["nfs_access"],
-                    )
-                rule = PolicyRuleNfsClientPost(rules=[rules])
+                    ]
+                )
                 changed_rule = True
                 if not module.check_mode:
                     res = post_with_context(
@@ -1554,6 +1534,31 @@ def update_policy(module, array, api_version, all_squash):
                         res,
                         module,
                         f"Creating new rule for NFS policy {module.params['name']}",
+                    )
+            elif nfs_rule_differs(current_rule, fields):
+                changed_rule = True
+                if not module.check_mode:
+                    if PolicyRuleNfsClientPatch is None:
+                        module.fail_json(
+                            msg="Modifying an existing NFS client rule requires a "
+                            "py-pure-client release with PolicyRuleNfsClientPatch"
+                        )
+                    res = patch_with_context(
+                        array,
+                        "patch_policies_nfs_client_rules",
+                        CONTEXT_VERSION,
+                        module,
+                        policy_names=[module.params["name"]],
+                        names=[current_rule.name],
+                        rules=PolicyRuleNfsClientPatch(
+                            rules=[PolicyrulenfsclientpatchRules(**fields)]
+                        ),
+                    )
+                    check_response(
+                        res,
+                        module,
+                        f"Updating rule for client {module.params['client']} "
+                        f"in NFS policy {module.params['name']}",
                     )
     elif module.params["policy"] == "smb":
         res = get_with_context(
@@ -1645,44 +1650,43 @@ def update_policy(module, array, api_version, all_squash):
                 module,
                 policy_names=[module.params["name"]],
             )
-            rules = list(res.items)
-            if rules:
-                rule_name = ""
-                for rule in rules:
-                    if rule.client == module.params["client"]:
-                        rule_name = rule.name
-                        break
-                if not rule_name:
+            rules = list(res.items) if res.status_code == 200 else []
+            current_rule = None
+            for rule in rules:
+                if rule.client == module.params["client"]:
+                    current_rule = rule
+                    break
+            rule_differs = current_rule is not None and (
+                getattr(current_rule, "anonymous_access_allowed", None)
+                != module.params["smb_anon_allowed"]
+                or getattr(current_rule, "smb_encryption_required", None)
+                != module.params["smb_encrypt"]
+            )
+            if current_rule is None or rule_differs:
+                changed_rule = True
+                if not module.check_mode:
+                    if rule_differs:
+                        # SMB client rules have no PATCH endpoint: replace the rule
+                        res = delete_with_context(
+                            array,
+                            "delete_policies_smb_client_rules",
+                            CONTEXT_VERSION,
+                            module,
+                            policy_names=[module.params["name"]],
+                            names=[current_rule.name],
+                        )
+                        check_response(
+                            res,
+                            module,
+                            f"Replacing rule for client {module.params['client']} "
+                            f"in SMB policy {module.params['name']}",
+                        )
                     rules = PolicyrulesmbclientpostRules(
                         anonymous_access_allowed=module.params["smb_anon_allowed"],
                         client=module.params["client"],
                         smb_encryption_required=module.params["smb_encrypt"],
                     )
                     rule = PolicyRuleSmbClientPost(rules=[rules])
-                    changed_rule = True
-                    if not module.check_mode:
-                        res = post_with_context(
-                            array,
-                            "post_policies_smb_client_rules",
-                            CONTEXT_VERSION,
-                            module,
-                            policy_names=[module.params["name"]],
-                            rules=rule,
-                        )
-                        check_response(
-                            res,
-                            module,
-                            f"Creating new rule for SMB policy {module.params['name']}",
-                        )
-            else:
-                rules = PolicyrulesmbclientpostRules(
-                    anonymous_access_allowed=module.params["smb_anon_allowed"],
-                    client=module.params["client"],
-                    smb_encryption_required=module.params["smb_encrypt"],
-                )
-                rule = PolicyRuleSmbClientPost(rules=[rules])
-                changed_rule = True
-                if not module.check_mode:
                     res = post_with_context(
                         array,
                         "post_policies_smb_client_rules",
@@ -1796,109 +1800,67 @@ def update_policy(module, array, api_version, all_squash):
                 module,
                 policy_names=[module.params["name"]],
             )
-            rules = list(res.items)
-            if rules:
-                for rule in rules:
-                    if (
-                        rule.client_name == module.params["snap_client_name"]
-                        and int(rule.every / 60000) == module.params["snap_every"]
-                        and int(rule.keep_for / 60000) == module.params["snap_keep_for"]
-                    ):
-                        module.exit_json(changed=False)
-                if module.params["snap_keep_for"] < module.params["snap_every"]:
-                    module.fail_json(
-                        msg="Retention period (snap_keep_for) cannot be less than snapshot interval (snap_every)."
+            rules = list(res.items) if res.status_code == 200 else []
+            current_rule = None
+            for rule in rules:
+                if rule.client_name == module.params["snap_client_name"]:
+                    current_rule = rule
+                    break
+            every_ms = module.params["snap_every"] * 60000
+            keep_for_ms = module.params["snap_keep_for"] * 60000
+            at_ms = None
+            if module.params["snap_at"]:
+                at_ms = convert_to_millisecs(module.params["snap_at"])
+            if current_rule is not None:
+                # Same client name: modify the rule in place when it differs
+                rule_differs = (
+                    getattr(current_rule, "every", None) != every_ms
+                    or getattr(current_rule, "keep_for", None) != keep_for_ms
+                    or (
+                        at_ms is not None and getattr(current_rule, "at", None) != at_ms
                     )
-                if module.params["snap_at"]:
-                    if not module.params["snap_every"] % 1440 == 0:
-                        module.fail_json(
-                            msg="snap_at time can only be set if snap_every is multiple of 1440"
-                        )
-                    if suffix_enabled:
-                        rules = PolicyrulesnapshotpostRules(
-                            at=convert_to_millisecs(module.params["snap_at"]),
-                            client_name=module.params["snap_client_name"],
-                            every=module.params["snap_every"] * 60000,
-                            keep_for=module.params["snap_keep_for"] * 60000,
-                            suffix=module.params["snap_suffix"],
-                        )
-                    else:
-                        rules = PolicyrulesnapshotpostRules(
-                            at=convert_to_millisecs(module.params["snap_at"]),
-                            client_name=module.params["snap_client_name"],
-                            every=module.params["snap_every"] * 60000,
-                            keep_for=module.params["snap_keep_for"] * 60000,
-                        )
-                else:
-                    if suffix_enabled:
-                        rules = PolicyrulesnapshotpostRules(
-                            client_name=module.params["snap_client_name"],
-                            every=module.params["snap_every"] * 60000,
-                            keep_for=module.params["snap_keep_for"] * 60000,
-                            suffix=module.params["snap_suffix"],
-                        )
-                    else:
-                        rules = PolicyrulesnapshotpostRules(
-                            client_name=module.params["snap_client_name"],
-                            every=module.params["snap_every"] * 60000,
-                            keep_for=module.params["snap_keep_for"] * 60000,
-                        )
-                    rule = PolicyRuleSnapshotPost(rules=[rules])
+                )
+                if rule_differs:
                     changed_rule = True
                     if not module.check_mode:
-                        res = post_with_context(
+                        if PolicyRuleSnapshotPatch is None:
+                            module.fail_json(
+                                msg="Modifying an existing snapshot rule requires a "
+                                "py-pure-client release with PolicyRuleSnapshotPatch"
+                            )
+                        patch_fields = {"every": every_ms, "keep_for": keep_for_ms}
+                        if at_ms is not None:
+                            patch_fields["at"] = at_ms
+                        res = patch_with_context(
                             array,
-                            "post_policies_snapshot_rules",
+                            "patch_policies_snapshot_rules",
                             CONTEXT_VERSION,
                             module,
                             policy_names=[module.params["name"]],
-                            rules=rule,
+                            names=[current_rule.name],
+                            rules=PolicyRuleSnapshotPatch(
+                                rules=[PolicyrulesnapshotpatchRules(**patch_fields)]
+                            ),
                         )
-                        if res.status_code != 200:
-                            err_no = len(res.errors) - 1
-                            module.fail_json(
-                                msg=f"Failed to create new rule for Snapshot policy {module.params['name']}. Error: {res.errors[err_no].message}"
-                            )
+                        check_response(
+                            res,
+                            module,
+                            f"Updating rule {current_rule.name} in Snapshot policy "
+                            f"{module.params['name']}",
+                        )
             else:
-                if module.params["snap_keep_for"] < module.params["snap_every"]:
-                    module.fail_json(
-                        msg="Retention period (snap_keep_for) cannot be less than snapshot interval (snap_every)."
-                    )
-                if module.params["snap_at"]:
-                    if not module.params["snap_every"] % 1440 == 0:
-                        module.fail_json(
-                            msg="snap_at time can only be set if snap_every is multiple of 1440"
-                        )
-                    if suffix_enabled:
-                        rules = PolicyrulesnapshotpostRules(
-                            at=convert_to_millisecs(module.params["snap_at"]),
-                            client_name=module.params["snap_client_name"],
-                            every=module.params["snap_every"] * 60000,
-                            keep_for=module.params["snap_keep_for"] * 60000,
-                            suffix=module.params["snap_suffix"],
-                        )
-                    else:
-                        rules = PolicyrulesnapshotpostRules(
-                            at=convert_to_millisecs(module.params["snap_at"]),
-                            client_name=module.params["snap_client_name"],
-                            every=module.params["snap_every"] * 60000,
-                            keep_for=module.params["snap_keep_for"] * 60000,
-                        )
-                else:
-                    if suffix_enabled:
-                        rules = PolicyrulesnapshotpostRules(
-                            client_name=module.params["snap_client_name"],
-                            every=module.params["snap_every"] * 60000,
-                            keep_for=module.params["snap_keep_for"] * 60000,
-                            suffix=module.params["snap_suffix"],
-                        )
-                    else:
-                        rules = PolicyrulesnapshotpostRules(
-                            client_name=module.params["snap_client_name"],
-                            every=module.params["snap_every"] * 60000,
-                            keep_for=module.params["snap_keep_for"] * 60000,
-                        )
-                rule = PolicyRuleSnapshotPost(rules=[rules])
+                rule_fields = {
+                    "client_name": module.params["snap_client_name"],
+                    "every": every_ms,
+                    "keep_for": keep_for_ms,
+                }
+                if at_ms is not None:
+                    rule_fields["at"] = at_ms
+                if suffix_enabled and module.params["snap_suffix"]:
+                    rule_fields["suffix"] = module.params["snap_suffix"]
+                rule = PolicyRuleSnapshotPost(
+                    rules=[PolicyrulesnapshotpostRules(**rule_fields)]
+                )
                 changed_rule = True
                 if not module.check_mode:
                     res = post_with_context(
@@ -2105,7 +2067,7 @@ def update_policy(module, array, api_version, all_squash):
             new_pwd_policy["max_password_age"] = module.params["max_password_age"]
             changed = True
         if (
-            module.params["password_history"]
+            module.params["password_history"] is not None
             and module.params["password_history"]
             != current_pwd_policy["password_history"]
         ):
@@ -2118,7 +2080,16 @@ def update_policy(module, array, api_version, all_squash):
         ):
             new_pwd_policy["max_login_attempts"] = module.params["max_login_attempts"]
             changed = True
-        if module.params["lockout_duration"]:
+        if module.params["lockout_duration"] is not None:
+            if (
+                module.params["lockout_duration"] == 0
+                and current_pwd_policy["lockout_duration"]
+            ):
+                # The SDK model refuses lockout_duration below 1 second
+                module.fail_json(
+                    msg="lockout_duration cannot be cleared with 0; the minimum "
+                    "accepted value is 1 second"
+                )
             if (
                 module.params["lockout_duration"] * 1000
                 != current_pwd_policy["lockout_duration"]
@@ -2299,7 +2270,7 @@ def update_policy(module, array, api_version, all_squash):
                         current_rule_config["enforced"]
                         != module.params["quota_enforced"]
                     ):
-                        new_rule_config["quota"] = module.params["quota_enforced"]
+                        new_rule_config["enforced"] = module.params["quota_enforced"]
                     if (
                         module.params["quota_limit"]
                         and current_rule_config["quota"] != quota
@@ -2613,15 +2584,11 @@ def main():
     else:
         module.params["quota_notifications"] = []
 
-    if (
-        module.params["nfs_access"] == "all-squash"
-        and ALL_SQUASH_VERSION not in api_version
-    ):
+    all_squash = LooseVersion(ALL_SQUASH_VERSION) <= LooseVersion(api_version)
+    if module.params["nfs_access"] == "all-squash" and not all_squash:
         module.fail_json(
             msg="all-squash is not supported in this version of Purity//FA"
         )
-
-    all_squash = ALL_SQUASH_VERSION in api_version
     exists = bool(array.get_policies(names=[module.params["name"]]).status_code == 200)
 
     if state == "present" and not exists and module.params["rename"]:

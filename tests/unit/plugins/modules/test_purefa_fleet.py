@@ -99,6 +99,7 @@ class TestDeleteFleet:
         delete_fleet(mock_module, mock_array)
 
         mock_module.exit_json.assert_called_once_with(changed=True)
+        mock_array.delete_fleets.assert_not_called()
 
 
 class TestRenameFleet:
@@ -310,9 +311,67 @@ class TestDeleteFleetMembers:
         mock_module.exit_json.assert_called_once_with(changed=True)
         mock_array.delete_fleets_members.assert_not_called()
 
-    # Note: delete_fleet_members status check tests are skipped because
-    # the code has a bug (members[member].status should be member.status)
-    # that makes it difficult to test without fixing the source code
+    def _module_and_remote(self, mock_flasharray):
+        mock_module = Mock()
+        mock_module.check_mode = False
+        mock_module.params = {
+            "name": "test-fleet",
+            "member_url": "https://array.example.com",
+            "member_api": "fake-api-token",
+            "disable_warnings": False,
+        }
+        mock_remote = Mock()
+        mock_remote_array = Mock()
+        mock_remote_array.name = "remote-array"
+        mock_remote.get_arrays.return_value = Mock(items=[mock_remote_array])
+        mock_flasharray.Client.return_value = mock_remote
+        return mock_module
+
+    @patch("plugins.modules.purefa_fleet.check_response")
+    @patch("plugins.modules.purefa_fleet.flasharray")
+    @patch("plugins.modules.purefa_fleet.HAS_DISTRO", False)
+    @patch("plugins.modules.purefa_fleet.HAS_URLLIB3", False)
+    def test_delete_connected_member(self, mock_flasharray, mock_check_response):
+        """A reachable member is removed normally (was TypeError on
+        members[member].status)"""
+        from plugins.modules.purefa_fleet import delete_fleet_members
+
+        mock_module = self._module_and_remote(mock_flasharray)
+        mock_array = Mock()
+        mock_member = Mock()
+        mock_member.member.name = "remote-array"
+        mock_member.status = "connected"
+        mock_array.get_fleets_members.return_value = Mock(items=[mock_member])
+        mock_array.delete_fleets_members.return_value = Mock(status_code=200)
+
+        delete_fleet_members(mock_module, mock_array)
+
+        mock_array.delete_fleets_members.assert_called_once_with(
+            member_names=["remote-array"]
+        )
+        mock_module.exit_json.assert_called_once_with(changed=True)
+
+    @patch("plugins.modules.purefa_fleet.check_response")
+    @patch("plugins.modules.purefa_fleet.flasharray")
+    @patch("plugins.modules.purefa_fleet.HAS_DISTRO", False)
+    @patch("plugins.modules.purefa_fleet.HAS_URLLIB3", False)
+    def test_delete_unreachable_member(self, mock_flasharray, mock_check_response):
+        from plugins.modules.purefa_fleet import delete_fleet_members
+
+        mock_module = self._module_and_remote(mock_flasharray)
+        mock_array = Mock()
+        mock_member = Mock()
+        mock_member.member.name = "remote-array"
+        mock_member.status = "disconnected"
+        mock_array.get_fleets_members.return_value = Mock(items=[mock_member])
+        mock_array.delete_fleets_members.return_value = Mock(status_code=200)
+
+        delete_fleet_members(mock_module, mock_array)
+
+        mock_array.delete_fleets_members.assert_called_once_with(
+            member_names=["remote-array"], unreachable=True
+        )
+        mock_module.exit_json.assert_called_once_with(changed=True)
 
 
 class TestAddFleetMembersSuccess:

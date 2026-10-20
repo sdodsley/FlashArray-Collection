@@ -2541,3 +2541,253 @@ class TestMain:
         mock_array.get_host_groups.assert_called_once()
         call_kwargs = mock_array.get_host_groups.call_args[1]
         assert "context_names" not in call_kwargs
+
+
+class TestQaFixes:
+    """Regression tests for defects found by the hardware QA suite"""
+
+    def _module(self, **overrides):
+        params = {
+            "name": "test-pg",
+            "rename": None,
+            "volume": None,
+            "host": None,
+            "hostgroup": None,
+            "target": None,
+            "eradicate": False,
+            "state": "present",
+            "enabled": None,
+            "context": "",
+            "safe_mode": None,
+        }
+        params.update(overrides)
+        mock_module = Mock()
+        mock_module.check_mode = False
+        mock_module.params = params
+        return mock_module
+
+    def _array(self, volume_count=0, host_count=0, host_group_count=0):
+        mock_array = Mock()
+        mock_array.get_rest_version.return_value = "2.38"
+        mock_pg = Mock()
+        mock_pg.volume_count = volume_count
+        mock_pg.host_count = host_count
+        mock_pg.host_group_count = host_group_count
+        mock_pg.retention_lock = "unlocked"
+        mock_array.get_protection_groups.return_value = Mock(
+            status_code=200, items=[mock_pg]
+        )
+        return mock_array, mock_pg
+
+    @patch("plugins.modules.purefa_pg.get_pgroup_sched")
+    @patch("plugins.modules.purefa_pg.get_pgroup")
+    @patch("plugins.modules.purefa_pg.check_response")
+    @patch("plugins.modules.purefa_pg.LooseVersion", side_effect=LooseVersion)
+    def test_remove_host_already_removed_is_noop(
+        self, mock_lv, mock_check_response, mock_get_pgroup, mock_get_pgroup_sched
+    ):
+        """Removing a host that is no longer a member reports no change"""
+        mock_module = self._module(host=["host1"], state="absent")
+        mock_array, mock_pg = self._array(host_count=1)
+        mock_get_pgroup.return_value = mock_pg
+        other = Mock()
+        other.member.name = "host2"
+        mock_array.get_protection_groups_hosts.return_value = Mock(items=[other])
+
+        update_pgroup(mock_module, mock_array)
+
+        mock_array.delete_protection_groups_hosts.assert_not_called()
+        mock_array.post_protection_groups_hosts.assert_not_called()
+        mock_module.exit_json.assert_called_once_with(changed=False)
+
+    @patch("plugins.modules.purefa_pg.get_pgroup_sched")
+    @patch("plugins.modules.purefa_pg.get_pgroup")
+    @patch("plugins.modules.purefa_pg.check_response")
+    @patch("plugins.modules.purefa_pg.LooseVersion", side_effect=LooseVersion)
+    def test_remove_host_from_empty_pgroup_does_not_add(
+        self, mock_lv, mock_check_response, mock_get_pgroup, mock_get_pgroup_sched
+    ):
+        """state=absent on an empty group must not re-add the host"""
+        mock_module = self._module(host=["host1"], state="absent")
+        mock_array, mock_pg = self._array(host_count=0)
+        mock_get_pgroup.return_value = mock_pg
+
+        update_pgroup(mock_module, mock_array)
+
+        mock_array.post_protection_groups_hosts.assert_not_called()
+        mock_array.delete_protection_groups_hosts.assert_not_called()
+        mock_module.exit_json.assert_called_once_with(changed=False)
+
+    @patch("plugins.modules.purefa_pg.get_pgroup_sched")
+    @patch("plugins.modules.purefa_pg.get_pgroup")
+    @patch("plugins.modules.purefa_pg.check_response")
+    @patch("plugins.modules.purefa_pg.LooseVersion", side_effect=LooseVersion)
+    def test_remove_volumes_only_removes_members(
+        self, mock_lv, mock_check_response, mock_get_pgroup, mock_get_pgroup_sched
+    ):
+        """Partial overlap removes only the volumes that are members"""
+        mock_module = self._module(volume=["vol1", "vol2"], state="absent")
+        mock_array, mock_pg = self._array(volume_count=1)
+        mock_get_pgroup.return_value = mock_pg
+        member = Mock()
+        member.member.name = "vol2"
+        mock_array.get_protection_groups_volumes.return_value = Mock(items=[member])
+        mock_array.delete_protection_groups_volumes.return_value = Mock(status_code=200)
+
+        update_pgroup(mock_module, mock_array)
+
+        kwargs = mock_array.delete_protection_groups_volumes.call_args[1]
+        assert kwargs["member_names"] == ["vol2"]
+        mock_module.exit_json.assert_called_once_with(changed=True)
+
+    @patch("plugins.modules.purefa_pg.get_pgroup_sched")
+    @patch("plugins.modules.purefa_pg.get_pgroup")
+    @patch("plugins.modules.purefa_pg.check_response")
+    @patch("plugins.modules.purefa_pg.LooseVersion", side_effect=LooseVersion)
+    def test_add_hostgroups_posts_only_missing(
+        self, mock_lv, mock_check_response, mock_get_pgroup, mock_get_pgroup_sched
+    ):
+        """Adding hostgroups posts only those not already members"""
+        mock_module = self._module(hostgroup=["hg1", "hg2"])
+        mock_array, mock_pg = self._array(host_group_count=1)
+        mock_get_pgroup.return_value = mock_pg
+        member = Mock()
+        member.member.name = "hg1"
+        mock_array.get_protection_groups_host_groups.return_value = Mock(items=[member])
+        mock_array.post_protection_groups_host_groups.return_value = Mock(
+            status_code=200
+        )
+
+        update_pgroup(mock_module, mock_array)
+
+        kwargs = mock_array.post_protection_groups_host_groups.call_args[1]
+        assert kwargs["member_names"] == ["hg2"]
+        mock_module.exit_json.assert_called_once_with(changed=True)
+
+    @patch("plugins.modules.purefa_pg.get_pgroup_sched")
+    @patch("plugins.modules.purefa_pg.get_pgroup")
+    @patch("plugins.modules.purefa_pg.check_response")
+    @patch("plugins.modules.purefa_pg.LooseVersion", side_effect=LooseVersion)
+    def test_enabled_not_applied_when_unspecified(
+        self, mock_lv, mock_check_response, mock_get_pgroup, mock_get_pgroup_sched
+    ):
+        """A disabled schedule stays disabled when enabled is not given"""
+        mock_module = self._module(host=["host1"], state="absent")
+        mock_array, mock_pg = self._array(host_count=1)
+        mock_get_pgroup.return_value = mock_pg
+        sched = Mock()
+        sched.snapshot_schedule.enabled = False
+        mock_get_pgroup_sched.return_value = sched
+        member = Mock()
+        member.member.name = "host1"
+        mock_array.get_protection_groups_hosts.return_value = Mock(items=[member])
+        mock_array.delete_protection_groups_hosts.return_value = Mock(status_code=200)
+
+        update_pgroup(mock_module, mock_array)
+
+        mock_array.patch_protection_groups.assert_not_called()
+        mock_array.delete_protection_groups_hosts.assert_called_once()
+
+    @patch("plugins.modules.purefa_pg.get_pgroup_sched")
+    @patch("plugins.modules.purefa_pg.get_pgroup")
+    @patch("plugins.modules.purefa_pg.get_targets")
+    @patch("plugins.modules.purefa_pg.get_arrays")
+    @patch("plugins.modules.purefa_pg.check_response")
+    @patch("plugins.modules.purefa_pg.LooseVersion", side_effect=LooseVersion)
+    def test_targets_post_only_missing(
+        self,
+        mock_lv,
+        mock_check_response,
+        mock_get_arrays,
+        mock_get_targets,
+        mock_get_pgroup,
+        mock_get_pgroup_sched,
+    ):
+        """Only targets not yet attached are posted"""
+        mock_module = self._module(target=["array2", "array3"])
+        mock_array, mock_pg = self._array()
+        mock_get_pgroup.return_value = mock_pg
+        mock_get_arrays.return_value = ["array2", "array3"]
+        mock_get_targets.return_value = []
+        attached = Mock()
+        attached.member.name = "array2"
+        mock_array.get_protection_groups_targets.return_value = Mock(
+            status_code=200, items=[attached]
+        )
+        mock_array.post_protection_groups_targets.return_value = Mock(status_code=200)
+
+        update_pgroup(mock_module, mock_array)
+
+        mock_array.post_protection_groups_targets.assert_called_once()
+        kwargs = mock_array.post_protection_groups_targets.call_args[1]
+        assert kwargs["member_names"] == ["array3"]
+        mock_module.exit_json.assert_called_once_with(changed=True)
+
+    @patch("plugins.modules.purefa_pg.get_pgroup_sched")
+    @patch("plugins.modules.purefa_pg.get_pgroup")
+    @patch("plugins.modules.purefa_pg.get_targets")
+    @patch("plugins.modules.purefa_pg.get_arrays")
+    @patch("plugins.modules.purefa_pg.check_response")
+    @patch("plugins.modules.purefa_pg.LooseVersion", side_effect=LooseVersion)
+    def test_targets_absent_detaches(
+        self,
+        mock_lv,
+        mock_check_response,
+        mock_get_arrays,
+        mock_get_targets,
+        mock_get_pgroup,
+        mock_get_pgroup_sched,
+    ):
+        """state=absent with target detaches the attached target"""
+        mock_module = self._module(target=["array2", "array3"], state="absent")
+        mock_array, mock_pg = self._array()
+        mock_get_pgroup.return_value = mock_pg
+        mock_get_arrays.return_value = ["array2", "array3"]
+        mock_get_targets.return_value = []
+        attached = Mock()
+        attached.member.name = "array2"
+        mock_array.get_protection_groups_targets.return_value = Mock(
+            status_code=200, items=[attached]
+        )
+        mock_array.delete_protection_groups_targets.return_value = Mock(status_code=200)
+
+        update_pgroup(mock_module, mock_array)
+
+        mock_array.post_protection_groups_targets.assert_not_called()
+        mock_array.delete_protection_groups_targets.assert_called_once()
+        kwargs = mock_array.delete_protection_groups_targets.call_args[1]
+        assert kwargs["member_names"] == ["array2"]
+        mock_module.exit_json.assert_called_once_with(changed=True)
+
+    @patch("plugins.modules.purefa_pg.get_pgroup_sched")
+    @patch("plugins.modules.purefa_pg.get_pgroup")
+    @patch("plugins.modules.purefa_pg.get_targets")
+    @patch("plugins.modules.purefa_pg.get_arrays")
+    @patch("plugins.modules.purefa_pg.check_response")
+    @patch("plugins.modules.purefa_pg.LooseVersion", side_effect=LooseVersion)
+    def test_targets_already_attached_is_noop(
+        self,
+        mock_lv,
+        mock_check_response,
+        mock_get_arrays,
+        mock_get_targets,
+        mock_get_pgroup,
+        mock_get_pgroup_sched,
+    ):
+        """Requesting a target that is already attached reports no change"""
+        mock_module = self._module(target=["array2"])
+        mock_array, mock_pg = self._array()
+        mock_get_pgroup.return_value = mock_pg
+        mock_get_arrays.return_value = ["array2"]
+        mock_get_targets.return_value = []
+        attached = Mock()
+        attached.member.name = "array2"
+        mock_array.get_protection_groups_targets.return_value = Mock(
+            status_code=200, items=[attached]
+        )
+
+        update_pgroup(mock_module, mock_array)
+
+        mock_array.post_protection_groups_targets.assert_not_called()
+        mock_array.patch_protection_groups.assert_not_called()
+        mock_module.exit_json.assert_called_once_with(changed=False)

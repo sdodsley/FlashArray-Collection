@@ -390,6 +390,37 @@ def generate_perf_dict(array):
     return perf_info
 
 
+def _saml2sso_dict(idps):
+    """Report every SAML2 IdP, keyed by name"""
+    saml_info = {}
+    for idp in idps:
+        entry = {
+            "enabled": idp.enabled,
+            "array_url": idp.array_url,
+            "name": idp.name,
+            "idp": {},
+            "sp": {},
+        }
+        if hasattr(idp, "idp"):
+            entry["idp"] = {
+                "url": getattr(idp.idp, "url", None),
+                "encrypt_enabled": idp.idp.encrypt_assertion_enabled,
+                "sign_enabled": idp.idp.sign_request_enabled,
+                "metadata_url": idp.idp.metadata_url,
+            }
+        if hasattr(idp, "sp"):
+            entry["sp"] = {
+                "decrypt_cred": getattr(
+                    getattr(idp.sp, "decryption_credential", None), "name", None
+                ),
+                "sign_cred": getattr(
+                    getattr(idp.sp, "signing_credential", None), "name", None
+                ),
+            }
+        saml_info[idp.name] = entry
+    return saml_info
+
+
 def generate_config_dict(module, array):
     config_info = {}
     api_version = array.get_rest_version()
@@ -492,36 +523,7 @@ def generate_config_dict(module, array):
             config.source, "name", None
         )
     if LooseVersion(SAML2_VERSION) <= LooseVersion(api_version):
-        config_info["saml2sso"] = {}
-        saml2 = list(array.get_sso_saml2_idps().items)
-        if saml2:
-            config_info["saml2sso"] = {
-                "enabled": saml2[0].enabled,
-                "array_url": saml2[0].array_url,
-                "name": saml2[0].name,
-                "idp": {},
-                "sp": {},
-            }
-            if hasattr(saml2[0], "idp"):
-                config_info["saml2sso"]["idp"] = {
-                    "url": getattr(saml2[0].idp, "url", None),
-                    "encrypt_enabled": saml2[0].idp.encrypt_assertion_enabled,
-                    "sign_enabled": saml2[0].idp.sign_request_enabled,
-                    "metadata_url": saml2[0].idp.metadata_url,
-                }
-            if hasattr(saml2[0], "sp"):
-                if hasattr(saml2[0].sp, "decryption_credential"):
-                    decrypt = getattr(saml2[0].sp.decryption_credential, "name", None)
-                else:
-                    decrypt = None
-                if hasattr(saml2[0].sp, "signing_credential"):
-                    sign = getattr(saml2[0].sp.signing_credential, "name", None)
-                else:
-                    sign = None
-                config_info["saml2sso"]["sp"] = {
-                    "decrypt_cred": decrypt,
-                    "sign_cred": sign,
-                }
+        config_info["saml2sso"] = _saml2sso_dict(list(array.get_sso_saml2_idps().items))
     config_info["active_directory"] = {}
     res = array.get_active_directory()
     if res.status_code != 200:
@@ -614,8 +616,36 @@ def generate_config_dict(module, array):
     return config_info
 
 
+def _directory_exports_by_name(array):
+    """Map full managed-directory name -> list of its exports
+
+    Exports are read once, unfiltered, and grouped here: filtering the call
+    by directory_names returned nothing for every directory on an array
+    serving live exports.
+    """
+    exports_by_dir = {}
+    res = array.get_directory_exports()
+    if getattr(res, "status_code", None) != 200:
+        return exports_by_dir
+    for export in list(getattr(res, "items", None) or []):
+        dir_name = getattr(getattr(export, "directory", None), "name", None)
+        exports_by_dir.setdefault(dir_name, []).append(
+            {
+                "enabled": export.enabled,
+                "export_name": export.export_name,
+                "policy": {
+                    "name": export.policy.name,
+                    "type": export.policy.resource_type,
+                },
+                "server": getattr(getattr(export, "server", None), "name", None),
+            }
+        )
+    return exports_by_dir
+
+
 def generate_filesystems_dict(array, performance):
     files_info = {}
+    exports_by_dir = _directory_exports_by_name(array)
     filesystems = list(array.get_file_systems().items)
     for filesystem in filesystems:
         fs_name = filesystem.name
@@ -646,7 +676,7 @@ def generate_filesystems_dict(array, performance):
                 "destroyed": directory.destroyed,
                 "full_name": directory.name,
                 "used_provisioned": getattr(directory.space, "used_provisioned", None),
-                "exports": [],
+                "exports": list(exports_by_dir.get(directory.name, [])),
                 "policies": [],
                 "limited_by": None,
                 "performance": [],
@@ -672,24 +702,6 @@ def generate_filesystems_dict(array, performance):
                         "policy": {
                             "name": policy.policy.name,
                             "type": policy.policy.resource_type,
-                        },
-                    }
-                )
-            exports = list(
-                array.get_directory_exports(
-                    directory_names=[
-                        files_info[fs_name]["directories"][d_name]["full_name"]
-                    ]
-                ).items
-            )
-            for export in exports:
-                files_info[fs_name]["directories"][d_name]["exports"].append(
-                    {
-                        "enabled": export.enabled,
-                        "export_name": export.export_name,
-                        "policy": {
-                            "name": export.policy.name,
-                            "type": export.policy.resource_type,
                         },
                     }
                 )
@@ -794,6 +806,19 @@ def generate_policies_dict(array, quota_available, autodir_available, nfs_user_m
             m_name = member.member.name
             policy_info[p_name]["members"].append(m_name)
         if policy.policy_type == "smb":
+            smb_res = array.get_policies_smb(names=[p_name])
+            smb_policies = (
+                list(getattr(smb_res, "items", None) or [])
+                if getattr(smb_res, "status_code", None) == 200
+                else []
+            )
+            if smb_policies:
+                policy_info[p_name]["access_based_enumeration_enabled"] = getattr(
+                    smb_policies[0], "access_based_enumeration_enabled", None
+                )
+                policy_info[p_name]["continuous_availability_enabled"] = getattr(
+                    smb_policies[0], "continuous_availability_enabled", None
+                )
             rules = list(
                 array.get_policies_smb_client_rules(policy_names=[p_name]).items
             )
@@ -885,6 +910,9 @@ def generate_policies_dict(array, quota_available, autodir_available, nfs_user_m
                 "min_character_groups": pwd_policy.min_character_groups,
                 "min_characters_per_group": pwd_policy.min_characters_per_group,
                 "min_password_length": pwd_policy.min_password_length,
+                "max_login_attempts": getattr(pwd_policy, "max_login_attempts", None),
+                "min_password_age": getattr(pwd_policy, "min_password_age", None),
+                "max_password_age": getattr(pwd_policy, "max_password_age", None),
             }
         if policy.policy_type == "qos":
             qos_policy = list(array.get_policies_qos(names=[p_name]).items)[0]

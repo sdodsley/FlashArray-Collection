@@ -70,12 +70,16 @@ options:
   enabled:
     description:
     - Define whether to enabled snapshots for the protection group.
+    - When not specified a new protection group is created with its schedule
+      enabled, and an existing protection group's schedule state is left
+      unchanged.
     type : bool
-    default: true
   target:
     description:
     - List of remote arrays or offload target for replication protection group
       to connect to.
+    - With I(state=absent) the listed targets are removed from the
+      protection group.
     - Note that all replicated protection groups are asynchronous.
     - Target arrays or offload targets must already be connected to the source array.
     - Maximum number of targets per Portection Group is 4, assuming your
@@ -410,6 +414,8 @@ def make_pgroup(module, array):
                 f"Failed to create protection group {module.params['name']}",
             )
     if not module.check_mode:
+        # A new protection group has its schedule enabled unless told otherwise
+        enabled = True if module.params["enabled"] is None else module.params["enabled"]
         if module.params["target"]:
             res = patch_with_context(
                 array,
@@ -418,9 +424,7 @@ def make_pgroup(module, array):
                 module,
                 names=[module.params["name"]],
                 protection_group=ProtectionGroup(
-                    replication_schedule=ReplicationSchedule(
-                        enabled=module.params["enabled"]
-                    )
+                    replication_schedule=ReplicationSchedule(enabled=enabled)
                 ),
             )
         else:
@@ -431,7 +435,7 @@ def make_pgroup(module, array):
                 module,
                 names=[module.params["name"]],
                 protection_group=ProtectionGroup(
-                    snapshot_schedule=SnapshotSchedule(enabled=module.params["enabled"])
+                    snapshot_schedule=SnapshotSchedule(enabled=enabled)
                 ),
             )
         check_response(res, module, f"Enabling pgroup {module.params['name']} failed")
@@ -535,30 +539,55 @@ def update_pgroup(module, array):
             for connect in current_connects:
                 current_targets.append(connect.member.name)
 
-        if set(module.params["target"][0:4]) != set(current_targets):
-            if not set(module.params["target"][0:4]).issubset(connected_arrays):
-                module.fail_json(
-                    msg="Check all selected targets are connected to the source array."
-                )
-            changed = True
-            if not module.check_mode:
-                for target in module.params["target"][0:4]:
-                    res = post_with_context(
-                        array,
-                        "post_protection_groups_targets",
-                        CONTEXT_API_VERSION,
-                        module,
-                        group_names=[module.params["name"]],
-                        member_names=[target],
+        requested_targets = module.params["target"][0:4]
+        if state == "present":
+            # Only attach the targets that are not already attached
+            new_targets = [t for t in requested_targets if t not in current_targets]
+            if new_targets:
+                if not set(new_targets).issubset(connected_arrays):
+                    module.fail_json(
+                        msg="Check all selected targets are connected to the source array."
                     )
-                    check_response(
-                        res,
-                        module,
-                        f"Changing targets for pgroup {module.params['name']} failed",
-                    )
+                changed = True
+                if not module.check_mode:
+                    for target in new_targets:
+                        res = post_with_context(
+                            array,
+                            "post_protection_groups_targets",
+                            CONTEXT_API_VERSION,
+                            module,
+                            group_names=[module.params["name"]],
+                            member_names=[target],
+                        )
+                        check_response(
+                            res,
+                            module,
+                            f"Changing targets for pgroup {module.params['name']} failed",
+                        )
+        else:
+            # state == absent: detach the listed targets that are attached
+            old_targets = [t for t in requested_targets if t in current_targets]
+            if old_targets:
+                changed = True
+                if not module.check_mode:
+                    for target in old_targets:
+                        res = delete_with_context(
+                            array,
+                            "delete_protection_groups_targets",
+                            CONTEXT_API_VERSION,
+                            module,
+                            group_names=[module.params["name"]],
+                            member_names=[target],
+                        )
+                        check_response(
+                            res,
+                            module,
+                            f"Removing target {target} from pgroup {module.params['name']} failed",
+                        )
 
     if (
         module.params["target"]
+        and module.params["enabled"] is not None
         and module.params["enabled"]
         != get_pgroup_sched(module, array).replication_schedule.enabled
     ):
@@ -583,6 +612,7 @@ def update_pgroup(module, array):
             )
     elif (
         not module.params["target"]
+        and module.params["enabled"] is not None
         and module.params["enabled"]
         != get_pgroup_sched(module, array).snapshot_schedule.enabled
     ):
@@ -609,21 +639,23 @@ def update_pgroup(module, array):
         and get_pgroup(module, array).host_group_count == 0
     ):
         if get_pgroup(module, array).volume_count == 0:
-            if not module.check_mode:
+            # Nothing to remove from an empty group
+            if state == "present":
                 changed = True
-                res = post_with_context(
-                    array,
-                    "post_protection_groups_volumes",
-                    CONTEXT_API_VERSION,
-                    module,
-                    group_names=[module.params["name"]],
-                    member_names=module.params["volume"],
-                )
-                check_response(
-                    res,
-                    module,
-                    f"Adding volumes to pgroup {module.params['name']} failed",
-                )
+                if not module.check_mode:
+                    res = post_with_context(
+                        array,
+                        "post_protection_groups_volumes",
+                        CONTEXT_API_VERSION,
+                        module,
+                        group_names=[module.params["name"]],
+                        member_names=module.params["volume"],
+                    )
+                    check_response(
+                        res,
+                        module,
+                        f"Adding volumes to pgroup {module.params['name']} failed",
+                    )
         else:
             pgvols = []
             vols = list(
@@ -638,16 +670,17 @@ def update_pgroup(module, array):
             for vol in vols:
                 pgvols.append(vol.member.name)
             if state == "present":
-                if not all(x in pgvols for x in module.params["volume"]):
+                new_vols = [x for x in module.params["volume"] if x not in pgvols]
+                if new_vols:
+                    changed = True
                     if not module.check_mode:
-                        changed = True
                         res = post_with_context(
                             array,
                             "post_protection_groups_volumes",
                             CONTEXT_API_VERSION,
                             module,
                             group_names=[module.params["name"]],
-                            member_names=module.params["volume"],
+                            member_names=new_vols,
                         )
                         check_response(
                             res,
@@ -655,16 +688,17 @@ def update_pgroup(module, array):
                             f"Adding volumes in pgroup {module.params['name']} failed",
                         )
             else:
-                if all(x in pgvols for x in module.params["volume"]):
+                old_vols = [x for x in module.params["volume"] if x in pgvols]
+                if old_vols:
+                    changed = True
                     if not module.check_mode:
-                        changed = True
                         res = delete_with_context(
                             array,
                             "delete_protection_groups_volumes",
                             CONTEXT_API_VERSION,
                             module,
                             group_names=[module.params["name"]],
-                            member_names=module.params["volume"],
+                            member_names=old_vols,
                         )
                         check_response(
                             res,
@@ -678,21 +712,23 @@ def update_pgroup(module, array):
         and get_pgroup(module, array).host_group_count == 0
     ):
         if get_pgroup(module, array).host_count == 0:
-            if not module.check_mode:
+            # Nothing to remove from an empty group
+            if state == "present":
                 changed = True
-                res = post_with_context(
-                    array,
-                    "post_protection_groups_hosts",
-                    CONTEXT_API_VERSION,
-                    module,
-                    group_names=[module.params["name"]],
-                    member_names=module.params["host"],
-                )
-                check_response(
-                    res,
-                    module,
-                    f"Adding hosts to pgroup {module.params['name']} failed",
-                )
+                if not module.check_mode:
+                    res = post_with_context(
+                        array,
+                        "post_protection_groups_hosts",
+                        CONTEXT_API_VERSION,
+                        module,
+                        group_names=[module.params["name"]],
+                        member_names=module.params["host"],
+                    )
+                    check_response(
+                        res,
+                        module,
+                        f"Adding hosts to pgroup {module.params['name']} failed",
+                    )
         else:
             pghosts = []
             hosts = list(
@@ -707,16 +743,17 @@ def update_pgroup(module, array):
             for host in hosts:
                 pghosts.append(host.member.name)
             if state == "present":
-                if not all(x in pghosts for x in module.params["host"]):
+                new_hosts = [x for x in module.params["host"] if x not in pghosts]
+                if new_hosts:
+                    changed = True
                     if not module.check_mode:
-                        changed = True
                         res = post_with_context(
                             array,
                             "post_protection_groups_hosts",
                             CONTEXT_API_VERSION,
                             module,
                             group_names=[module.params["name"]],
-                            member_names=module.params["host"],
+                            member_names=new_hosts,
                         )
                         check_response(
                             res,
@@ -724,16 +761,17 @@ def update_pgroup(module, array):
                             f"Adding hosts in pgroup {module.params['name']} failed",
                         )
             else:
-                if all(x in pghosts for x in module.params["host"]):
+                old_hosts = [x for x in module.params["host"] if x in pghosts]
+                if old_hosts:
+                    changed = True
                     if not module.check_mode:
-                        changed = True
                         res = delete_with_context(
                             array,
                             "delete_protection_groups_hosts",
                             CONTEXT_API_VERSION,
                             module,
                             group_names=[module.params["name"]],
-                            member_names=module.params["host"],
+                            member_names=old_hosts,
                         )
                         check_response(
                             res,
@@ -747,21 +785,23 @@ def update_pgroup(module, array):
         and get_pgroup(module, array).volume_count == 0
     ):
         if get_pgroup(module, array).host_group_count == 0:
-            if not module.check_mode:
+            # Nothing to remove from an empty group
+            if state == "present":
                 changed = True
-                res = post_with_context(
-                    array,
-                    "post_protection_groups_host_groups",
-                    CONTEXT_API_VERSION,
-                    module,
-                    group_names=[module.params["name"]],
-                    member_names=module.params["hostgroup"],
-                )
-                check_response(
-                    res,
-                    module,
-                    f"Adding hostgroups in pgroup {module.params['name']} failed",
-                )
+                if not module.check_mode:
+                    res = post_with_context(
+                        array,
+                        "post_protection_groups_host_groups",
+                        CONTEXT_API_VERSION,
+                        module,
+                        group_names=[module.params["name"]],
+                        member_names=module.params["hostgroup"],
+                    )
+                    check_response(
+                        res,
+                        module,
+                        f"Adding hostgroups in pgroup {module.params['name']} failed",
+                    )
         else:
             pghostgs = []
             hostgs = list(
@@ -776,16 +816,17 @@ def update_pgroup(module, array):
             for hostg in hostgs:
                 pghostgs.append(hostg.member.name)
             if state == "present":
-                if not all(x in pghostgs for x in module.params["hostgroup"]):
+                new_hgs = [x for x in module.params["hostgroup"] if x not in pghostgs]
+                if new_hgs:
+                    changed = True
                     if not module.check_mode:
-                        changed = True
                         res = post_with_context(
                             array,
                             "post_protection_groups_host_groups",
                             CONTEXT_API_VERSION,
                             module,
                             group_names=[module.params["name"]],
-                            member_names=module.params["hostgroup"],
+                            member_names=new_hgs,
                         )
                         check_response(
                             res,
@@ -793,16 +834,17 @@ def update_pgroup(module, array):
                             f"Adding hostgroups in pgroup {module.params['name']} failed",
                         )
             else:
-                if all(x in pghostgs for x in module.params["hostgroup"]):
+                old_hgs = [x for x in module.params["hostgroup"] if x in pghostgs]
+                if old_hgs:
+                    changed = True
                     if not module.check_mode:
-                        changed = True
                         res = delete_with_context(
                             array,
                             "delete_protection_groups_host_groups",
                             CONTEXT_API_VERSION,
                             module,
                             group_names=[module.params["name"]],
-                            member_names=module.params["hostgroup"],
+                            member_names=old_hgs,
                         )
                         check_response(
                             res,
@@ -937,7 +979,7 @@ def main():
             target=dict(type="list", elements="str"),
             safe_mode=dict(type="bool", default=False),
             eradicate=dict(type="bool", default=False),
-            enabled=dict(type="bool", default=True),
+            enabled=dict(type="bool"),
             rename=dict(type="str"),
             context=dict(type="str", default=""),
         )
@@ -1039,6 +1081,7 @@ def main():
             module.params["volume"]
             or module.params["host"]
             or module.params["hostgroup"]
+            or module.params["target"]
         )
     ):
         update_pgroup(module, array)

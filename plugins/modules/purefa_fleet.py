@@ -154,8 +154,11 @@ def delete_fleet(module, array):
     changed = True
     api_version = array.get_rest_version()
     if LooseVersion(DELETE_FLEET_API_VERSION) <= LooseVersion(api_version):
-        res = array.delete_fleets(names=[module.params["name"]])
-        check_response(res, module, f"Fleet {module.params['name']} deletion failed")
+        if not module.check_mode:
+            res = array.delete_fleets(names=[module.params["name"]])
+            check_response(
+                res, module, f"Fleet {module.params['name']} deletion failed"
+            )
     else:
         module.fail_json(
             msg="Purity//FA version not supported. Minimum version required: 6.8.2"
@@ -280,7 +283,7 @@ def delete_fleet_members(module, array):
         if member.member.name == local_name:
             changed = True
             if not module.check_mode:
-                if members[member].status not in [
+                if member.status not in [
                     "joined",
                     "connected",
                     "partially connected",

@@ -109,6 +109,98 @@ class TestCheckConnected:
 
         assert result == mock_conn
 
+    @patch("plugins.modules.purefa_connect.get_with_context")
+    def test_check_connected_skips_fleet_management_peer(self, mock_get_with_context):
+        """A fleet-management connection to the same peer shares the address
+
+        Seen on hardware: check mode reported changed=True for an existing,
+        connected sync-replication connection because the fleet entry was
+        matched first and its type differed from the request.
+        """
+        mock_module = Mock()
+        mock_module.params = {
+            "target_url": "192.168.1.100",
+            "target_api": "api-token",
+            "context": "",
+        }
+        mock_array = Mock()
+        fleet_conn = Mock()
+        fleet_conn.name = "array2"
+        fleet_conn.management_address = "192.168.1.100"
+        fleet_conn.status = "connected"
+        fleet_conn.type = "fleet-management"
+        sync_conn = Mock()
+        sync_conn.name = "array2"
+        sync_conn.management_address = "192.168.1.100"
+        sync_conn.status = "connected"
+        sync_conn.type = "sync-replication"
+        mock_get_with_context.return_value = Mock(
+            status_code=200, items=[fleet_conn, sync_conn]
+        )
+
+        result = _check_connected(mock_module, mock_array)
+
+        assert result is sync_conn
+
+    @patch("plugins.modules.purefa_connect.get_with_context")
+    def test_check_connected_only_fleet_management_is_not_connected(
+        self, mock_get_with_context
+    ):
+        mock_module = Mock()
+        mock_module.params = {
+            "target_url": "192.168.1.100",
+            "target_api": "api-token",
+            "context": "",
+        }
+        mock_array = Mock()
+        fleet_conn = Mock()
+        fleet_conn.management_address = "192.168.1.100"
+        fleet_conn.type = "fleet-management"
+        mock_get_with_context.return_value = Mock(status_code=200, items=[fleet_conn])
+
+        assert _check_connected(mock_module, mock_array) is None
+
+    @patch("plugins.modules.purefa_connect._lookup")
+    @patch("plugins.modules.purefa_connect.get_with_context")
+    def test_check_connected_matches_resolved_name(
+        self, mock_get_with_context, mock_lookup
+    ):
+        """The reverse-DNS names are compared individually, not as a tuple"""
+        mock_module = Mock()
+        mock_module.params = {
+            "target_url": "192.168.1.100",
+            "target_api": "api-token",
+            "context": "",
+        }
+        mock_lookup.return_value = ("array2", "array2.example.com")
+        mock_array = Mock()
+        mock_conn = Mock()
+        mock_conn.management_address = "array2.example.com"
+        mock_conn.type = "async-replication"
+        mock_get_with_context.return_value = Mock(status_code=200, items=[mock_conn])
+
+        assert _check_connected(mock_module, mock_array) is mock_conn
+
+    @patch("plugins.modules.purefa_connect._lookup")
+    @patch("plugins.modules.purefa_connect.get_with_context")
+    def test_check_connected_survives_failed_lookup(
+        self, mock_get_with_context, mock_lookup
+    ):
+        mock_module = Mock()
+        mock_module.params = {
+            "target_url": "192.168.1.100",
+            "target_api": "api-token",
+            "context": "",
+        }
+        mock_lookup.side_effect = OSError("no reverse record")
+        mock_array = Mock()
+        mock_conn = Mock()
+        mock_conn.management_address = "192.168.1.100"
+        mock_conn.type = "async-replication"
+        mock_get_with_context.return_value = Mock(status_code=200, items=[mock_conn])
+
+        assert _check_connected(mock_module, mock_array) is mock_conn
+
 
 class TestBreakConnection:
     """Test cases for break_connection function"""
@@ -380,4 +472,111 @@ class TestCreateConnection:
         create_connection(mock_module, mock_array)
 
         mock_post_with_context.assert_called_once()
+        mock_module.exit_json.assert_called_once_with(changed=True)
+
+
+class TestEncryptionVersionGate:
+    """encrypted is honoured from REST 2.33 on, not only up to it"""
+
+    def _params(self):
+        return {
+            "context": "",
+            "target_url": "192.168.1.100",
+            "target_api": "api-token",
+            "connection": "async",
+            "transport": "ip",
+            "encrypted": True,
+        }
+
+    @patch("plugins.modules.purefa_connect.ArrayConnectionPost")
+    @patch("plugins.modules.purefa_connect.Client")
+    @patch("plugins.modules.purefa_connect.check_response")
+    @patch("plugins.modules.purefa_connect.post_with_context")
+    def test_create_sends_encryption_on_current_rest(
+        self, mock_post_with_context, mock_check_response, mock_client, mock_post_model
+    ):
+        from plugins.modules.purefa_connect import create_connection
+
+        mock_module = Mock()
+        mock_module.check_mode = False
+        mock_module.params = self._params()
+        mock_array = Mock()
+        mock_array.get_rest_version.return_value = "2.54"
+        mock_post_with_context.return_value = Mock(status_code=200)
+        mock_remote = Mock()
+        mock_remote.get_array_connections_connection_key.return_value = Mock(
+            items=[Mock(connection_key="conn-key-123")]
+        )
+        mock_client.return_value = mock_remote
+
+        create_connection(mock_module, mock_array)
+
+        assert mock_post_model.call_args.kwargs["encryption"] == "encrypted"
+
+    @patch("plugins.modules.purefa_connect.ArrayConnectionPost")
+    @patch("plugins.modules.purefa_connect.Client")
+    @patch("plugins.modules.purefa_connect.check_response")
+    @patch("plugins.modules.purefa_connect.post_with_context")
+    def test_create_omits_encryption_before_2_33(
+        self, mock_post_with_context, mock_check_response, mock_client, mock_post_model
+    ):
+        from plugins.modules.purefa_connect import create_connection
+
+        mock_module = Mock()
+        mock_module.check_mode = False
+        mock_module.params = self._params()
+        mock_array = Mock()
+        mock_array.get_rest_version.return_value = "2.30"
+        mock_post_with_context.return_value = Mock(status_code=200)
+        mock_remote = Mock()
+        mock_remote.get_array_connections_connection_key.return_value = Mock(
+            items=[Mock(connection_key="conn-key-123")]
+        )
+        mock_client.return_value = mock_remote
+
+        create_connection(mock_module, mock_array)
+
+        assert "encryption" not in mock_post_model.call_args.kwargs
+
+    @patch("plugins.modules.purefa_connect.Client")
+    @patch("plugins.modules.purefa_connect.check_response")
+    @patch("plugins.modules.purefa_connect.patch_with_context")
+    @patch("plugins.modules.purefa_connect.get_with_context")
+    def test_update_reconciles_encryption_on_current_rest(
+        self, mock_get_with_context, mock_patch_with_context, mock_check, mock_client
+    ):
+        import pytest
+
+        mock_module = Mock()
+        mock_module.check_mode = False
+        mock_module.exit_json.side_effect = SystemExit(0)
+        mock_module.params = {
+            "context": "",
+            "renew_key": False,
+            "refresh": False,
+            "encrypted": True,
+            "connection": "async-replication",
+            "target_url": "192.168.1.100",
+            "target_api": "api-token",
+        }
+        mock_array = Mock()
+        mock_array.get_rest_version.return_value = "2.54"
+        mock_local = Mock()
+        mock_local.name = "local-array"
+        mock_get_with_context.return_value = Mock(items=[mock_local])
+        mock_patch_with_context.return_value = Mock(status_code=200)
+        mock_remote = Mock()
+        mock_remote.get_array_connections_connection_key.return_value = Mock(
+            items=[Mock(connection_key="conn-key-123")]
+        )
+        mock_client.return_value = mock_remote
+        mock_target = Mock()
+        mock_target.name = "target-array"
+        mock_target.encryption = "unencrypted"
+        mock_target.type = "async-replication"
+
+        with pytest.raises(SystemExit):
+            update_connection(mock_module, mock_array, mock_target)
+
+        mock_patch_with_context.assert_called_once()
         mock_module.exit_json.assert_called_once_with(changed=True)

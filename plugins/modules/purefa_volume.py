@@ -768,7 +768,7 @@ def create_volume(module, array):
                 add_to_protection_groups=ReferenceType(name=module.params["pgroup"]),
             )
             if res.status_code != 200:
-                module.warn_json(
+                module.warn(
                     "Failed to add {0} to protection group {1}. Error: {2}".format(
                         module.params["name"],
                         module.params["pgroup"],
@@ -867,7 +867,7 @@ def create_multi_volume(module, array, single=False):
                 if "::" in module.params["name"]:
                     pod_name = "::".join(module.params["name"].split("::")[:-1])
                     for pgs in module.params["add_to_pgs"]:
-                        if "::" not in module.params["add_to_pgs"][pgs]:
+                        if "::" not in pgs:
                             module.fail_json(msg="Specified PG is not a pod PG")
                         elif pg_exists(module, pgs, array) and pod_name != "::".join(
                             pgs.split("::")[:-1]
@@ -1138,10 +1138,13 @@ def update_volume(module, array):
                     check_response(
                         res, module, f"Volume {module.params['name']} resize failed"
                     )
-    if module.params["bw_qos"] and int(human_to_bytes(module.params["bw_qos"])) != int(
-        vol_qos.bandwidth_limit
-    ):
-        if module.params["bw_qos"] == "0":
+    if module.params["bw_qos"]:
+        # "0" (or an empty string) means "no limit", which the array
+        # represents as the maximum bandwidth value.
+        new_bw_limit = int(human_to_bytes(module.params["bw_qos"]))
+        if new_bw_limit == 0:
+            new_bw_limit = 549755813888
+        if new_bw_limit != int(vol_qos.bandwidth_limit):
             changed = True
             if not module.check_mode:
                 res = patch_with_context(
@@ -1150,14 +1153,20 @@ def update_volume(module, array):
                     CONTEXT_API_VERSION,
                     module,
                     names=[module.params["name"]],
-                    volume=VolumePatch(qos=Qos(bandwidth_limit=549755813888)),
+                    volume=VolumePatch(qos=Qos(bandwidth_limit=new_bw_limit)),
                 )
-                check_response(
-                    res,
-                    module,
-                    f"Volume {module.params['name']} Bandwidth QoS removal failed",
-                )
-        else:
+                if new_bw_limit == 549755813888:
+                    msg = f"Volume {module.params['name']} Bandwidth QoS removal failed"
+                else:
+                    msg = f"Volume {module.params['name']} Bandwidth QoS change failed"
+                check_response(res, module, msg)
+    if module.params["iops_qos"]:
+        # "0" (or an empty string) means "no limit", which the array
+        # represents as the maximum IOPs value.
+        new_iops_limit = int(human_to_real(module.params["iops_qos"]))
+        if new_iops_limit == 0:
+            new_iops_limit = 100000000
+        if new_iops_limit != int(vol_qos.iops_limit):
             changed = True
             if not module.check_mode:
                 res = patch_with_context(
@@ -1166,56 +1175,13 @@ def update_volume(module, array):
                     CONTEXT_API_VERSION,
                     module,
                     names=[module.params["name"]],
-                    volume=VolumePatch(
-                        qos=Qos(
-                            bandwidth_limit=int(human_to_bytes(module.params["bw_qos"]))
-                        )
-                    ),
+                    volume=VolumePatch(qos=Qos(iops_limit=new_iops_limit)),
                 )
-                check_response(
-                    res,
-                    module,
-                    f"Volume {module.params['name']} Bandwidth QoS change failed",
-                )
-    if module.params["iops_qos"] and int(
-        human_to_real(module.params["iops_qos"])
-    ) != int(vol_qos.iops_limit):
-        if module.params["iops_qos"] == "0":
-            changed = True
-            if not module.check_mode:
-                res = patch_with_context(
-                    array,
-                    "patch_volumes",
-                    CONTEXT_API_VERSION,
-                    module,
-                    names=[module.params["name"]],
-                    volume=VolumePatch(qos=Qos(iops_limit=100000000)),
-                )
-                check_response(
-                    res,
-                    module,
-                    f"Volume {module.params['name']} IOPs QoS removal failed",
-                )
-        else:
-            changed = True
-            if not module.check_mode:
-                res = patch_with_context(
-                    array,
-                    "patch_volumes",
-                    CONTEXT_API_VERSION,
-                    module,
-                    names=[module.params["name"]],
-                    volume=VolumePatch(
-                        qos=Qos(
-                            iops_limit=int(human_to_real(module.params["iops_qos"]))
-                        )
-                    ),
-                )
-                check_response(
-                    res,
-                    module,
-                    f"Volume {module.params['name']} IOPs QoS change failed",
-                )
+                if new_iops_limit == 100000000:
+                    msg = f"Volume {module.params['name']} IOPs QoS removal failed"
+                else:
+                    msg = f"Volume {module.params['name']} IOPs QoS change failed"
+                check_response(res, module, msg)
     if module.params["promotion_state"]:
         if module.params["promotion_state"] != vol.promotion_status:
             volume_patch = VolumePatch(
@@ -1317,7 +1283,7 @@ def update_volume(module, array):
     )
 
 
-def rename_volume(module, array):
+def rename_volume(module, array, source_exists=True):
     """Rename volume within a container, ie pod, vgroup or local array"""
     changed = False
     pod_name = ""
@@ -1339,7 +1305,19 @@ def rename_volume(module, array):
         == 200
     )
     if target_exists:
-        module.fail_json(msg="Target volume {0} already exists.".format(target_name))
+        if source_exists:
+            module.fail_json(
+                msg="Target volume {0} already exists.".format(target_name)
+            )
+        # Source is gone and the target is there: the rename has already
+        # been done, so this is a no-op.
+        module.exit_json(changed=False, volume=_volfact(module, array, target_name))
+    elif not source_exists:
+        module.fail_json(
+            msg="Volume {0} does not exist - rename failed".format(
+                module.params["name"]
+            )
+        )
     else:
         changed = True
         if not module.check_mode:
@@ -1357,9 +1335,7 @@ def rename_volume(module, array):
                 f"Rename volume {module.params['name']} to {module.params['rename']} failed",
             )
 
-    module.exit_json(
-        changed=changed, volume=_volfact(module, array, module.params["rename"])
-    )
+    module.exit_json(changed=changed, volume=_volfact(module, array, target_name))
 
 
 def move_volume(module, array):
@@ -1467,7 +1443,7 @@ def move_volume(module, array):
             )[0]
             if pod.array_count > 1:
                 module.fail_json(msg="Volume cannot be moved out of a stretched pod")
-            if pod.linked_target_count != 0:
+            if pod.link_target_count != 0:
                 module.fail_json(
                     msg="Volume cannot be moved out of a linked source pod"
                 )
@@ -1746,7 +1722,7 @@ def main():
             if not pattern.match(module.params["pgroup"]):
                 module.fail_json(
                     msg="Protection Group name {0} does not conform to naming convention".format(
-                        pgname
+                        module.params["pgroup"]
                     )
                 )
         pgroup = get_pgroup(module, array)
@@ -1804,14 +1780,11 @@ def main():
             state == "present"
             and volume
             and not module.params["rename"]
-            and (
-                size
-                or bw_qos_size
-                or iops_qos_size
-                or module.params["promotion_state"]
-                or module.params["add_to_pgs"]
-            )
+            and not module.params["move"]
+            and not module.params["target"]
         ):
+            # Covers size/QoS/priority/promotion/add_to_pgs updates as well
+            # as a bare "present" on an existing volume (no-op).
             update_volume(module, array)
         elif state == "present" and not volume and module.params["move"]:
             module.fail_json(
@@ -1821,8 +1794,10 @@ def main():
             )
         elif state == "present" and volume and module.params["move"]:
             move_volume(module, array)
-        elif state == "present" and volume and module.params["rename"]:
-            rename_volume(module, array)
+        elif state == "present" and module.params["rename"]:
+            # Also handles a repeated rename (source gone, target present)
+            # by exiting with changed=False.
+            rename_volume(module, array, source_exists=bool(volume))
         elif (
             state == "present"
             and destroyed
@@ -1838,9 +1813,7 @@ def main():
             )
         elif state == "present" and snapshot and module.params["target"]:
             copy_from_volume(module, array)
-        elif state == "present" and volume and target:
-            copy_from_volume(module, array)
-        elif state == "present" and volume and not target:
+        elif state == "present" and volume and module.params["target"]:
             copy_from_volume(module, array)
         elif state == "absent" and volume:
             delete_volume(module, array)

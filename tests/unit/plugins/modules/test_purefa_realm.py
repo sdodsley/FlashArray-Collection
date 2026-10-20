@@ -520,3 +520,111 @@ class TestUpdateRealmSuccess:
         update_realm(mock_module, mock_array)
 
         mock_module.fail_json.assert_called_once()
+
+
+class TestRealmQosClear:
+    """bw_qos / iops_qos of "0" or "" remove the limit"""
+
+    @staticmethod
+    def _module(bw_qos=None, iops_qos=None):
+        mock_module = Mock()
+        mock_module.check_mode = False
+        mock_module.params = {
+            "name": "test-realm",
+            "bw_qos": bw_qos,
+            "iops_qos": iops_qos,
+            "quota": None,
+        }
+        return mock_module
+
+    @staticmethod
+    def _array(bandwidth_limit, iops_limit):
+        mock_array = Mock()
+        mock_realm = Mock()
+        mock_realm.quota_limit = None
+        mock_realm.qos = Mock()
+        mock_realm.qos.bandwidth_limit = bandwidth_limit
+        mock_realm.qos.iops_limit = iops_limit
+        mock_array.get_realms.return_value = Mock(items=[mock_realm])
+        mock_array.patch_realms.return_value = Mock(status_code=200)
+        return mock_array
+
+    @patch("plugins.modules.purefa_realm.check_response")
+    @patch("plugins.modules.purefa_realm.ContainerQosPatch")
+    def test_bw_qos_zero_clears_limit(self, mock_cqp, mock_check_response):
+        mock_module = self._module(bw_qos="0")
+        mock_array = self._array(50000000, 1000)
+
+        update_realm(mock_module, mock_array)
+
+        mock_array.patch_realms.assert_called_once()
+        mock_cqp.assert_called_once_with(bandwidth_limit="")
+        mock_module.fail_json.assert_not_called()
+        mock_module.exit_json.assert_called_once_with(changed=True)
+
+    @patch("plugins.modules.purefa_realm.check_response")
+    @patch("plugins.modules.purefa_realm.ContainerQosPatch")
+    def test_iops_qos_zero_clears_limit(self, mock_cqp, mock_check_response):
+        mock_module = self._module(iops_qos="0")
+        mock_array = self._array(None, 1000)
+
+        update_realm(mock_module, mock_array)
+
+        mock_array.patch_realms.assert_called_once()
+        mock_cqp.assert_called_once_with(iops_limit="")
+        mock_module.exit_json.assert_called_once_with(changed=True)
+
+    @patch("plugins.modules.purefa_realm.ContainerQosPatch")
+    def test_clear_when_unset_is_noop(self, mock_cqp):
+        mock_module = self._module(bw_qos="", iops_qos="0")
+        mock_array = self._array(None, None)
+
+        update_realm(mock_module, mock_array)
+
+        mock_array.patch_realms.assert_not_called()
+        mock_module.exit_json.assert_called_once_with(changed=False)
+
+
+class TestRenameRepeat:
+    """Re-running a completed rename must not recreate the old realm"""
+
+    @patch("plugins.modules.purefa_realm.get_array")
+    @patch("plugins.modules.purefa_realm.AnsibleModule")
+    def test_rename_repeat_reports_no_change(self, mock_ansible, mock_get_array):
+        import pytest
+        from packaging.version import Version
+        from plugins.modules.purefa_realm import main
+
+        mock_module = Mock()
+        mock_module.params = {
+            "name": "old-realm",
+            "rename": "new-realm",
+            "state": "present",
+            "bw_qos": None,
+            "iops_qos": None,
+            "quota": None,
+            "eradicate": False,
+            "delete_contents": False,
+            "ignore_usage": False,
+        }
+        mock_module.exit_json.side_effect = SystemExit(0)
+        mock_ansible.return_value = mock_module
+        mock_array = Mock()
+        mock_array.get_rest_version.return_value = "2.38"
+        target = Mock()
+        target.destroyed = False
+
+        def get_realms(names):
+            if names == ["new-realm"]:
+                return Mock(status_code=200, items=[target])
+            return Mock(status_code=400)
+
+        mock_array.get_realms.side_effect = get_realms
+        mock_get_array.return_value = mock_array
+
+        with patch("plugins.modules.purefa_realm.LooseVersion", side_effect=Version):
+            with pytest.raises(SystemExit):
+                main()
+
+        mock_array.post_realms.assert_not_called()
+        mock_module.exit_json.assert_called_once_with(changed=False)

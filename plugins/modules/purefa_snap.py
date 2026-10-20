@@ -43,6 +43,15 @@ options:
     - Define whether to overwrite existing volume when creating from snapshot.
     type: bool
     default: false
+  with_default_protection:
+    description:
+    - Whether to add a volume created from a snapshot (I(state) of I(copy))
+      to the default protection groups of the array or its pod.
+    - Only applies when the target volume is created; ignored on overwrite.
+    - Requires Purity//FA 6.3.4 or higher.
+    type: bool
+    default: true
+    version_added: '1.46.0'
   offload:
     description:
     - Only valid for Purity//FA 6.1 or higher
@@ -198,6 +207,7 @@ from ansible_collections.everpure.flasharray.plugins.module_utils.api_helpers im
 )
 from datetime import datetime
 
+DEFAULT_PROTECTION_API = "2.16"
 THROTTLE_API = "2.25"
 SNAPSHOT_SUFFIX_API = "2.28"
 CONTEXT_API_VERSION = "2.38"
@@ -437,17 +447,25 @@ def create_snapshot(module, array):
 def create_from_snapshot(module, array):
     """Create Volume from Snapshot"""
     source = module.params["name"] + "." + module.params["suffix"]
+    api_version = array.get_rest_version()
     tgt = get_target(module, array)
     if tgt is None:
         changed = True
         if not module.check_mode:
+            post_kwargs = dict(
+                volume=VolumePost(source=Reference(name=source)),
+                names=[module.params["target"]],
+            )
+            if LooseVersion(DEFAULT_PROTECTION_API) <= LooseVersion(api_version):
+                post_kwargs["with_default_protection"] = module.params[
+                    "with_default_protection"
+                ]
             res = post_with_context(
                 array,
                 "post_volumes",
                 CONTEXT_API_VERSION,
                 module,
-                volume=VolumePost(source=Reference(name=source)),
-                names=[module.params["target"]],
+                **post_kwargs,
             )
             check_response(
                 res,
@@ -466,6 +484,11 @@ def create_from_snapshot(module, array):
                 volume=VolumePost(source=Reference(name=source)),
                 names=[module.params["target"]],
             )
+            check_response(
+                res,
+                module,
+                f"Failed to overwrite volume {module.params['target']} from snapshot {source}",
+            )
     elif tgt is not None and not module.params["overwrite"]:
         changed = False
     module.exit_json(changed=changed)
@@ -479,7 +502,9 @@ def recover_snapshot(module, array):
         source_array = list(
             get_with_context(array, "get_arrays", CONTEXT_API_VERSION, module).items
         )[0].name
-        snapname = source_array + module.params["name"] + "." + module.params["suffix"]
+        snapname = (
+            source_array + ":" + module.params["name"] + "." + module.params["suffix"]
+        )
         changed = True
         if not module.check_mode:
             res = patch_with_context(
@@ -675,6 +700,7 @@ def main():
             throttle=dict(type="bool", default=False),
             ignore_repl=dict(type="bool", default=False),
             overwrite=dict(type="bool", default=False),
+            with_default_protection=dict(type="bool", default=True),
             eradicate=dict(type="bool", default=False),
             state=dict(
                 type="str",
@@ -766,7 +792,10 @@ def main():
 
     if not snap:
         destroyed = get_deleted_snapshot(module, array)
-    if state == "present" and volume and not destroyed:
+    if state == "present" and volume and snap:
+        # Snapshot with this suffix already exists - nothing to do
+        module.exit_json(changed=False, suffix=module.params["suffix"])
+    elif state == "present" and volume and not destroyed:
         create_snapshot(module, array)
     elif state == "present" and destroyed:
         recover_snapshot(module, array)

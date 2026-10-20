@@ -104,7 +104,7 @@ MAX_API_VERSION = "2.36"
 def enable_vnc(module, array, app):
     """Enable VNC port"""
     changed = False
-    vnc_fact = []
+    vnc_fact = {}
     if not app.vnc_enabled:
         changed = True
         if not module.check_mode:
@@ -162,13 +162,15 @@ def main():
 
     array = get_array(module)
     api_version = array.get_rest_version()
-    if LooseVersion(MAX_API_VERSION) <= LooseVersion(api_version):
-        module.warn("VNC feature deprecated from Purity//FA 6.8.0 and higher")
-        module.exit_json(changed=False)
+    # Validate the application before the deprecation exit so an unknown
+    # name is still rejected on current Purity.
     res = array.get_apps(names=[module.params["name"]])
     check_response(
         res, module, f"Selected application {module.params['name']} does not exist"
     )
+    if LooseVersion(MAX_API_VERSION) <= LooseVersion(api_version):
+        module.warn("VNC feature deprecated from Purity//FA 6.8.0 and higher")
+        module.exit_json(changed=False, vnc={})
     app = list(res.items)[0]
     if not app.enabled:
         module.fail_json(

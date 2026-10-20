@@ -66,6 +66,9 @@ options:
     description:
       - Public key for SSH access.
       - To remove existing key use an empty string
+      - The array never returns a stored key (it reads back masked), so a
+        task that sets a key is NOT IDEMPOTENT and reports changed on every
+        run. Removing a key with an empty string is idempotent.
     type: str
     version_added: "1.34.0"
   ad_user:
@@ -180,6 +183,32 @@ LOCAL_NAME_PATTERN = re.compile("^[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?$")
 AD_NAME_PATTERN = re.compile(r"\A[^\s\x00-\x1f\x7f-\x9f,/?&#]{1,128}\Z")
 
 
+def _has_api_token(user):
+    """True when the admin entry carries an API token
+
+    The array reports a token as created_at/expires_at stamps (the value
+    itself is only exposed on request); an admin without one has no
+    api_token at all, which the SDK model raises AttributeError for.
+    """
+    token = getattr(user, "api_token", None)
+    return bool(getattr(token, "created_at", None) or getattr(token, "token", None))
+
+
+def _public_key_change(module, user):
+    """Whether the requested public_key needs a patch
+
+    The array masks a stored key, so a key that is set can never be compared
+    with the request and is always re-applied (NOT IDEMPOTENT). Clearing a
+    key is a change only when the array holds one.
+    """
+    requested = module.params["public_key"]
+    if requested is None:
+        return False
+    if requested:
+        return True
+    return bool(getattr(user, "public_key", ""))
+
+
 def get_user(module, array):
     """Return Local User Account or None"""
     res = array.get_admins(names=[module.params["name"]])
@@ -221,7 +250,11 @@ def create_local_user(module, array, user):
                 check_response(res, module, "Failed to add SSH key")
     else:
         if module.params["password"] and not module.params["old_password"]:
-            module.exit_json(changed=changed)
+            # The password cannot be changed, but the other attributes can
+            module.warn(
+                "password ignored for existing user: old_password is required "
+                "to change it"
+            )
         if (
             module.params["password"]
             and module.params["old_password"]
@@ -245,8 +278,10 @@ def create_local_user(module, array, user):
             api_changed = True
             if not module.check_mode:
                 ttl = convert_time_to_millisecs(module.params["timeout"])
-                res = array.delete_admins_api_tokens(names=[module.params["name"]])
-                check_response(res, module, "Failed to delete original API token")
+                # Deleting a token that does not exist is an array error
+                if _has_api_token(user):
+                    res = array.delete_admins_api_tokens(names=[module.params["name"]])
+                    check_response(res, module, "Failed to delete original API token")
                 res = array.post_admins_api_tokens(
                     names=[module.params["name"]], timeout=ttl
                 )
@@ -269,9 +304,7 @@ def create_local_user(module, array, user):
                     )
             else:
                 module.warn("Role for 'pureuser' cannot be modified.")
-        if module.params["public_key"] is not None and module.params[
-            "public_key"
-        ] != getattr(user, "public_key", ""):
+        if _public_key_change(module, user):
             key_changed = True
             if not module.check_mode:
                 res = array.patch_admins(
@@ -291,7 +324,7 @@ def update_ad_user(module, array, user):
         api_changed = True
         ttl = convert_time_to_millisecs(module.params["timeout"])
         if not module.check_mode:
-            if user:
+            if _has_api_token(user):
                 res = array.delete_admins_api_tokens(names=[module.params["name"]])
                 check_response(res, module, "Failed to delete original API token")
             res = array.post_admins_api_tokens(
@@ -307,9 +340,7 @@ def update_ad_user(module, array, user):
                 ),
             )
             api_token = list(res.items)[0].api_token.token
-    if module.params["public_key"] is not None and module.params[
-        "public_key"
-    ] != getattr(user, "public_key", ""):
+    if _public_key_change(module, user):
         ssh_changed = True
         if not module.check_mode:
             res = array.patch_admins(
@@ -336,12 +367,13 @@ def delete_ad_user(module, array, user):
     """Delete AD User Account references"""
     changed = bool(user)
     if changed and not module.check_mode:
-        res = array.delete_admins_api_tokens(names=[module.params["name"]])
-        check_response(
-            res,
-            module,
-            f"AD Account {module.params['name']} API token deletion failed",
-        )
+        if _has_api_token(user):
+            res = array.delete_admins_api_tokens(names=[module.params["name"]])
+            check_response(
+                res,
+                module,
+                f"AD Account {module.params['name']} API token deletion failed",
+            )
         if hasattr(user, "public_key"):
             res = array.patch_admins(
                 names=[module.params["name"]],

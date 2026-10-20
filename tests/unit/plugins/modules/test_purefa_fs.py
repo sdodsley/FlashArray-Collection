@@ -607,9 +607,8 @@ class TestMoveFs:
 class TestMoveFsFromPod:
     """Test cases for moving filesystem out of a pod
 
-    Note: The module code on lines 310-316 queries module.params["move"] (target pod)
-    instead of the source pod name, so tests must match this behavior. Both get_pods
-    calls use the same target pod name.
+    The first get_pods call checks the destination pod, the second checks the
+    source pod the filesystem is leaving.
     """
 
     @patch("plugins.modules.purefa_fs.get_with_context")
@@ -646,7 +645,7 @@ class TestMoveFsFromPod:
                 items=[
                     Mock(
                         arrays=[Mock(), Mock()],  # Multiple arrays - stretched
-                        linked_target_count=0,
+                        link_target_count=0,
                         promotion_status="promoted",
                     )
                 ],
@@ -658,6 +657,9 @@ class TestMoveFsFromPod:
 
         mock_module.fail_json.assert_called_once()
         assert "stretched pod" in mock_module.fail_json.call_args[1]["msg"]
+        # Destination pod first, then the source pod
+        assert mock_get_with_context.call_args_list[0][1]["names"] == ["target-pod"]
+        assert mock_get_with_context.call_args_list[1][1]["names"] == ["mypod"]
 
     @patch("plugins.modules.purefa_fs.get_with_context")
     def test_move_fs_out_of_linked_pod_fails(self, mock_get_with_context):
@@ -690,7 +692,7 @@ class TestMoveFsFromPod:
                 items=[
                     Mock(
                         arrays=[Mock()],
-                        linked_target_count=1,  # Has link targets
+                        link_target_count=1,  # Has link targets
                         promotion_status="promoted",
                     )
                 ],
@@ -734,7 +736,7 @@ class TestMoveFsFromPod:
                 items=[
                     Mock(
                         arrays=[Mock()],
-                        linked_target_count=0,
+                        link_target_count=0,
                         promotion_status="demoted",  # Demoted pod
                     )
                 ],

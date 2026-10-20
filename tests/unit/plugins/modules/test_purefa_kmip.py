@@ -239,6 +239,60 @@ class TestCreateKmip:
         mock_module.exit_json.assert_called_once_with(changed=True)
 
 
+class TestCertificateLengthCheck:
+    """The 3000 character limit applies to ca_certificate, not the name of
+    the array certificate"""
+
+    def _params(self, certificate, ca_certificate):
+        return {
+            "state": "present",
+            "name": "kmip1",
+            "certificate": certificate,
+            "ca_certificate": ca_certificate,
+            "uris": ["kmip://server1:5696"],
+        }
+
+    @patch("plugins.modules.purefa_kmip.get_array")
+    @patch("plugins.modules.purefa_kmip.AnsibleModule")
+    def test_oversized_ca_certificate_fails(self, mock_ansible_module, mock_get_array):
+        import pytest
+        from plugins.modules.purefa_kmip import main
+
+        mock_module = Mock()
+        mock_module.params = self._params("cert1", "A" * 3001)
+        mock_module.fail_json.side_effect = SystemExit(1)
+        mock_ansible_module.return_value = mock_module
+        mock_array = Mock()
+        mock_array.get_kmip.return_value = Mock(status_code=404)
+        mock_get_array.return_value = mock_array
+
+        with pytest.raises(SystemExit):
+            main()
+
+        assert "3000" in mock_module.fail_json.call_args[1]["msg"]
+        mock_array.post_kmip.assert_not_called()
+
+    @patch("plugins.modules.purefa_kmip.create_kmip")
+    @patch("plugins.modules.purefa_kmip.get_array")
+    @patch("plugins.modules.purefa_kmip.AnsibleModule")
+    def test_certificate_name_length_is_not_checked(
+        self, mock_ansible_module, mock_get_array, mock_create_kmip
+    ):
+        from plugins.modules.purefa_kmip import main
+
+        mock_module = Mock()
+        mock_module.params = self._params("c" * 3001, "A" * 100)
+        mock_ansible_module.return_value = mock_module
+        mock_array = Mock()
+        mock_array.get_kmip.return_value = Mock(status_code=404)
+        mock_get_array.return_value = mock_array
+
+        main()
+
+        mock_module.fail_json.assert_not_called()
+        mock_create_kmip.assert_called_once_with(mock_module, mock_array)
+
+
 class TestUpdateKmip:
     """Tests for update_kmip function"""
 

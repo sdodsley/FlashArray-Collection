@@ -65,6 +65,9 @@ options:
   eradicate:
     description:
     - Whether to eradicate a deleted host group or not
+    - Host groups are removed immediately by the array and have no
+      recoverable (destroyed) state, so this parameter currently has
+      no effect. It is accepted for backwards compatibility.
     type: bool
     default: false
     version_added: '1.32.0'
@@ -216,6 +219,10 @@ def get_hostgroup(module, array):
 
 def make_hostgroup(module, array):
     if module.params["rename"]:
+        if rename_exists(module, array):
+            # Source is gone and the rename target exists: the rename has
+            # already been done, so this is a no-op.
+            module.exit_json(changed=False)
         module.fail_json(
             msg="Hostgroup {0} does not exist - rename failed.".format(
                 module.params["name"]
@@ -501,14 +508,19 @@ def delete_hostgroup(module, array):
                 member_names=hghosts,
             )
             check_response(res, module, "Failed to remove hosts from hostgroup")
-    res = delete_with_context(
-        array,
-        "delete_host_groups",
-        CONTEXT_API_VERSION,
-        module,
-        names=[module.params["name"]],
-    )
-    check_response(res, module, f"Failed to delete hostgroup {module.params['name']}")
+    # The host group itself is always removed, so this is always a change
+    changed = True
+    if not module.check_mode:
+        res = delete_with_context(
+            array,
+            "delete_host_groups",
+            CONTEXT_API_VERSION,
+            module,
+            names=[module.params["name"]],
+        )
+        check_response(
+            res, module, f"Failed to delete hostgroup {module.params['name']}"
+        )
     module.exit_json(changed=changed)
 
 
@@ -554,7 +566,7 @@ def main():
             module.fail_json(msg="Host {0} not found".format(res.errors[0].context))
     if module.params["lun"] and state == "present":
         if not module.params["volume"]:
-            module.fail(msg="LUN ID must be specified with a volume name")
+            module.fail_json(msg="LUN ID must be specified with a volume name")
         if len(module.params["volume"]) > 1:
             module.fail_json(msg="LUN ID cannot be specified with multiple volumes.")
 

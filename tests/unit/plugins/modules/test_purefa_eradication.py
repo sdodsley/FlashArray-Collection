@@ -451,6 +451,61 @@ class TestEradicationDelayChange:
         mock_erad_config.assert_not_called()
 
 
+class TestEradicationDecreaseRefused:
+    """The array refuses to lower disabled_delay; its message must reach
+    the user intact rather than being replaced by a generic one."""
+
+    @patch("plugins.modules.purefa_eradication.EradicationConfig")
+    @patch("plugins.modules.purefa_eradication.Arrays")
+    @patch("plugins.modules.purefa_eradication.get_with_context")
+    @patch("plugins.modules.purefa_eradication.get_array")
+    @patch("plugins.modules.purefa_eradication.AnsibleModule")
+    def test_array_refusal_message_is_surfaced(
+        self,
+        mock_ansible_module,
+        mock_get_array,
+        mock_get_with_context,
+        mock_arrays,
+        mock_erad_config,
+    ):
+        import pytest
+        from plugins.module_utils.api_helpers import (
+            check_response as real_check_response,
+        )
+
+        mock_module = Mock()
+        mock_module.check_mode = False
+        mock_module.fail_json.side_effect = SystemExit(1)
+        mock_module.params = {
+            "timer": None,
+            "disabled_delay": 7,
+            "enabled_delay": None,
+            "context": "",
+        }
+        mock_ansible_module.return_value = mock_module
+        mock_array = Mock()
+        mock_array.get_rest_version.return_value = "2.30"
+        mock_get_array.return_value = mock_array
+        refusal = Mock()
+        refusal.message = (
+            "Cannot decrease the eradication timer when eradication is disabled"
+        )
+        mock_get_with_context.side_effect = [
+            _array_with_delays(14, 7),
+            Mock(status_code=400, errors=[refusal]),
+        ]
+
+        with patch(
+            "plugins.modules.purefa_eradication.check_response", real_check_response
+        ):
+            with pytest.raises(SystemExit):
+                main()
+
+        msg = mock_module.fail_json.call_args[1]["msg"]
+        assert "Cannot decrease the eradication timer" in msg
+        assert "Eradication Timers" in msg
+
+
 def _array_with_delays(disabled_days, enabled_days):
     """A REST 2.30 array response with the given current delays"""
     mock_eradication_config = Mock()

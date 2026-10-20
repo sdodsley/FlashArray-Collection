@@ -65,6 +65,8 @@ options:
     - This is the complete desired set of WWNs. The host is reconciled to match
       it, adding any that are missing and removing any that are not listed, so a
       single WWN can be removed by simply omitting it from the list.
+    - WWNs in the FlashArray OUI (C(52:4A:93)) are rejected by the array
+      with "Cannot specify a FlashArray WWN"; use the initiator's own WWN.
   iqn:
     type: list
     elements: str
@@ -660,7 +662,8 @@ def _update_chap_security(module, array, answer=False):
     chap = get_host(module, array).chap
     if module.params["host_user"]:
         if module.params["host_password"] == "clear":
-            if hasattr(chap, "host_user"):
+            # An absent attribute and an empty string both mean "not set"
+            if getattr(chap, "host_user", ""):
                 answer = True
                 if not module.check_mode:
                     res = get_with_context(
@@ -699,7 +702,8 @@ def _update_chap_security(module, array, answer=False):
                 )
     if module.params["target_user"]:
         if module.params["target_password"] == "clear":
-            if hasattr(chap, "target_user"):
+            # An absent attribute and an empty string both mean "not set"
+            if getattr(chap, "target_user", ""):
                 answer = True
                 if not module.check_mode:
                     res = get_with_context(
@@ -1384,6 +1388,11 @@ def main():
         ):
             module.fail_json(msg="Host name length exceeds maximum allowed")
         host = get_multi_hosts(module, array)
+        if state == "absent":
+            module.fail_json(
+                msg="'count' is only supported with state=present; "
+                "delete hosts individually by name"
+            )
         if not host and state == "present":
             make_multi_hosts(module, array)
     else:
@@ -1444,7 +1453,7 @@ def main():
                 if array_to_connect not in current_arrays:
                     module.fail_json(
                         msg="Array {0} is not a synchronously connected array.".format(
-                            module.params["preferred_array"][array_to_connect]
+                            array_to_connect
                         )
                     )
 

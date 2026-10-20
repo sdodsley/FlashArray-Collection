@@ -248,8 +248,8 @@ def main():
 
     state = module.params["state"]
     exists = bool(array.get_kmip(names=[module.params["name"]]).status_code == 200)
-    if module.params["certificate"] and len(module.params["certificate"]) > 3000:
-        module.fail_json(msg="Certificate exceeds 3000 characters")
+    if module.params["ca_certificate"] and len(module.params["ca_certificate"]) > 3000:
+        module.fail_json(msg="CA certificate exceeds 3000 characters")
 
     if not exists and state == "present":
         create_kmip(module, array)

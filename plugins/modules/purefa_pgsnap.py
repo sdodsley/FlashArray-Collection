@@ -533,7 +533,8 @@ def create_pgsnapshot(module, array):
         snap_data = list(res.items)[0]
     module.exit_json(
         changed=changed,
-        suffix=snap_data.suffix,
+        # In check mode nothing was created, so report the requested suffix
+        suffix=snap_data.suffix if snap_data is not None else module.params["suffix"],
     )
 
 
@@ -623,10 +624,17 @@ def restore_pgsnapvolume(module, array):
                         overwrite=module.params["overwrite"],
                     )
                 elif LooseVersion(CONTEXT_API_VERSION) <= LooseVersion(api_version):
-                    res = array.post_volumes(
+                    res = post_with_context(
+                        array,
+                        "post_volumes",
+                        CONTEXT_API_VERSION,
+                        module,
                         names=[module.params["target"]],
                         volume=VolumePost(source=Reference(name=source_volume)),
                         overwrite=module.params["overwrite"],
+                        with_default_protection=module.params[
+                            "with_default_protection"
+                        ],
                     )
                 else:
                     res = array.post_volumes(

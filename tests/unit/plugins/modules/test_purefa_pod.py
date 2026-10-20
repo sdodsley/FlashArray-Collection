@@ -2843,3 +2843,325 @@ class TestMain:
         with patch("plugins.modules.purefa_pod.delete_pod") as mock_delete:
             main()
             mock_delete.assert_called_once()
+
+    @patch("plugins.modules.purefa_pod.HAS_PURESTORAGE", True)
+    @patch("plugins.modules.purefa_pod.get_array")
+    @patch("plugins.modules.purefa_pod.get_pod")
+    @patch("plugins.modules.purefa_pod.get_destroyed_pod")
+    @patch("plugins.modules.purefa_pod.check_arrays")
+    @patch("plugins.modules.purefa_pod.AnsibleModule")
+    def test_main_skips_check_arrays_without_failover_or_stretch(
+        self,
+        mock_ansible,
+        mock_check_arrays,
+        mock_get_destroyed_pod,
+        mock_get_pod,
+        mock_get_array,
+    ):
+        """check_arrays is only needed when failover or stretch is requested"""
+        from plugins.modules.purefa_pod import main
+
+        mock_module = Mock()
+        mock_module.params = {
+            "name": "existing-pod",
+            "state": "present",
+            "stretch": None,
+            "target": None,
+            "failover": None,
+            "mediator": "purestorage",
+            "context": "",
+        }
+        mock_ansible.return_value = mock_module
+        mock_get_array.return_value = Mock()
+        mock_get_pod.return_value = True
+        mock_get_destroyed_pod.return_value = False
+
+        with patch("plugins.modules.purefa_pod.update_pod"):
+            main()
+        mock_check_arrays.assert_not_called()
+
+
+class TestQuotaClear:
+    """Clearing a pod quota with quota: "0" or "" """
+
+    @patch("plugins.modules.purefa_pod.check_response")
+    @patch("plugins.modules.purefa_pod.PodPatch")
+    @patch("plugins.modules.purefa_pod.patch_with_context")
+    @patch("plugins.modules.purefa_pod.get_with_context")
+    @patch("plugins.modules.purefa_pod.LooseVersion", side_effect=LooseVersion)
+    def test_update_pod_quota_zero_clears_limit(
+        self,
+        mock_lv,
+        mock_get_with_context,
+        mock_patch_with_context,
+        mock_pod_patch,
+        mock_check_response,
+    ):
+        """quota "0" on a pod with a quota sends quota_limit="" and reports changed"""
+        mock_module = Mock()
+        mock_module.check_mode = False
+        mock_module.params = {
+            "name": "test-pod",
+            "context": "",
+            "failover": None,
+            "mediator": "purestorage",
+            "promote": None,
+            "quiesce": None,
+            "undo": None,
+            "quota": "0",
+            "ignore_usage": False,
+            "default_protection_pg": None,
+        }
+        mock_array = Mock()
+        mock_array.get_rest_version.return_value = "2.38"
+        mock_config = Mock()
+        mock_config.failover_preferences = []
+        mock_config.mediator = "purestorage"
+        mock_config.quota_limit = 1073741824
+        mock_get_with_context.return_value = Mock(status_code=200, items=[mock_config])
+        mock_patch_with_context.return_value = Mock(status_code=200)
+
+        update_pod(mock_module, mock_array)
+
+        mock_pod_patch.assert_called_once_with(quota_limit="", ignore_usage=False)
+        mock_module.exit_json.assert_called_once_with(changed=True)
+
+    @patch("plugins.modules.purefa_pod.patch_with_context")
+    @patch("plugins.modules.purefa_pod.get_with_context")
+    @patch("plugins.modules.purefa_pod.LooseVersion", side_effect=LooseVersion)
+    def test_update_pod_quota_empty_string_already_clear(
+        self, mock_lv, mock_get_with_context, mock_patch_with_context
+    ):
+        """quota "" on a pod without a quota is a no-op"""
+        mock_module = Mock()
+        mock_module.check_mode = False
+        mock_module.params = {
+            "name": "test-pod",
+            "context": "",
+            "failover": None,
+            "mediator": "purestorage",
+            "promote": None,
+            "quiesce": None,
+            "undo": None,
+            "quota": "",
+            "ignore_usage": False,
+            "default_protection_pg": None,
+        }
+        mock_array = Mock()
+        mock_array.get_rest_version.return_value = "2.38"
+        mock_config = Mock()
+        mock_config.failover_preferences = []
+        mock_config.mediator = "purestorage"
+        mock_config.quota_limit = None
+        mock_get_with_context.return_value = Mock(status_code=200, items=[mock_config])
+
+        update_pod(mock_module, mock_array)
+
+        mock_patch_with_context.assert_not_called()
+        mock_module.exit_json.assert_called_once_with(changed=False)
+
+
+class TestDefaultProtectionClear:
+    """default_protection_pg: [] (or "") removes the default protection"""
+
+    def _module(self, value):
+        mock_module = Mock()
+        mock_module.check_mode = False
+        mock_module.params = {
+            "name": "test-pod",
+            "context": "",
+            "failover": None,
+            "mediator": "purestorage",
+            "promote": None,
+            "undo": None,
+            "quiesce": None,
+            "quota": None,
+            "default_protection_pg": value,
+            "retention_lock": True,
+        }
+        return mock_module
+
+    @staticmethod
+    def _get_side_effect(mock_dp):
+        mock_config = Mock()
+        mock_config.failover_preferences = []
+        mock_config.mediator = "purestorage"
+
+        def get_side_effect(*args, **kwargs):
+            if "get_pods" in args:
+                return Mock(status_code=200, items=[mock_config])
+            if "get_container_default_protections" in args:
+                return Mock(status_code=200, items=[mock_dp])
+            return Mock(status_code=200)
+
+        return get_side_effect
+
+    @patch("plugins.modules.purefa_pod.check_response")
+    @patch("plugins.modules.purefa_pod.ContainerDefaultProtection")
+    @patch("plugins.modules.purefa_pod.post_with_context")
+    @patch("plugins.modules.purefa_pod.patch_with_context")
+    @patch("plugins.modules.purefa_pod.get_with_context")
+    @patch("plugins.modules.purefa_pod.LooseVersion", side_effect=LooseVersion)
+    def test_empty_list_clears_default_protection(
+        self,
+        mock_lv,
+        mock_get_with_context,
+        mock_patch_with_context,
+        mock_post_with_context,
+        mock_cdp,
+        mock_check_response,
+    ):
+        """An empty list clears the current default protection"""
+        mock_module = self._module([])
+        mock_array = Mock()
+        mock_array.get_rest_version.return_value = "2.38"
+        mock_dp = Mock()
+        mock_dp_item = Mock()
+        mock_dp_item.name = "test-pod::old-pg"
+        mock_dp.default_protections = [mock_dp_item]
+        mock_get_with_context.side_effect = self._get_side_effect(mock_dp)
+        mock_patch_with_context.return_value = Mock(status_code=200)
+
+        update_pod(mock_module, mock_array)
+
+        mock_post_with_context.assert_not_called()
+        mock_patch_with_context.assert_called_once()
+        assert (
+            mock_patch_with_context.call_args[0][1]
+            == "patch_container_default_protections"
+        )
+        mock_cdp.assert_called_once_with(default_protections=[])
+        mock_module.exit_json.assert_called_once_with(changed=True)
+
+    @patch("plugins.modules.purefa_pod.patch_with_context")
+    @patch("plugins.modules.purefa_pod.get_with_context")
+    @patch("plugins.modules.purefa_pod.LooseVersion", side_effect=LooseVersion)
+    def test_string_list_literal_already_clear(
+        self, mock_lv, mock_get_with_context, mock_patch_with_context
+    ):
+        """The string "[]" (how Ansible passes []) is a no-op when nothing is set"""
+        mock_module = self._module("[]")
+        mock_array = Mock()
+        mock_array.get_rest_version.return_value = "2.38"
+        mock_dp = Mock()
+        mock_dp.default_protections = []
+        mock_get_with_context.side_effect = self._get_side_effect(mock_dp)
+
+        update_pod(mock_module, mock_array)
+
+        mock_patch_with_context.assert_not_called()
+        mock_module.exit_json.assert_called_once_with(changed=False)
+
+    @patch("plugins.modules.purefa_pod.check_response")
+    @patch("plugins.modules.purefa_pod.patch_with_context")
+    @patch("plugins.modules.purefa_pod.get_with_context")
+    @patch("plugins.modules.purefa_pod.LooseVersion", side_effect=LooseVersion)
+    def test_single_element_list_is_a_name(
+        self,
+        mock_lv,
+        mock_get_with_context,
+        mock_patch_with_context,
+        mock_check_response,
+    ):
+        """A one-element list names the PG; matching current state is a no-op"""
+        mock_module = self._module(["test-pod::pg"])
+        mock_array = Mock()
+        mock_array.get_rest_version.return_value = "2.38"
+        mock_dp = Mock()
+        mock_dp_item = Mock()
+        mock_dp_item.name = "test-pod::pg"
+        mock_dp.default_protections = [mock_dp_item]
+        mock_get_with_context.side_effect = self._get_side_effect(mock_dp)
+
+        update_pod(mock_module, mock_array)
+
+        mock_patch_with_context.assert_not_called()
+        mock_module.exit_json.assert_called_once_with(changed=False)
+
+
+class TestEradicatePodNoEradicate:
+    """state: absent on a destroyed pod without eradicate must not crash"""
+
+    @patch("plugins.modules.purefa_pod.delete_with_context")
+    def test_eradicate_pod_without_eradicate_flag(self, mock_delete_with_context):
+        mock_module = Mock()
+        mock_module.check_mode = False
+        mock_module.params = {
+            "name": "test-pod",
+            "context": "",
+            "eradicate": False,
+            "delete_contents": False,
+        }
+
+        eradicate_pod(mock_module, Mock())
+
+        mock_delete_with_context.assert_not_called()
+        mock_module.exit_json.assert_called_once_with(changed=False)
+
+
+class TestFailoverIdempotency:
+    """failover_preferences are Reference objects on the array"""
+
+    @patch("plugins.modules.purefa_pod.patch_with_context")
+    @patch("plugins.modules.purefa_pod.get_with_context")
+    @patch("plugins.modules.purefa_pod.LooseVersion", side_effect=LooseVersion)
+    def test_failover_matches_reference_names(
+        self, mock_lv, mock_get_with_context, mock_patch_with_context
+    ):
+        mock_module = Mock()
+        mock_module.check_mode = False
+        mock_module.params = {
+            "name": "test-pod",
+            "context": "",
+            "failover": ["array1"],
+            "mediator": "purestorage",
+            "promote": None,
+            "quiesce": None,
+            "undo": None,
+            "quota": None,
+            "default_protection_pg": None,
+        }
+        mock_array = Mock()
+        mock_array.get_rest_version.return_value = "2.38"
+        ref = Mock()
+        ref.name = "array1"
+        mock_config = Mock()
+        mock_config.failover_preferences = [ref]
+        mock_config.mediator = "purestorage"
+        mock_get_with_context.return_value = Mock(status_code=200, items=[mock_config])
+
+        update_pod(mock_module, mock_array)
+
+        mock_patch_with_context.assert_not_called()
+        mock_module.exit_json.assert_called_once_with(changed=False)
+
+    @patch("plugins.modules.purefa_pod.patch_with_context")
+    @patch("plugins.modules.purefa_pod.get_with_context")
+    @patch("plugins.modules.purefa_pod.LooseVersion", side_effect=LooseVersion)
+    def test_failover_auto_with_no_preference_is_noop(
+        self, mock_lv, mock_get_with_context, mock_patch_with_context
+    ):
+        mock_module = Mock()
+        mock_module.check_mode = False
+        mock_module.params = {
+            "name": "test-pod",
+            "context": "",
+            "failover": ["auto"],
+            "mediator": "purestorage",
+            "promote": None,
+            "quiesce": None,
+            "undo": None,
+            "quota": None,
+            "default_protection_pg": None,
+        }
+        mock_array = Mock()
+        mock_array.get_rest_version.return_value = "2.38"
+        mock_config = Mock()
+        mock_config.failover_preferences = []
+        mock_config.mediator = "purestorage"
+        mock_get_with_context.return_value = Mock(status_code=200, items=[mock_config])
+
+        update_pod(mock_module, mock_array)
+
+        mock_patch_with_context.assert_not_called()
+        mock_module.exit_json.assert_called_once_with(changed=False)

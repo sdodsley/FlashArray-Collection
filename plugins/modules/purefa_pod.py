@@ -102,6 +102,7 @@ options:
   quota:
     description:
       - Logical quota limit of the pod in K, M, G, T or P units, or bytes.
+      - Set to C(0) or C("") to remove an existing quota limit.
     type: str
     version_added: '1.18.0'
   ignore_usage:
@@ -150,8 +151,10 @@ options:
       - Only applicable for existing pods
       - Name must include the pod name
       - Will create the PG in the pod if it doesn't already exist
-      - To remove an existing default protection group provide I([])
-      type: str
+      - To remove an existing default protection group provide an empty
+        list C([]) or an empty string C("").
+      - Accepts either a string or a single-element list.
+      type: raw
       version_added: '1.37.0'
   retention_lock:
     description:
@@ -278,6 +281,41 @@ THROTTLE_VERSION = "2.31"
 MEMBERS_VERSION = "2.36"
 REALM_VERSION = "2.36"
 CONTEXT_VERSION = "2.38"
+
+
+def quota_request(module):
+    """Return (clear, bytes) for the quota parameter.
+
+    A quota of "0" or "" means remove the limit, which the REST API
+    expresses as an empty string in the quota_limit field.
+    """
+    quota = module.params["quota"]
+    if quota is None:
+        return False, None
+    if str(quota).strip() in ("", "0"):
+        return True, None
+    return False, human_to_bytes(quota)
+
+
+def default_protection_request(module):
+    """Return (clear, pgname) for the default_protection_pg parameter.
+
+    The option accepts a protection group name, or an empty list / empty
+    string to request removal of the current default protection.
+    """
+    value = module.params["default_protection_pg"]
+    if value is None:
+        return False, None
+    if isinstance(value, (list, tuple)):
+        if not value:
+            return True, None
+        if len(value) > 1:
+            module.fail_json(msg="Only one default protection group may be specified")
+        value = value[0]
+    value = str(value).strip()
+    if value in ("", "[]"):
+        return True, None
+    return False, value
 
 
 def get_pod(module, array):
@@ -443,16 +481,15 @@ def create_pod(module, array):
                     module,
                     f"Failed to stretch pod {module.params['name']} to array {module.params['stretch']}",
                 )
-        if module.params["quota"] and LooseVersion(POD_QUOTA_VERSION) <= LooseVersion(
-            api_version
-        ):
+        _clear_quota, quota = quota_request(module)
+        if quota and LooseVersion(POD_QUOTA_VERSION) <= LooseVersion(api_version):
             res = patch_with_context(
                 array,
                 "patch_pods",
                 CONTEXT_VERSION,
                 module,
                 names=[module.params["name"]],
-                pod=PodPatch(quota_limit=human_to_bytes(module.params["quota"])),
+                pod=PodPatch(quota_limit=quota),
             )
             check_response(
                 res, module, f"Failed to apply quota to pod {module.params['name']}"
@@ -516,52 +553,49 @@ def create_pod(module, array):
                     module,
                     f"Eradicating safemode default pgroup {module.params['name']} failed",
                 )
+            clear_dp, new_pg = default_protection_request(module)
             if (
                 safemode_pg
                 and not module.params["with_default_protection"]
-                and module.params["default_protection_pg"]
+                and (clear_dp or new_pg)
             ):
-                if module.params["default_protection_pg"] == "[]":
+                if clear_dp:
                     module.fail_json(
                         msg="use with_default_protection: false to set no default protection"
                     )
-                if pgname != module.params["default_protection_pg"]:
-                    res = get_with_context(
-                        array,
-                        "get_protection_groups",
-                        CONTEXT_VERSION,
-                        module,
-                        names=[module.params["default_protection_pg"]],
-                    )
+                res = get_with_context(
+                    array,
+                    "get_protection_groups",
+                    CONTEXT_VERSION,
+                    module,
+                    names=[new_pg],
+                )
                 if res.status_code != 200:
                     pg_res = post_with_context(
                         array,
                         "post_protection_groups",
                         CONTEXT_VERSION,
                         module,
-                        names=[module.params["default_protection_pg"]],
+                        names=[new_pg],
                     )
                     check_response(
                         pg_res,
                         module,
                         f"Failed to create default protection group {module.params['name']}",
                     )
-                if (
-                    module.params["retention_lock"]
-                    and module.params["default_protection_pg"] != []
-                ):
+                if module.params["retention_lock"]:
                     res = patch_with_context(
                         array,
                         "patch_protection_groups",
                         CONTEXT_VERSION,
                         module,
-                        names=[module.params["default_protection_pg"]],
+                        names=[new_pg],
                         protection_group=ProtectionGroup(retention_lock="ratcheted"),
                     )
                     check_response(
                         res,
                         module,
-                        f"Failed to set retention lock for protection group {module.params['default_protection_pg']}",
+                        f"Failed to set retention lock for protection group {new_pg}",
                     )
                 patch_with_context(
                     array,
@@ -583,7 +617,7 @@ def create_pod(module, array):
                         ContainerDefaultProtection(
                             default_protections=[
                                 DefaultProtectionReference(
-                                    name=module.params["default_protection_pg"],
+                                    name=new_pg,
                                     type="protection_group",
                                 )
                             ]
@@ -638,27 +672,32 @@ def update_pod(module, array):
     )
     current_config = list(res.items)[0]
     if module.params["failover"]:
-        current_failover = current_config.failover_preferences
-        if current_failover == [] or sorted(module.params["failover"]) != sorted(
-            current_failover
-        ):
+        # failover_preferences is a list of Reference objects; compare names
+        current_failover = [
+            getattr(fo_array, "name", fo_array)
+            for fo_array in (current_config.failover_preferences or [])
+        ]
+        if module.params["failover"] == ["auto"]:
+            desired_failover = []
+        else:
+            desired_failover = module.params["failover"]
+        if sorted(desired_failover) != sorted(current_failover):
             changed = True
             if not module.check_mode:
                 if module.params["failover"] == ["auto"]:
-                    if current_failover != []:
-                        res = patch_with_context(
-                            array,
-                            "patch_pods",
-                            CONTEXT_VERSION,
-                            module,
-                            names=[module.params["name"]],
-                            pod=PodPatch(failover_preferences=[]),
-                        )
-                        check_response(
-                            res,
-                            module,
-                            f"Failed to clear failover preference for pod {module.params['name']}",
-                        )
+                    res = patch_with_context(
+                        array,
+                        "patch_pods",
+                        CONTEXT_VERSION,
+                        module,
+                        names=[module.params["name"]],
+                        pod=PodPatch(failover_preferences=[]),
+                    )
+                    check_response(
+                        res,
+                        module,
+                        f"Failed to clear failover preference for pod {module.params['name']}",
+                    )
                 else:
                     failovers = []
                     for fo_array in module.params["failover"]:
@@ -825,11 +864,15 @@ def update_pod(module, array):
                     check_response(
                         res, module, f"Failed to demote pod {module.params['name']}"
                     )
-    if module.params["quota"] and LooseVersion(POD_QUOTA_VERSION) <= LooseVersion(
+    clear_quota, quota = quota_request(module)
+    if (clear_quota or quota) and LooseVersion(POD_QUOTA_VERSION) <= LooseVersion(
         api_version
     ):
-        quota = human_to_bytes(module.params["quota"])
-        if current_config.quota_limit != quota:
+        # An unset quota is reported as None (or 0); the API clears a quota
+        # with an empty string in quota_limit.
+        current_quota = getattr(current_config, "quota_limit", None) or None
+        desired_quota = None if clear_quota else quota
+        if current_quota != desired_quota:
             changed = True
             if not module.check_mode:
                 res = patch_with_context(
@@ -839,7 +882,7 @@ def update_pod(module, array):
                     module,
                     names=[module.params["name"]],
                     pod=PodPatch(
-                        quota_limit=quota,
+                        quota_limit="" if clear_quota else quota,
                         ignore_usage=module.params["ignore_usage"],
                     ),
                 )
@@ -848,9 +891,10 @@ def update_pod(module, array):
                     module,
                     f"Failed to update quota on pod {module.params['name']}",
                 )
-    if module.params["default_protection_pg"] and LooseVersion(
-        DEFAULT_API_VERSION
-    ) <= LooseVersion(api_version):
+    clear_dp, new_pg = default_protection_request(module)
+    if (clear_dp or new_pg) and LooseVersion(DEFAULT_API_VERSION) <= LooseVersion(
+        api_version
+    ):
         res = get_with_context(
             array,
             "get_container_default_protections",
@@ -862,8 +906,27 @@ def update_pod(module, array):
         if safemode_pg:
             pgname = safemode_pg[0].name
         else:
-            pgname = []
-        if pgname != module.params["default_protection_pg"]:
+            pgname = None
+        if clear_dp:
+            if safemode_pg:
+                changed = True
+                if not module.check_mode:
+                    res = patch_with_context(
+                        array,
+                        "patch_container_default_protections",
+                        CONTEXT_VERSION,
+                        module,
+                        names=[module.params["name"]],
+                        container_default_protection=(
+                            ContainerDefaultProtection(default_protections=[])
+                        ),
+                    )
+                    check_response(
+                        res,
+                        module,
+                        f"Failed to remove default protection for pod {module.params['name']}",
+                    )
+        elif pgname != new_pg:
             changed = True
             if not module.check_mode:
                 res = get_with_context(
@@ -871,7 +934,7 @@ def update_pod(module, array):
                     "get_protection_groups",
                     CONTEXT_VERSION,
                     module,
-                    names=[module.params["default_protection_pg"]],
+                    names=[new_pg],
                 )
                 if res.status_code != 200:
                     pg_res = post_with_context(
@@ -879,29 +942,26 @@ def update_pod(module, array):
                         "post_protection_groups",
                         CONTEXT_VERSION,
                         module,
-                        names=[module.params["default_protection_pg"]],
+                        names=[new_pg],
                     )
                     check_response(
                         pg_res,
                         module,
                         f"Failed to create default protection group {module.params['name']}",
                     )
-                if (
-                    module.params["retention_lock"]
-                    and module.params["default_protection_pg"] != []
-                ):
+                if module.params["retention_lock"]:
                     res = patch_with_context(
                         array,
                         "patch_protection_groups",
                         CONTEXT_VERSION,
                         module,
-                        names=[module.params["default_protection_pg"]],
+                        names=[new_pg],
                         protection_group=ProtectionGroup(retention_lock="ratcheted"),
                     )
                     check_response(
                         res,
                         module,
-                        f"Failed to set retention lock for protection group {module.params['default_protection_pg']}",
+                        f"Failed to set retention lock for protection group {new_pg}",
                     )
                 if safemode_pg:
                     patch_with_context(
@@ -914,29 +974,28 @@ def update_pod(module, array):
                             ContainerDefaultProtection(default_protections=[])
                         ),
                     )
-        if not module.check_mode:
-            res = patch_with_context(
-                array,
-                "patch_container_default_protections",
-                CONTEXT_VERSION,
-                module,
-                names=[module.params["name"]],
-                container_default_protection=(
-                    ContainerDefaultProtection(
-                        default_protections=[
-                            DefaultProtectionReference(
-                                name=module.params["default_protection_pg"],
-                                type="protection_group",
-                            )
-                        ]
-                    )
-                ),
-            )
-            check_response(
-                res,
-                module,
-                f"Failed to update default protection for pod {module.params['name']}",
-            )
+                res = patch_with_context(
+                    array,
+                    "patch_container_default_protections",
+                    CONTEXT_VERSION,
+                    module,
+                    names=[module.params["name"]],
+                    container_default_protection=(
+                        ContainerDefaultProtection(
+                            default_protections=[
+                                DefaultProtectionReference(
+                                    name=new_pg,
+                                    type="protection_group",
+                                )
+                            ]
+                        )
+                    ),
+                )
+                check_response(
+                    res,
+                    module,
+                    f"Failed to update default protection for pod {module.params['name']}",
+                )
     module.exit_json(changed=changed)
 
 
@@ -1036,6 +1095,7 @@ def delete_pod(module, array):
 
 def eradicate_pod(module, array):
     """Eradicate Deleted Pod"""
+    changed = False
     if module.params["eradicate"]:
         changed = True
         if not module.check_mode:
@@ -1090,7 +1150,7 @@ def main():
             delete_contents=dict(type="bool", default=False),
             context=dict(type="str", default=""),
             with_default_protection=dict(type="bool", default=True),
-            default_protection_pg=dict(type="str"),
+            default_protection_pg=dict(type="raw"),
             retention_lock=dict(type="bool", default=True),
         )
     )
@@ -1128,7 +1188,7 @@ def main():
     destroyed = ""
     if not pod:
         destroyed = get_destroyed_pod(module, array)
-    if module.params["failover"] or module.params["failover"] != "auto":
+    if module.params["failover"] or module.params["stretch"]:
         check_arrays(module, array)
 
     if state == "present" and destroyed:

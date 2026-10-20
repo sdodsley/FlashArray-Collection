@@ -101,6 +101,9 @@ from ansible_collections.everpure.flasharray.plugins.module_utils.common import 
 from ansible_collections.everpure.flasharray.plugins.module_utils.api_helpers import (
     check_response,
 )
+from ansible_collections.everpure.flasharray.plugins.module_utils.version import (
+    LooseVersion,
+)
 from os import environ
 import platform
 
@@ -155,14 +158,17 @@ def get_session(module):
             system = purestorage.FlashArray(
                 array_name, username=username, password=password, user_agent=user_agent
             )
-        elif environ.get("PUREFA_URL"):
-            if environ.get("PUREFA_USERNAME") and environ.get("PUREFA_PASSWORD"):
-                url = environ.get("PUREFA_URL")
-                username = environ.get("PUREFA_USERNAME")
-                password = environ.get("PUREFA_PASSWORD")
-                system = purestorage.FlashArray(
-                    url, username=username, password=password, user_agent=user_agent
-                )
+        elif (
+            environ.get("PUREFA_URL")
+            and environ.get("PUREFA_USERNAME")
+            and environ.get("PUREFA_PASSWORD")
+        ):
+            url = environ.get("PUREFA_URL")
+            username = environ.get("PUREFA_USERNAME")
+            password = environ.get("PUREFA_PASSWORD")
+            system = purestorage.FlashArray(
+                url, username=username, password=password, user_agent=user_agent
+            )
         else:
             module.fail_json(
                 msg="You must set PUREFA_URL and PUREFA_USERNAME, PUREFA_PASSWORD "
@@ -203,34 +209,39 @@ def main():
     recreate = module.params["recreate"]
 
     result = array.get_api_token(admin=username)
-    api_version = array._list_available_rest_versions()
-    if state == "present" and result["api_token"] is None:
+    # A missing token reads back as None or "", never as a value
+    if state == "present" and not result.get("api_token"):
         result = array.create_api_token(admin=username)
         changed = True
     elif state == "present" and recreate:
-        result = array.delete_api_token(admin=username)
+        array.delete_api_token(admin=username)
         result = array.create_api_token(admin=username)
         changed = True
-    elif state == "absent" and result["api_token"]:
+    elif state == "absent" and result.get("api_token"):
         result = array.delete_api_token(admin=username)
         changed = True
 
-    api_token = result["api_token"]
+    api_token = result.get("api_token")
 
-    if (
-        TIMEOUT_API_VERSION in api_version
-        and module.params["timeout"]
-        and state == "present"
-    ):
+    if module.params["timeout"] and state == "present":
         module.params["api_token"] = api_token
         array6 = get_array(module)
-        ttl = convert_time_to_millisecs(module.params["timeout"])
-        if ttl != 0:
-            changed = True
-            array6.delete_admins_api_tokens(names=[username])
-            res = array6.post_admins_api_tokens(names=[username], timeout=ttl)
-            check_response(res, module, "Failed to set token lifetime")
-            api_token = list(res.items)[0].api_token.token
+        # The lifetime is a REST 2 feature, so compare against the REST 2
+        # version, not the REST 1 list the purestorage client reports.
+        if LooseVersion(TIMEOUT_API_VERSION) <= LooseVersion(array6.get_rest_version()):
+            ttl = convert_time_to_millisecs(module.params["timeout"])
+            if ttl != 0:
+                changed = True
+                array6.delete_admins_api_tokens(names=[username])
+                res = array6.post_admins_api_tokens(names=[username], timeout=ttl)
+                check_response(res, module, "Failed to set token lifetime")
+                api_token = list(res.items)[0].api_token.token
+        else:
+            module.warn(
+                "timeout ignored: token lifetimes need REST {0} or higher".format(
+                    TIMEOUT_API_VERSION
+                )
+            )
     module.exit_json(changed=changed, purefa_token=api_token)
 
 

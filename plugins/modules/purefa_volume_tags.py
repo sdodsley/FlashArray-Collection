@@ -47,8 +47,7 @@ options:
   kvp:
     description:
     - List of key value pairs to assign to the volume.
-    - Separate the key from the value using a colon (:). Only the first colon
-      splits the pair, so a value may itself contain colons (a URL, a time).
+    - Separate the key from the value using a colon (:) only.
     - All items in list will use I(namespace) and I(copyable) settings.
     - See examples for exact formatting requirements
     - With I(state=absent) and no I(tag), the keys of these pairs are the tags
@@ -163,10 +162,7 @@ def create_tag(module, array):
     """Create Volume Tag"""
     changed = True
     if not module.check_mode:
-        pairs = []
-        for tag in module.params["kvp"]:
-            # split on the first colon only: the value may contain colons
-            pairs.append(tuple(tag.split(":", 1)))
+        pairs = _parse_kvp(module)
         tags = [
             TagBatch(
                 copyable=module.params["copyable"],
@@ -191,16 +187,36 @@ def create_tag(module, array):
     module.exit_json(changed=changed)
 
 
+def _parse_kvp(module):
+    """Return the requested tags as a list of (key, value)
+
+    A pair is split on the first colon only, so a value may contain one.
+    """
+    pairs = []
+    for item in module.params["kvp"] or []:
+        if ":" not in item:
+            module.fail_json(msg="kvp entry {0} is not in key:value form".format(item))
+        key, value = item.split(":", 1)
+        pairs.append((key, value))
+    return pairs
+
+
 def update_tags(module, array, current_tags):
     """Update tags"""
     changed = False
-    current_pairs = []
-    new_pairs = []
+    current = {}
     for tag in current_tags:
-        current_pairs.append((tag.key, tag.value))
-    for new_tag in module.params["kvp"]:
-        new_pairs.append(tuple(new_tag.split(":", 1)))
-    add_pairs = list(set(new_pairs) - set(current_pairs))
+        current[(tag.key, tag.value)] = tag
+    # A pair is (re)written when it is missing or when only its copyable
+    # flag differs from the requested one.
+    add_pairs = []
+    for pair in _parse_kvp(module):
+        if pair in add_pairs:
+            continue
+        if pair not in current or bool(
+            getattr(current[pair], "copyable", module.params["copyable"])
+        ) != bool(module.params["copyable"]):
+            add_pairs.append(pair)
     if add_pairs:
         changed = True
         if not module.check_mode:

@@ -44,8 +44,8 @@ options:
   enabled:
     description:
     - Enable the schedule being configured.
+    - When not specified the current enabled state is left unchanged.
     type: bool
-    default: true
   replicate_at:
     description:
     - Provide a time in 12-hour AM/PM format, eg. 11AM
@@ -244,17 +244,20 @@ def get_pgroup(module, array):
     return None
 
 
-def _convert_to_minutes(hour):
+def _convert_to_millisecs(hour):
+    """Convert a 12-hour clock value (e.g. 3PM) to milliseconds from
+    midnight, which is the unit the REST 2 API uses for `at` and
+    blackout window values."""
     period = hour[-2:].upper()
     hour_value = int(hour[:-2])
 
     if period == "AM" and hour_value == 12:
         return 0
     if period == "AM":
-        return hour_value * 3600
+        return hour_value * 3600000
     if period == "PM" and hour_value == 12:
-        return 43200
-    return (hour_value + 12) * 3600
+        return 43200000
+    return (hour_value + 12) * 3600000
 
 
 def update_schedule(module, array, snap_time, repl_time):
@@ -331,7 +334,7 @@ def update_schedule(module, array, snap_time, repl_time):
             snap_at = None
         elif module.params.get("snap_at"):
             # New value provided
-            snap_at = _convert_to_minutes(module.params["snap_at"].upper())
+            snap_at = _convert_to_millisecs(module.params["snap_at"].upper())
         else:
             # No change - keep current
             snap_at = current_snap["snap_at"]
@@ -449,7 +452,7 @@ def update_schedule(module, array, snap_time, repl_time):
             replicate_at = None
         elif module.params.get("replicate_at"):
             # New value provided
-            replicate_at = _convert_to_minutes(module.params["replicate_at"].upper())
+            replicate_at = _convert_to_millisecs(module.params["replicate_at"].upper())
         else:
             # No change - keep current
             replicate_at = current_repl["replicate_at"]
@@ -471,12 +474,12 @@ def update_schedule(module, array, snap_time, repl_time):
         blackout_start = (
             current_repl["blackout_start"]
             if module.params.get("blackout_start") is None
-            else _convert_to_minutes(module.params["blackout_start"].upper())
+            else _convert_to_millisecs(module.params["blackout_start"].upper())
         )
         blackout_end = (
             current_repl["blackout_end"]
             if module.params.get("blackout_end") is None
-            else _convert_to_minutes(module.params["blackout_end"].upper())
+            else _convert_to_millisecs(module.params["blackout_end"].upper())
         )
 
         # Patch replicate_enabled separately
@@ -609,7 +612,7 @@ def delete_schedule(module, array):
                     protection_group=ProtectionGroup(
                         replication_schedule=ReplicationSchedule(
                             blackout=TimeWindow(start=0, end=0),
-                            frequency=14400,
+                            frequency=14400000,
                             enabled=False,
                         ),
                     ),
@@ -652,7 +655,7 @@ def delete_schedule(module, array):
                     names=[module.params["name"]],
                     protection_group=ProtectionGroup(
                         snapshot_schedule=SnapshotSchedule(
-                            frequency=300, enabled=False
+                            frequency=300000, enabled=False
                         ),
                     ),
                 )
@@ -705,7 +708,7 @@ def main():
             target_all_for=dict(type="int"),
             target_per_day=dict(type="int"),
             target_days=dict(type="int"),
-            enabled=dict(type="bool", default=True),
+            enabled=dict(type="bool"),
             context=dict(type="str", default=""),
         )
     )

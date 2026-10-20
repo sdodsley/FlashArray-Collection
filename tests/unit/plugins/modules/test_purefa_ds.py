@@ -787,6 +787,40 @@ class TestMain:
 
     @patch("plugins.modules.purefa_ds.AnsibleModule")
     @patch("plugins.modules.purefa_ds.get_array")
+    @patch("plugins.modules.purefa_ds.delete_ds")
+    def test_main_absent_unconfigured_uris_variants(
+        self, mock_delete_ds, mock_get_array, mock_ansible_module
+    ):
+        """None and [""] are also what an unconfigured service reads back as"""
+        import plugins.modules.purefa_ds as ds_module
+
+        original_has_purestorage = ds_module.HAS_PURESTORAGE
+        ds_module.HAS_PURESTORAGE = True
+        try:
+            for uris in (None, [""]):
+                mock_module = Mock()
+                mock_module.params = {
+                    "dstype": "management",
+                    "state": "absent",
+                    "context": "",
+                }
+                mock_ansible_module.return_value = mock_module
+                mock_array = Mock()
+                mock_get_array.return_value = mock_array
+                mock_ds = Mock()
+                mock_ds.name = "management"
+                mock_ds.uris = uris
+                mock_array.get_directory_services.return_value = Mock(items=[mock_ds])
+
+                ds_module.main()
+
+                mock_module.exit_json.assert_called_once_with(changed=False)
+            mock_delete_ds.assert_not_called()
+        finally:
+            ds_module.HAS_PURESTORAGE = original_has_purestorage
+
+    @patch("plugins.modules.purefa_ds.AnsibleModule")
+    @patch("plugins.modules.purefa_ds.get_array")
     def test_main_missing_purestorage(self, mock_get_array, mock_ansible_module):
         """Test main function fails when pypureclient is missing"""
         import pytest

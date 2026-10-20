@@ -42,6 +42,8 @@ from plugins.modules.purefa_info import (
     _is_cbs,
     _pgroup_snaps_dict,
     _pgroup_snapshots_by_name,
+    _directory_exports_by_name,
+    _saml2sso_dict,
     generate_default_dict,
     generate_perf_dict,
     generate_admin_dict,
@@ -3419,3 +3421,251 @@ class TestGeneratePoliciesDictManagementAccess:
 
         assert result["realm_admins"]["rules"] == []
         assert "aggregation_strategy" not in result["realm_admins"]
+
+
+class TestDirectoryExports:
+    """Exports are read once, unfiltered, and grouped by directory
+
+    Seen on hardware: get_directory_exports(directory_names=[...]) returned
+    nothing for every directory on an array serving live NFS exports.
+    """
+
+    @staticmethod
+    def _export(name, directory, server=None):
+        export = Mock()
+        export.export_name = name
+        export.enabled = True
+        export.directory = Mock()
+        export.directory.name = directory
+        export.policy = Mock()
+        export.policy.name = "nfs-policy"
+        export.policy.resource_type = "policies/nfs"
+        export.server = Mock()
+        export.server.name = server
+        return export
+
+    def test_exports_grouped_by_directory(self):
+        mock_array = Mock()
+        mock_array.get_directory_exports.return_value = Mock(
+            status_code=200,
+            items=[
+                self._export("share1", "fs1:dir1", "server1"),
+                self._export("share2", "fs1:dir1", "server2"),
+                self._export("other", "fs1:dir2"),
+            ],
+        )
+
+        result = _directory_exports_by_name(mock_array)
+
+        mock_array.get_directory_exports.assert_called_once_with()
+        assert [e["export_name"] for e in result["fs1:dir1"]] == ["share1", "share2"]
+        assert result["fs1:dir1"][0] == {
+            "enabled": True,
+            "export_name": "share1",
+            "policy": {"name": "nfs-policy", "type": "policies/nfs"},
+            "server": "server1",
+        }
+        assert result["fs1:dir2"][0]["server"] is None
+
+    def test_error_response_yields_no_exports(self):
+        mock_array = Mock()
+        mock_array.get_directory_exports.return_value = Mock(status_code=400)
+
+        assert _directory_exports_by_name(mock_array) == {}
+
+    @patch("plugins.modules.purefa_info.LooseVersion", side_effect=LooseVersion)
+    def test_filesystems_dict_reports_exports(self, mock_lv):
+        mock_array = Mock()
+        mock_array.get_rest_version.return_value = "2.54"
+        mock_fs = Mock()
+        mock_fs.name = "fs1"
+        mock_fs.destroyed = False
+        mock_array.get_file_systems.return_value = Mock(items=[mock_fs])
+        mock_dir = Mock()
+        mock_dir.name = "fs1:dir1"
+        mock_dir.directory_name = "dir1"
+        mock_dir.path = "/dir1"
+        mock_dir.destroyed = False
+        mock_dir.limited_by = None
+        mock_array.get_directories.return_value = Mock(items=[mock_dir])
+        mock_array.get_directories_policies.return_value = Mock(items=[])
+        mock_array.get_directory_exports.return_value = Mock(
+            status_code=200, items=[self._export("share1", "fs1:dir1", "server1")]
+        )
+
+        result = generate_filesystems_dict(mock_array, performance=False)
+
+        exports = result["fs1"]["directories"]["dir1"]["exports"]
+        assert [e["export_name"] for e in exports] == ["share1"]
+        # No per-directory filtered read any more
+        mock_array.get_directory_exports.assert_called_once_with()
+
+
+class TestSaml2SsoDict:
+    """config.saml2sso reports every IdP keyed by name, not only the first"""
+
+    @staticmethod
+    def _idp(name, enabled, url):
+        idp = Mock()
+        idp.name = name
+        idp.enabled = enabled
+        idp.array_url = "https://array.example.com"
+        idp.idp = Mock()
+        idp.idp.url = url
+        idp.idp.encrypt_assertion_enabled = False
+        idp.idp.sign_request_enabled = True
+        idp.idp.metadata_url = url + "/metadata"
+        idp.sp = Mock()
+        idp.sp.decryption_credential = None
+        idp.sp.signing_credential = Mock()
+        idp.sp.signing_credential.name = "sign-cred"
+        return idp
+
+    def test_all_idps_reported(self):
+        result = _saml2sso_dict(
+            [
+                self._idp("okta", True, "https://okta.example.com"),
+                self._idp("azure", False, "https://login.example.com"),
+            ]
+        )
+
+        assert sorted(result) == ["azure", "okta"]
+        assert result["okta"]["enabled"] is True
+        assert result["okta"]["idp"]["url"] == "https://okta.example.com"
+        assert result["okta"]["idp"]["sign_enabled"] is True
+        assert result["okta"]["sp"] == {"decrypt_cred": None, "sign_cred": "sign-cred"}
+        assert result["azure"]["enabled"] is False
+
+    def test_no_idps(self):
+        assert _saml2sso_dict([]) == {}
+
+
+class TestPolicyFieldsAdded:
+    """Password and smb policies report the fields they used to omit"""
+
+    @staticmethod
+    def _base_array(mock_policy):
+        mock_array = Mock()
+        mock_array.get_rest_version.return_value = "2.54"
+        mock_array.get_policies.return_value = Mock(items=[mock_policy])
+        mock_array.get_directories_policies.return_value = Mock(items=[])
+        return mock_array
+
+    def test_password_policy_ages_and_attempts(self):
+        mock_policy = Mock()
+        mock_policy.name = "pwd"
+        mock_policy.policy_type = "password"
+        mock_policy.enabled = True
+        mock_array = self._base_array(mock_policy)
+        pwd = Mock()
+        pwd.enabled = True
+        pwd.enforce_dictionary_check = True
+        pwd.enforce_username_check = False
+        pwd.lockout_duration = 60000
+        pwd.password_history = 5
+        pwd.min_character_groups = 3
+        pwd.min_characters_per_group = 1
+        pwd.min_password_length = 12
+        pwd.max_login_attempts = 5
+        pwd.min_password_age = 86400000
+        pwd.max_password_age = 7776000000
+        mock_array.get_policies_password.return_value = Mock(items=[pwd])
+
+        result = generate_policies_dict(
+            mock_array,
+            quota_available=False,
+            autodir_available=False,
+            nfs_user_mapping=False,
+        )
+
+        assert result["pwd"]["max_login_attempts"] == 5
+        assert result["pwd"]["min_password_age"] == 86400000
+        assert result["pwd"]["max_password_age"] == 7776000000
+        assert result["pwd"]["min_password_length"] == 12
+
+    def test_password_policy_fields_default_when_absent(self):
+        mock_policy = Mock()
+        mock_policy.name = "pwd"
+        mock_policy.policy_type = "password"
+        mock_policy.enabled = True
+        mock_array = self._base_array(mock_policy)
+        pwd = Mock(
+            spec=[
+                "enabled",
+                "enforce_dictionary_check",
+                "enforce_username_check",
+                "min_character_groups",
+                "min_characters_per_group",
+                "min_password_length",
+            ]
+        )
+        pwd.enabled = True
+        pwd.enforce_dictionary_check = True
+        pwd.enforce_username_check = False
+        pwd.min_character_groups = 3
+        pwd.min_characters_per_group = 1
+        pwd.min_password_length = 12
+        mock_array.get_policies_password.return_value = Mock(items=[pwd])
+
+        result = generate_policies_dict(
+            mock_array,
+            quota_available=False,
+            autodir_available=False,
+            nfs_user_mapping=False,
+        )
+
+        assert result["pwd"]["max_login_attempts"] is None
+        assert result["pwd"]["min_password_age"] is None
+        assert result["pwd"]["max_password_age"] is None
+
+    def test_smb_policy_enumeration_and_availability(self):
+        mock_policy = Mock()
+        mock_policy.name = "smb1"
+        mock_policy.policy_type = "smb"
+        mock_policy.enabled = True
+        mock_array = self._base_array(mock_policy)
+        smb = Mock()
+        smb.access_based_enumeration_enabled = True
+        smb.continuous_availability_enabled = False
+        mock_array.get_policies_smb.return_value = Mock(status_code=200, items=[smb])
+        rule = Mock()
+        rule.client = "*"
+        rule.smb_encryption_required = True
+        rule.anonymous_access_allowed = False
+        mock_array.get_policies_smb_client_rules.return_value = Mock(items=[rule])
+
+        result = generate_policies_dict(
+            mock_array,
+            quota_available=False,
+            autodir_available=False,
+            nfs_user_mapping=False,
+        )
+
+        assert result["smb1"]["access_based_enumeration_enabled"] is True
+        assert result["smb1"]["continuous_availability_enabled"] is False
+        assert result["smb1"]["rules"] == [
+            {
+                "client": "*",
+                "smb_encryption_required": True,
+                "anonymous_access_allowed": False,
+            }
+        ]
+
+    def test_smb_policy_error_response_keeps_rules(self):
+        mock_policy = Mock()
+        mock_policy.name = "smb1"
+        mock_policy.policy_type = "smb"
+        mock_policy.enabled = True
+        mock_array = self._base_array(mock_policy)
+        mock_array.get_policies_smb.return_value = Mock(status_code=400)
+        mock_array.get_policies_smb_client_rules.return_value = Mock(items=[])
+
+        result = generate_policies_dict(
+            mock_array,
+            quota_available=False,
+            autodir_available=False,
+            nfs_user_mapping=False,
+        )
+
+        assert "access_based_enumeration_enabled" not in result["smb1"]
+        assert result["smb1"]["rules"] == []

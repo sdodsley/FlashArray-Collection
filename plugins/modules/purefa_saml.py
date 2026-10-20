@@ -163,6 +163,20 @@ def test_saml(module, array):
     module.exit_json(changed=False, test_response=test_response)
 
 
+def _service_provider(decryption_credential, signing_credential):
+    """Build the SP object, naming only the credentials that were given
+
+    A ReferenceNoId(name=None) is rejected by the array, so an unset
+    credential is left out rather than sent as a null reference.
+    """
+    sp_fields = {}
+    if decryption_credential:
+        sp_fields["decryption_credential"] = ReferenceNoId(name=decryption_credential)
+    if signing_credential:
+        sp_fields["signing_credential"] = ReferenceNoId(name=signing_credential)
+    return Saml2SsoSp(**sp_fields)
+
+
 def delete_saml(module, array):
     """Delete SSO SAML2 IdP"""
     changed = True
@@ -239,10 +253,7 @@ def update_saml(module, array):
     if old_idp != new_idp:
         changed = True
         if not module.check_mode:
-            sp = Saml2SsoSp(
-                decryption_credential=ReferenceNoId(name=new_idp["sp_decrypt_cred"]),
-                signing_credential=ReferenceNoId(name=new_idp["sp_sign_cred"]),
-            )
+            sp = _service_provider(new_idp["sp_decrypt_cred"], new_idp["sp_sign_cred"])
             idp = Saml2SsoIdp(
                 url=new_idp["id_url"],
                 metadata_url=new_idp["id_metadata"],
@@ -269,11 +280,8 @@ def create_saml(module, array):
     """Create SAML2 IdP"""
     changed = True
     if not module.check_mode:
-        sp = Saml2SsoSp(
-            decryption_credential=ReferenceNoId(
-                name=module.params["decryption_credential"]
-            ),
-            signing_credential=ReferenceNoId(name=module.params["signing_credential"]),
+        sp = _service_provider(
+            module.params["decryption_credential"], module.params["signing_credential"]
         )
         idp = Saml2SsoIdp(
             url=module.params["url"],

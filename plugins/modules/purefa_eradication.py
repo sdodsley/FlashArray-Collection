@@ -39,6 +39,10 @@ options:
       eradication is disabled)
     - Allowed values are integers from 1 to 30.
     - If not specified the current value is left unchanged.
+    - This value can only ever be increased. The array refuses to lower it
+      ("Cannot decrease the eradication timer when eradication is disabled")
+      and the module fails with that message; lowering it is not possible
+      through the API.
     type: int
     version_added: "1.22.0"
   enabled_delay:
