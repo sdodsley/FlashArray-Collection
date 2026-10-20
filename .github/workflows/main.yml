@@ -14,39 +14,40 @@ jobs:
     name: Build flasharray on Ansible ${{ matrix.ansible }} (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
+        # ansible-core versions worth testing in October 2026: 2.16 is the
+        # default core of AAP 2.5/2.6/2.7 and the lowest requires_ansible
+        # allows, 2.18 and 2.20 are AAP execution-environment streams, 2.21 is
+        # the current upstream release and devel is the next one.  2.17 and
+        # 2.19 are end of life upstream and not shipped by AAP.
         ansible:
           - stable-2.16
-          - stable-2.17
           - stable-2.18
-          - stable-2.19
           - stable-2.20
+          - stable-2.21
           - devel
         python-version:
           - "3.12"
           - "3.13"
           - "3.14"
+        # Control-node Python per ansible-core: 2.16 supports 3.10-3.12,
+        # 2.18 3.11-3.13, 2.20 and 2.21 3.12-3.14, devel needs 3.13+.
         exclude:
-          - python-version: "3.14"
+          - python-version: "3.13"
             ansible: stable-2.16
           - python-version: "3.14"
-            ansible: stable-2.17
+            ansible: stable-2.16
           - python-version: "3.14"
             ansible: stable-2.18
-          - python-version: "3.14"
-            ansible: stable-2.19
-          - python-version: "3.13"
-            ansible: stable-2.16
-          - python-version: "3.13"
-            ansible: stable-2.17
           - python-version: "3.12"
             ansible: devel
     steps:
     - name: Check out code
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4
 
     - name: Set up Python ${{ matrix.python-version }}
-      uses: actions/setup-python@v3
+      uses: actions/setup-python@v5
       with:
         python-version: ${{ matrix.python-version }}
 
@@ -67,10 +68,12 @@ jobs:
     name: Unit Tests (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         python-version:
           - "3.12"
           - "3.13"
+          - "3.14"
     steps:
     - name: Check out code
       uses: actions/checkout@v4
