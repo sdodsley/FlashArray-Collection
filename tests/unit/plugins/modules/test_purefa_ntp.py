@@ -81,7 +81,7 @@ class TestMain:
             "ntp_key": None,
         }
         mock_ansible_module.return_value = mock_module
-        mock_array, _ = _physical_array([])
+        mock_array, _unused = _physical_array([])
         mock_get_array.return_value = mock_array
 
         main()
@@ -107,7 +107,7 @@ class TestMain:
         }
         mock_module.fail_json.side_effect = SystemExit(1)
         mock_ansible_module.return_value = mock_module
-        mock_array, _ = _physical_array([])
+        mock_array, _unused = _physical_array([])
         mock_get_array.return_value = mock_array
 
         with pytest.raises(SystemExit):
