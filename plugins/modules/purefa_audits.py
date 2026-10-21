@@ -167,13 +167,16 @@ def main():
         time = datetime.datetime.fromtimestamp(
             audit.time / 1000, tz=pytz.timezone(timezone)
         ).strftime("%Y-%m-%d %H:%M:%S %Z")
+        # Audit records only carry the fields that apply to the event, and the
+        # SDK models raise AttributeError for an absent field, so read each
+        # one with a default.
         audit_log[name] = {
             "time": time,
-            "arguments": audit.arguments,
-            "user": audit.user,
-            "command": audit.command,
-            "subcommand": audit.subcommand,
-            "origin": audit.origin.name,
+            "arguments": getattr(audit, "arguments", None),
+            "user": getattr(audit, "user", None),
+            "command": getattr(audit, "command", None),
+            "subcommand": getattr(audit, "subcommand", None),
+            "origin": getattr(getattr(audit, "origin", None), "name", None),
         }
     module.exit_json(changed=False, purefa_audits=audit_log)
 
