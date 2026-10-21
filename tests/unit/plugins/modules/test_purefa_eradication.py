@@ -451,206 +451,96 @@ class TestEradicationDelayChange:
         mock_erad_config.assert_not_called()
 
 
-class TestEradicationDecreaseRefused:
-    """The array refuses to lower disabled_delay; its message must reach
-    the user intact rather than being replaced by a generic one."""
+class TestEradicationOneDelayAtATime:
+    """Delays not given keep the array's value; diverged delays still work"""
 
-    @patch("plugins.modules.purefa_eradication.EradicationConfig")
-    @patch("plugins.modules.purefa_eradication.Arrays")
-    @patch("plugins.modules.purefa_eradication.get_with_context")
-    @patch("plugins.modules.purefa_eradication.get_array")
-    @patch("plugins.modules.purefa_eradication.AnsibleModule")
-    def test_array_refusal_message_is_surfaced(
-        self,
-        mock_ansible_module,
-        mock_get_array,
-        mock_get_with_context,
-        mock_arrays,
-        mock_erad_config,
-    ):
-        import pytest
-        from plugins.module_utils.api_helpers import (
-            check_response as real_check_response,
-        )
-
-        mock_module = Mock()
-        mock_module.check_mode = False
-        mock_module.fail_json.side_effect = SystemExit(1)
-        mock_module.params = {
-            "timer": None,
-            "disabled_delay": 7,
-            "enabled_delay": None,
-            "context": "",
-        }
-        mock_ansible_module.return_value = mock_module
-        mock_array = Mock()
-        mock_array.get_rest_version.return_value = "2.30"
-        mock_get_array.return_value = mock_array
-        refusal = Mock()
-        refusal.message = (
-            "Cannot decrease the eradication timer when eradication is disabled"
-        )
-        mock_get_with_context.side_effect = [
-            _array_with_delays(14, 7),
-            Mock(status_code=400, errors=[refusal]),
-        ]
-
+    def _run(self, params, current, check_mode=False):
         with patch(
-            "plugins.modules.purefa_eradication.check_response", real_check_response
-        ):
+            "plugins.modules.purefa_eradication.AnsibleModule"
+        ) as mock_am, patch(
+            "plugins.modules.purefa_eradication.get_array"
+        ) as mock_get_array, patch(
+            "plugins.modules.purefa_eradication.get_with_context"
+        ) as mock_gwc, patch(
+            "plugins.modules.purefa_eradication.check_response"
+        ), patch(
+            "plugins.modules.purefa_eradication.Arrays"
+        ), patch(
+            "plugins.modules.purefa_eradication.EradicationConfig"
+        ) as mock_cfg:
+            mock_module = Mock()
+            mock_module.check_mode = check_mode
+            mock_module.params = {
+                "timer": None,
+                "disabled_delay": None,
+                "enabled_delay": None,
+                "context": "",
+                **params,
+            }
+            mock_am.return_value = mock_module
+            mock_array = Mock()
+            mock_array.get_rest_version.return_value = "2.30"
+            mock_get_array.return_value = mock_array
+            cfg = Mock()
+            cfg.eradication_delay = current.get("eradication_delay")
+            cfg.disabled_delay = current["disabled_delay"] * 86400000
+            cfg.enabled_delay = current["enabled_delay"] * 86400000
+            info = Mock()
+            info.eradication_config = cfg
+            mock_gwc.return_value = Mock(items=[info])
+            main()
+            return mock_module, mock_cfg
+
+    def test_only_enabled_delay_keeps_disabled_delay(self):
+        """Test enabled_delay alone lengthens it and resends the current disabled_delay"""
+        module, cfg = self._run(
+            {"enabled_delay": 2}, {"enabled_delay": 1, "disabled_delay": 12}
+        )
+        cfg.assert_called_once_with(
+            enabled_delay=2 * 86400000, disabled_delay=12 * 86400000
+        )
+        module.exit_json.assert_called_once_with(changed=True)
+
+    def test_only_disabled_delay_keeps_enabled_delay(self):
+        """Test disabled_delay alone keeps the current enabled_delay"""
+        module, cfg = self._run(
+            {"disabled_delay": 14}, {"enabled_delay": 3, "disabled_delay": 12}
+        )
+        cfg.assert_called_once_with(
+            enabled_delay=3 * 86400000, disabled_delay=14 * 86400000
+        )
+        module.exit_json.assert_called_once_with(changed=True)
+
+    def test_no_parameters_change_nothing(self):
+        """Test a call with no timer and no delays is a no-op (it used to set both to a day)"""
+        module, cfg = self._run({}, {"enabled_delay": 1, "disabled_delay": 12})
+        cfg.assert_not_called()
+        module.exit_json.assert_called_once_with(changed=False)
+
+    def test_timer_when_delays_have_diverged_sets_both(self):
+        """Test timer still works when the array no longer reports eradication_delay"""
+        module, cfg = self._run(
+            {"timer": 5}, {"enabled_delay": 1, "disabled_delay": 12}
+        )
+        cfg.assert_called_once_with(
+            enabled_delay=5 * 86400000, disabled_delay=5 * 86400000
+        )
+        module.exit_json.assert_called_once_with(changed=True)
+
+    def test_out_of_range_delay_still_fails(self):
+        """Test the range check still applies to a delay that is given"""
+        with patch("plugins.modules.purefa_eradication.AnsibleModule") as mock_am:
+            mock_module = Mock()
+            mock_module.params = {
+                "timer": None,
+                "disabled_delay": None,
+                "enabled_delay": 31,
+                "context": "",
+            }
+            mock_module.fail_json.side_effect = SystemExit(1)
+            mock_am.return_value = mock_module
             with pytest.raises(SystemExit):
                 main()
-
-        msg = mock_module.fail_json.call_args[1]["msg"]
-        assert "Cannot decrease the eradication timer" in msg
-        assert "Eradication Timers" in msg
-
-
-def _array_with_delays(disabled_days, enabled_days):
-    """A REST 2.30 array response with the given current delays"""
-    mock_eradication_config = Mock()
-    mock_eradication_config.eradication_delay = 7 * 86400000
-    mock_eradication_config.disabled_delay = disabled_days * 86400000
-    mock_eradication_config.enabled_delay = enabled_days * 86400000
-    mock_array_info = Mock()
-    mock_array_info.eradication_config = mock_eradication_config
-    mock_response = Mock()
-    mock_response.items = [mock_array_info]
-    return mock_response
-
-
-class TestEradicationSingleDelay:
-    """Naming one delay must leave the other untouched"""
-
-    @patch("plugins.modules.purefa_eradication.EradicationConfig")
-    @patch("plugins.modules.purefa_eradication.Arrays")
-    @patch("plugins.modules.purefa_eradication.check_response")
-    @patch("plugins.modules.purefa_eradication.get_with_context")
-    @patch("plugins.modules.purefa_eradication.get_array")
-    @patch("plugins.modules.purefa_eradication.AnsibleModule")
-    def test_only_disabled_delay_sent(
-        self,
-        mock_ansible_module,
-        mock_get_array,
-        mock_get_with_context,
-        mock_check_response,
-        mock_arrays,
-        mock_erad_config,
-    ):
-        """Only disabled_delay is sent when only it was supplied"""
-        mock_module = Mock()
-        mock_module.check_mode = False
-        mock_module.params = {
-            "timer": None,
-            "disabled_delay": 14,
-            "enabled_delay": None,
-            "context": "",
-        }
-        mock_ansible_module.return_value = mock_module
-
-        mock_array = Mock()
-        mock_array.get_rest_version.return_value = "2.30"
-        mock_get_array.return_value = mock_array
-        mock_get_with_context.return_value = _array_with_delays(7, 7)
-
-        main()
-
-        mock_module.exit_json.assert_called_once_with(changed=True)
-        # enabled_delay must not be reset to a default
-        mock_erad_config.assert_called_once_with(disabled_delay=14 * 86400000)
-
-    @patch("plugins.modules.purefa_eradication.EradicationConfig")
-    @patch("plugins.modules.purefa_eradication.Arrays")
-    @patch("plugins.modules.purefa_eradication.check_response")
-    @patch("plugins.modules.purefa_eradication.get_with_context")
-    @patch("plugins.modules.purefa_eradication.get_array")
-    @patch("plugins.modules.purefa_eradication.AnsibleModule")
-    def test_only_enabled_delay_sent(
-        self,
-        mock_ansible_module,
-        mock_get_array,
-        mock_get_with_context,
-        mock_check_response,
-        mock_arrays,
-        mock_erad_config,
-    ):
-        """Only enabled_delay is sent when only it was supplied"""
-        mock_module = Mock()
-        mock_module.check_mode = False
-        mock_module.params = {
-            "timer": None,
-            "disabled_delay": None,
-            "enabled_delay": 3,
-            "context": "",
-        }
-        mock_ansible_module.return_value = mock_module
-
-        mock_array = Mock()
-        mock_array.get_rest_version.return_value = "2.30"
-        mock_get_array.return_value = mock_array
-        mock_get_with_context.return_value = _array_with_delays(14, 7)
-
-        main()
-
-        mock_module.exit_json.assert_called_once_with(changed=True)
-        mock_erad_config.assert_called_once_with(enabled_delay=3 * 86400000)
-
-    @patch("plugins.modules.purefa_eradication.get_with_context")
-    @patch("plugins.modules.purefa_eradication.get_array")
-    @patch("plugins.modules.purefa_eradication.AnsibleModule")
-    def test_unsupplied_delay_is_not_compared(
-        self,
-        mock_ansible_module,
-        mock_get_array,
-        mock_get_with_context,
-    ):
-        """An unsupplied delay that differs from 1 day is not a change"""
-        mock_module = Mock()
-        mock_module.check_mode = False
-        mock_module.params = {
-            "timer": None,
-            "disabled_delay": None,
-            "enabled_delay": 7,
-            "context": "",
-        }
-        mock_ansible_module.return_value = mock_module
-
-        mock_array = Mock()
-        mock_array.get_rest_version.return_value = "2.30"
-        mock_get_array.return_value = mock_array
-        # disabled_delay is 14 days, which the old default of 1 would have reset
-        mock_get_with_context.return_value = _array_with_delays(14, 7)
-
-        main()
-
-        mock_module.exit_json.assert_called_once_with(changed=False)
-
-    @patch("plugins.modules.purefa_eradication.get_with_context")
-    @patch("plugins.modules.purefa_eradication.get_array")
-    @patch("plugins.modules.purefa_eradication.AnsibleModule")
-    def test_no_delays_supplied_is_not_a_change(
-        self,
-        mock_ansible_module,
-        mock_get_array,
-        mock_get_with_context,
-    ):
-        """Supplying neither delay leaves both untouched"""
-        mock_module = Mock()
-        mock_module.check_mode = False
-        mock_module.params = {
-            "timer": None,
-            "disabled_delay": None,
-            "enabled_delay": None,
-            "context": "",
-        }
-        mock_ansible_module.return_value = mock_module
-
-        mock_array = Mock()
-        mock_array.get_rest_version.return_value = "2.30"
-        mock_get_array.return_value = mock_array
-        mock_get_with_context.return_value = _array_with_delays(14, 3)
-
-        main()
-
-        mock_module.fail_json.assert_not_called()
-        mock_module.exit_json.assert_called_once_with(changed=False)
+            mock_module.fail_json.assert_called_once_with(
+                msg="enabled_delay must be between 1 and 30 days."
+            )

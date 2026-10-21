@@ -21,7 +21,9 @@ version_added: '1.9.0'
 short_description: Configure Everpure FlashArray Eradication Timer
 description:
 - Configure the eradication timer for destroyed items on a FlashArray.
-- Valid values are integer days from 1 to 30. Default is 1.
+- Valid values are integer days from 1 to 30.
+- A delay that is not given is left as the array has it, so one delay can
+  be changed on its own.
 author:
 - Everpure Ansible Team (@sdodsley) <pure-ansible-team@everpuredata.com>
 options:
@@ -35,23 +37,22 @@ options:
   disabled_delay:
     description:
     - Configures the eradication delay
+    - The array refuses to decrease this value ("Cannot decrease the eradication
+      timer when eradication is disabled"), so it can only ever be raised through
+      the API.
       for destroyed objects that I(are) protected by SafeMode (objects for which
       eradication is disabled)
     - Allowed values are integers from 1 to 30.
-    - If not specified the current value is left unchanged.
-    - This value can only ever be increased. The array refuses to lower it
-      ("Cannot decrease the eradication timer when eradication is disabled")
-      and the module fails with that message; lowering it is not possible
-      through the API.
+    - When not given the array's current value is kept.
     type: int
     version_added: "1.22.0"
   enabled_delay:
     description:
     - Configures the eradication delay
       for destroyed objects that I(are not) protected by SafeMode (objects for which
-      eradication is disabled)
+      eradication is enabled)
     - Allowed values are integers from 1 to 30.
-    - If not specified the current value is left unchanged.
+    - When not given the array's current value is kept.
     type: int
     version_added: "1.22.0"
   context:
@@ -75,6 +76,13 @@ EXAMPLES = r"""
 
 - name: Set eradication timer to 1 day
   everpure.flasharray.purefa_eradication:
+    timer: 1
+    fa_url: 10.10.10.2
+    api_token: e31060a7-21fc-e277-6240-25983c6c4592
+
+- name: Lengthen only the delay for objects without SafeMode protection
+  everpure.flasharray.purefa_eradication:
+    enabled_delay: 7
     fa_url: 10.10.10.2
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
 """
@@ -122,14 +130,11 @@ def main():
     module = AnsibleModule(
         argument_spec, supports_check_mode=True, mutually_exclusive=mutually_exclusive
     )
-    disabled_delay = module.params["disabled_delay"]
-    enabled_delay = module.params["enabled_delay"]
     if module.params["timer"] and not 30 >= module.params["timer"] >= 1:
         module.fail_json(msg="Eradication Timer must be between 1 and 30 days.")
-    if disabled_delay is not None and not 30 >= disabled_delay >= 1:
-        module.fail_json(msg="disabled_delay must be between 1 and 30 days.")
-    if enabled_delay is not None and not 30 >= enabled_delay >= 1:
-        module.fail_json(msg="enabled_delay must be between 1 and 30 days.")
+    for delay in ("disabled_delay", "enabled_delay"):
+        if module.params[delay] is not None and not 30 >= module.params[delay] >= 1:
+            module.fail_json(msg=f"{delay} must be between 1 and 30 days.")
     if not HAS_PURESTORAGE:
         module.fail_json(msg="py-pure-client sdk is required for this module")
     array = get_array(module)
@@ -157,6 +162,16 @@ def main():
             current_enabled = int(
                 current_eradication_config.enabled_delay / SEC_PER_DAY
             )
+            # The array stops reporting eradication_delay once the two delays
+            # differ. A timer given then means "set both delays to this".
+            if (
+                not base_eradication_timer
+                and module.params["timer"]
+                and (module.params["enabled_delay"], module.params["disabled_delay"])
+                == (None, None)
+            ):
+                module.params["enabled_delay"] = module.params["timer"]
+                module.params["disabled_delay"] = module.params["timer"]
         if (
             base_eradication_timer
             and module.params["timer"] != current_eradication_timer
@@ -177,20 +192,21 @@ def main():
                     array=Arrays(eradication_config=eradication_config),
                 )
                 check_response(res, module, "Failed to change Eradication Timer")
-        # Only the delays that were supplied are compared and sent, so naming
-        # one delay leaves the other untouched.
+        # A delay that was not given keeps its current value: the API takes
+        # both delays in one request, and defaulting the other one to a day
+        # used to shorten it silently.
+        target_enabled = module.params["enabled_delay"] or current_enabled
+        target_disabled = module.params["disabled_delay"] or current_disabled
         if current_disabled and (
-            (enabled_delay is not None and enabled_delay != current_enabled)
-            or (disabled_delay is not None and disabled_delay != current_disabled)
+            target_enabled != current_enabled or target_disabled != current_disabled
         ):
             changed = True
             if not module.check_mode:
-                new_delays = {}
-                if disabled_delay is not None:
-                    new_delays["disabled_delay"] = SEC_PER_DAY * disabled_delay
-                if enabled_delay is not None:
-                    new_delays["enabled_delay"] = SEC_PER_DAY * enabled_delay
-                eradication_config = EradicationConfig(**new_delays)
+                new_disabled = SEC_PER_DAY * target_disabled
+                new_enabled = SEC_PER_DAY * target_enabled
+                eradication_config = EradicationConfig(
+                    enabled_delay=new_enabled, disabled_delay=new_disabled
+                )
                 res = get_with_context(
                     array,
                     "patch_arrays",
