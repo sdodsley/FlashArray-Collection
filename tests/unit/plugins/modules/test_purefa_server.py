@@ -517,6 +517,88 @@ class TestNetworkInterfaces:
         assert _reconcile_interfaces(module, Mock(), "filesvr1") is True
         mock_patch_model.assert_not_called()
 
+    @patch("plugins.modules.purefa_server.NetworkInterfacePatch")
+    @patch("plugins.modules.purefa_server.check_response")
+    @patch("plugins.modules.purefa_server.get_with_context")
+    def test_a_bare_name_matches_the_scoped_name_the_array_reports(
+        self, mock_get_with_context, mock_check_response, mock_patch_model
+    ):
+        """Newer Purity stores a server-attached VIF as <server>::<name>"""
+        module = Mock()
+        module.check_mode = False
+        module.params = _params(name="_array_server", network_interfaces=["filevif"])
+        mock_get_with_context.return_value = Mock(
+            status_code=200,
+            items=[_interface("_array_server::filevif", "_array_server")],
+        )
+
+        assert _reconcile_interfaces(module, Mock(), "_array_server") is False
+        mock_patch_model.assert_not_called()
+
+    @patch("plugins.modules.purefa_server.NetworkInterfacePatch")
+    @patch("plugins.modules.purefa_server.check_response")
+    @patch("plugins.modules.purefa_server.get_with_context")
+    def test_attaching_a_name_stored_under_another_server_sends_the_stored_name(
+        self, mock_get_with_context, mock_check_response, mock_patch_model
+    ):
+        """A bare name the array only knows as other::filevif is that interface"""
+        module = Mock()
+        module.check_mode = False
+        module.params = _params(network_interfaces=["filevif"])
+        mock_get_with_context.side_effect = [
+            Mock(status_code=200, items=[_interface("other::filevif", "other")]),
+            Mock(status_code=200),
+        ]
+
+        assert _reconcile_interfaces(module, Mock(), "filesvr1") is True
+
+        patch_call = mock_get_with_context.call_args_list[1]
+        assert patch_call[0][1] == "patch_network_interfaces"
+        assert patch_call[1]["names"] == ["other::filevif"]
+
+    @patch("plugins.modules.purefa_server.NetworkInterfacePatch")
+    @patch("plugins.modules.purefa_server.check_response")
+    @patch("plugins.modules.purefa_server.get_with_context")
+    def test_detaching_sends_the_stored_name(
+        self, mock_get_with_context, mock_check_response, mock_patch_model
+    ):
+        module = Mock()
+        module.check_mode = False
+        module.params = _params(network_interfaces=[])
+        mock_get_with_context.side_effect = [
+            Mock(status_code=200, items=[_interface("filesvr1::filevif", "filesvr1")]),
+            Mock(status_code=200),
+        ]
+
+        assert _reconcile_interfaces(module, Mock(), "filesvr1") is True
+
+        patch_call = mock_get_with_context.call_args_list[1]
+        assert patch_call[1]["names"] == ["filesvr1::filevif"]
+        mock_patch_model.assert_called_once_with(attached_servers=[])
+
+    @patch("plugins.modules.purefa_server.NetworkInterfacePatch")
+    @patch("plugins.modules.purefa_server.check_response")
+    @patch("plugins.modules.purefa_server.get_with_context")
+    def test_a_bare_name_stored_under_two_servers_is_sent_as_given(
+        self, mock_get_with_context, mock_check_response, mock_patch_model
+    ):
+        """Two candidates cannot be guessed between, so the array judges"""
+        module = Mock()
+        module.check_mode = False
+        module.params = _params(network_interfaces=["filevif"])
+        mock_get_with_context.side_effect = [
+            Mock(
+                status_code=200,
+                items=[_interface("a::filevif", "a"), _interface("b::filevif", "b")],
+            ),
+            Mock(status_code=200),
+        ]
+
+        assert _reconcile_interfaces(module, Mock(), "filesvr1") is True
+
+        patch_call = mock_get_with_context.call_args_list[1]
+        assert patch_call[1]["names"] == ["filevif"]
+
 
 class TestMain:
     """Test cases for main"""

@@ -31,6 +31,13 @@ options:
   name:
     description:
       - Interface name (physical or virtual).
+      - Newer Purity releases store a virtual interface that is attached to a
+        file server under the server's name, as C(<server>::<name>), and
+        report it that way. Such an interface may be given here either as the
+        bare C(<name>) it was created with or as the C(<server>::<name>) the
+        array reports. With the bare name, I(server) picks the file server
+        when it is given, otherwise the interface is matched under whichever
+        file server it is attached to.
     required: true
     type: str
   state:
@@ -233,6 +240,106 @@ SERVER_API_VERSION = "2.44"
 UNSET_IP = (None, "", "0.0.0.0", "::")
 UNSET_NETMASK = (None, "", "0.0.0.0", "0")
 
+# Newer Purity releases store a virtual interface attached to a file server
+# under the server's name, <server>::<vif>, the way other scoped objects such
+# as pod::volume are named, and a lookup by the bare name is then refused with
+# "Specified network interface does not exist". A VIF created over REST keeps
+# its bare name even when attached, so both forms coexist on one array. The
+# single colon is tolerated in case a release uses it.
+SCOPE_SEPARATORS = ("::", ":")
+
+
+def _split_scope(name):
+    """Split a scoped interface name into (server, bare name)
+
+    Returns (None, name) for a name that carries no server prefix.
+    """
+    for separator in SCOPE_SEPARATORS:
+        if separator in name:
+            return tuple(name.split(separator, 1))
+    return None, name
+
+
+def _first_item(res):
+    """First item of a lookup response, or None when nothing matched
+
+    An unknown name is answered with an error response rather than an empty
+    list, and an error response carries no items to read.
+    """
+    if res.status_code != 200:
+        return None
+    return next(iter(res.items), None)
+
+
+def _could_be_file_vif(module):
+    """Whether the task's interface may be stored under a file server's name
+
+    Physical ports and their VLAN children carry a controller prefix, such as
+    ct0.eth4 or ct0.eth4.100, and are never scoped. A virtual interface has
+    no such prefix.
+    """
+    return module.params.get("interface") == "vif" or "." not in module.params["name"]
+
+
+def _resolve_interface(module, array):
+    """Find the interface the task names, and the name the array stores it under
+
+    Returns (interface, name), or (None, None) when there is no such
+    interface. The name is tried as given first, which also finds an
+    interface given as <server>::<name>. When that finds nothing and the
+    interface may be a file VIF, the interfaces are listed and one stored
+    as <server>::<name> is accepted - for the task's I(server) when one is
+    given, otherwise under whichever file server it is attached to. The name
+    returned is the one every later read, update and delete has to use.
+    """
+    name = module.params["name"]
+    interface = _first_item(array.get_network_interfaces(names=[name]))
+    if interface is not None:
+        return interface, name
+    if not _could_be_file_vif(module):
+        return None, None
+    res = array.get_network_interfaces()
+    if res.status_code != 200:
+        return None, None
+    wanted_server = module.params.get("server") or None
+    candidates = []
+    for interface in list(res.items):
+        server, bare = _split_scope(interface.name)
+        if server is None or bare != name:
+            continue
+        if wanted_server is None or server == wanted_server:
+            candidates.append(interface)
+    if len(candidates) > 1:
+        # The same bare name under two file servers: prefer the one whose
+        # scope matches the server it is actually attached to
+        attached = [
+            interface
+            for interface in candidates
+            if _attached_server_name(interface) == _split_scope(interface.name)[0]
+        ]
+        candidates = attached or candidates
+    if len(candidates) > 1:
+        module.fail_json(
+            msg="Interface name {0} is ambiguous, it matches {1}. Give the "
+            "server option to say which one is meant.".format(
+                name, ", ".join(sorted(interface.name for interface in candidates))
+            )
+        )
+    if not candidates:
+        return None, None
+    return candidates[0], candidates[0].name
+
+
+def _created_name(res, name):
+    """The name the array stored a newly created interface under
+
+    A newer array stores a VIF attached to a file server as <server>::<name>,
+    and the create response is where that name first appears. Falls back to
+    the requested name when the response names nothing.
+    """
+    created = next(iter(getattr(res, "items", None) or []), None)
+    return getattr(created, "name", None) or name
+
 
 def _comparable_state(state):
     """Return a copy of an interface state with cleared IP settings unified"""
@@ -342,9 +449,12 @@ def update_fc_interface(module, array, interface):
     module.exit_json(changed=changed)
 
 
-def _check_subinterfaces(module, array):
+def _check_subinterfaces(module, array, name=None):
+    """Names of the children of an interface, read under its stored name"""
     subordinates = []
-    interfaces = list(array.get_network_interfaces(names=[module.params["name"]]).items)
+    interfaces = list(
+        array.get_network_interfaces(names=[name or module.params["name"]]).items
+    )
     # An interface with no children reports subinterfaces as null, and the SDK
     # models raise AttributeError for any field the array returned as null
     for subinterface in getattr(interfaces[0].eth, "subinterfaces", None) or []:
@@ -409,14 +519,19 @@ def _create_subinterfaces(module, array):
     return subinterfaces_v1, subinterfaces_v2
 
 
-def update_interface(module, array):
-    """Modify Interface settings"""
-    changed = False
-    interfaces = list(array.get_network_interfaces(names=[module.params["name"]]).items)
-    if not interfaces:
-        module.fail_json("Interface {0} not found".format(module.params["name"]))
+def update_interface(module, array, interface=None, name=None):
+    """Modify Interface settings
 
-    interface = interfaces[0]
+    The interface and the name the array stores it under come from
+    _resolve_interface, and are looked up here when not already given.
+    """
+    changed = False
+    if interface is None:
+        interface, name = _resolve_interface(module, array)
+    if interface is None:
+        module.fail_json("Interface {0} not found".format(module.params["name"]))
+    name = name or module.params["name"]
+
     # An interface with no services assigned reports them as null
     services = getattr(interface, "services", None) or []
 
@@ -426,35 +541,25 @@ def update_interface(module, array):
             changed = True
             if not module.check_mode:
                 network = NetworkInterfacePatch(enabled=True, override_npiv_check=True)
-                res = array.patch_network_interfaces(
-                    names=[module.params["name"]], network=network
-                )
-                check_response(
-                    res, module, f"Failed to enable interface {module.params['name']}"
-                )
+                res = array.patch_network_interfaces(names=[name], network=network)
+                check_response(res, module, f"Failed to enable interface {name}")
         if interface.enabled and module.params["state"] == "absent":
             changed = True
             if not module.check_mode:
                 network = NetworkInterfacePatch(enabled=False, override_npiv_check=True)
-                res = array.patch_network_interfaces(
-                    names=[module.params["name"]], network=network
-                )
-                check_response(
-                    res, module, f"Failed to disable interface {module.params['name']}"
-                )
+                res = array.patch_network_interfaces(names=[name], network=network)
+                check_response(res, module, f"Failed to disable interface {name}")
         if module.params["servicelist"] and sorted(
             module.params["servicelist"]
         ) != sorted(services):
             changed = True
             if not module.check_mode:
                 network = NetworkInterfacePatch(services=module.params["servicelist"])
-                res = array.patch_network_interfaces(
-                    names=[module.params["name"]], network=network
-                )
+                res = array.patch_network_interfaces(names=[name], network=network)
                 check_response(
                     res,
                     module,
-                    f"Failed to update interface service list {module.params['name']}",
+                    f"Failed to update interface service list {name}",
                 )
         module.exit_json(changed=changed)
     # Modify ETH Interface settings
@@ -473,12 +578,12 @@ def update_interface(module, array):
     new_state = current_state.copy()
 
     if module.params["subinterfaces"]:
-        new_subinterfaces = _check_subinterfaces(module, array)
+        new_subinterfaces = _check_subinterfaces(module, array, name)
         if sorted(new_subinterfaces) != current_state["subinterfaces"]:
             new_state["subinterfaces"] = sorted(new_subinterfaces)
 
     if module.params["subordinates"]:
-        subordinates = _check_subinterfaces(module, array)
+        subordinates = _check_subinterfaces(module, array, name)
         if sorted(subordinates) != sorted(module.params["subordinates"]):
             new_state["subinterfaces"] = sorted(module.params["subordinates"])
 
@@ -572,13 +677,11 @@ def update_interface(module, array):
         ) != sorted(services):
             if not module.check_mode:
                 network = NetworkInterfacePatch(services=module.params["servicelist"])
-                res = array.patch_network_interfaces(
-                    names=[module.params["name"]], network=network
-                )
+                res = array.patch_network_interfaces(names=[name], network=network)
                 check_response(
                     res,
                     module,
-                    f"Failed to update interface service list {module.params['name']}",
+                    f"Failed to update interface service list {name}",
                 )
         if ("management" in services or "app" in services) and new_state["address"] in [
             "0.0.0.0",
@@ -589,17 +692,17 @@ def update_interface(module, array):
             )
         if not module.check_mode:
             res = array.patch_network_interfaces(
-                names=[interface.name],
+                names=[name],
                 network=NetworkInterfacePatch(enabled=new_state["enabled"]),
             )
             check_response(
                 res,
                 module,
-                f"Failed to enable or disable interface {module.params['name']}",
+                f"Failed to enable or disable interface {name}",
             )
             if new_state["gateway"] is not None:
                 res = array.patch_network_interfaces(
-                    names=[interface.name],
+                    names=[name],
                     network=NetworkInterfacePatch(
                         eth=NetworkinterfacepatchEth(
                             address=new_state["address"],
@@ -609,9 +712,7 @@ def update_interface(module, array):
                         )
                     ),
                 )
-                check_response(
-                    res, module, f"Failed to update IP settings for {interface.name}"
-                )
+                check_response(res, module, f"Failed to update IP settings for {name}")
                 if (
                     current_state["subinterfaces"] != new_state["subinterfaces"]
                     and new_state["subinterfaces"] != []
@@ -620,7 +721,7 @@ def update_interface(module, array):
                     for sub in new_state["subinterfaces"]:
                         new_subs.append(ReferenceNoId(sub))
                     res = array.patch_network_interfaces(
-                        names=[interface.name],
+                        names=[name],
                         network=NetworkInterfacePatch(
                             eth=NetworkinterfacepatchEth(
                                 subinterfacelist=new_subs,
@@ -630,7 +731,7 @@ def update_interface(module, array):
                     check_response(
                         res,
                         module,
-                        f"Failed to update subinterfaces for {interface.name}",
+                        f"Failed to update subinterfaces for {name}",
                     )
             else:
                 # The interface has no gateway. Only send the IP settings that
@@ -659,7 +760,7 @@ def update_interface(module, array):
                     eth_settings["mtu"] = new_state["mtu"]
                 if eth_settings:
                     res = array.patch_network_interfaces(
-                        names=[interface.name],
+                        names=[name],
                         network=NetworkInterfacePatch(
                             eth=NetworkinterfacepatchEth(**eth_settings)
                         ),
@@ -667,17 +768,17 @@ def update_interface(module, array):
                     check_response(
                         res,
                         module,
-                        f"Failed to update IP settings for {interface.name}",
+                        f"Failed to update IP settings for {name}",
                     )
                 if (
                     current_state["subinterfaces"] != new_state["subinterfaces"]
                     and new_state["subinterfaces"] != []
                 ):
-                    res = array.delete_network_interfaces(names=[module.params["name"]])
+                    res = array.delete_network_interfaces(names=[name])
                     check_response(
                         res,
                         module,
-                        f"Failed to delete network interface {module.params['name']}",
+                        f"Failed to delete network interface {name}",
                     )
                     create_interface(module, array)
     # The file server is patched on its own rather than folded into the state
@@ -754,10 +855,13 @@ def create_interface(module, array):
         check_response(
             res, module, f"Failed to create interface {module.params['name']}"
         )
+        # A newer array may have stored the interface as <server>::<name>,
+        # which is then the only name the follow-up settings can be sent to
+        name = _created_name(res, module.params["name"])
 
         if module.params["subinterfaces"] and module.params["subnet"]:
             res = array.patch_network_interfaces(
-                names=[module.params["name"]],
+                names=[name],
                 network=NetworkInterfacePatch(
                     enabled=module.params["enabled"],
                     eth=NetworkinterfacepatchEth(
@@ -771,14 +875,14 @@ def create_interface(module, array):
                 ),
             )
             if res.status_code != 200:
-                array.delete_network_interfaces(names=[module.params["name"]])
+                array.delete_network_interfaces(names=[name])
                 module.fail_json(
                     msg=f"Failed to create interface {module.params['name']}. "
                     f"Error: {res.errors[0].message}"
                 )
         elif module.params["subinterfaces"] and not module.params["subnet"]:
             res = array.patch_network_interfaces(
-                names=[module.params["name"]],
+                names=[name],
                 network=NetworkInterfacePatch(
                     enabled=module.params["enabled"],
                     eth=NetworkinterfacepatchEth(
@@ -791,14 +895,14 @@ def create_interface(module, array):
                 ),
             )
             if res.status_code != 200:
-                array.delete_network_interfaces(names=[module.params["name"]])
+                array.delete_network_interfaces(names=[name])
                 module.fail_json(
                     msg=f"Failed to create interface {module.params['name']}. "
                     f"Error: {res.errors[0].message}"
                 )
         elif not module.params["subinterfaces"] and module.params["subnet"]:
             res = array.patch_network_interfaces(
-                names=[module.params["name"]],
+                names=[name],
                 network=NetworkInterfacePatch(
                     enabled=module.params["enabled"],
                     eth=NetworkinterfacepatchEth(
@@ -811,14 +915,14 @@ def create_interface(module, array):
                 ),
             )
             if res.status_code != 200:
-                array.delete_network_interfaces(names=[module.params["name"]])
+                array.delete_network_interfaces(names=[name])
                 module.fail_json(
                     msg=f"Failed to create interface {module.params['name']}. "
                     f"Error: {res.errors[0].message}"
                 )
         else:
             res = array.patch_network_interfaces(
-                names=[module.params["name"]],
+                names=[name],
                 network=NetworkInterfacePatch(
                     enabled=module.params["enabled"],
                     eth=NetworkinterfacepatchEth(
@@ -830,7 +934,7 @@ def create_interface(module, array):
                 ),
             )
             if res.status_code != 200:
-                array.delete_network_interfaces(names=[module.params["name"]])
+                array.delete_network_interfaces(names=[name])
                 module.fail_json(
                     msg=f"Failed to create interface {module.params['name']}. "
                     f"Error: {res.errors[0].message}"
@@ -839,13 +943,13 @@ def create_interface(module, array):
     module.exit_json(changed=changed)
 
 
-def delete_interface(module, array):
+def delete_interface(module, array, name=None):
+    """Delete an interface under the name the array stores it as"""
     changed = True
+    name = name or module.params["name"]
     if not module.check_mode:
-        res = array.delete_network_interfaces(names=[module.params["name"]])
-        check_response(
-            res, module, f"Failed to delete network interface {module.params['name']}"
-        )
+        res = array.delete_network_interfaces(names=[name])
+        check_response(res, module, f"Failed to delete network interface {name}")
     module.exit_json(changed=changed)
 
 
@@ -933,14 +1037,11 @@ def main():
                 msg="File server {0} does not exist".format(module.params["server"])
             )
     if "." in module.params["name"]:
-        interface = bool(
-            array.get_network_interfaces(names=[module.params["name"]]).status_code
-            == 200
-        )
-        if not interface:
+        interface, name = _resolve_interface(module, array)
+        if interface is None:
             module.fail_json(msg="Invalid network interface specified.")
         else:
-            update_interface(module, array)
+            update_interface(module, array, interface, name)
     else:
         if (module.params["interface"] == "vif" and module.params["subordinates"]) or (
             module.params["interface"] == "lacp" and module.params["subinterfaces"]
@@ -949,11 +1050,13 @@ def main():
                 msg="interface type not compatible with provided subinterfaces | subordinates"
             )
         # The array rejects a virtual interface name containing a hyphen with
-        # a bare "Invalid network interface name", so say what is wrong first
+        # a bare "Invalid network interface name", so say what is wrong first.
+        # A file server's name may carry one, so only the interface's own
+        # part of a <server>::<name> is checked.
         if (
             creating_new_if
             and module.params["state"] == "present"
-            and "-" in module.params["name"]
+            and "-" in _split_scope(module.params["name"])[1]
         ):
             module.fail_json(
                 msg="Invalid network interface name {0}: {1} interface names "
@@ -961,26 +1064,23 @@ def main():
                     module.params["name"], module.params["interface"]
                 )
             )
-        interface = bool(
-            array.get_network_interfaces(names=[module.params["name"]]).status_code
-            == 200
-        )
+        interface, name = _resolve_interface(module, array)
         if not creating_new_if:
-            if not interface:
+            if interface is None:
                 if module.params["state"] == "absent":
                     # Deleting an interface that is already gone is a no-op
                     module.exit_json(changed=False)
                 module.fail_json(msg="Invalid network interface specified.")
             elif module.params["state"] == "present":
-                update_interface(module, array)
+                update_interface(module, array, interface, name)
             else:
-                delete_interface(module, array)
-        elif not interface and module.params["state"] == "present":
+                delete_interface(module, array, name)
+        elif interface is None and module.params["state"] == "present":
             create_interface(module, array)
-        elif interface and module.params["state"] == "absent":
-            delete_interface(module, array)
-        elif interface and module.params["state"] == "present":
-            update_interface(module, array)
+        elif interface is not None and module.params["state"] == "absent":
+            delete_interface(module, array, name)
+        elif interface is not None and module.params["state"] == "present":
+            update_interface(module, array, interface, name)
         else:
             module.exit_json(changed=False)
 

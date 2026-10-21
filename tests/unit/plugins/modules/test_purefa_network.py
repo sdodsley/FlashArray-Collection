@@ -67,6 +67,8 @@ from plugins.modules.purefa_network import (
     _create_subinterfaces,
     _is_fc_interface,
     _update_attached_server,
+    _created_name,
+    _split_scope,
 )
 
 
@@ -161,6 +163,7 @@ class TestCheckSubinterfaces:
         sub2 = Mock()
         sub2.name = "sub2"
         mock_interface.eth.subinterfaces = [sub1, sub2]
+        mock_array.get_network_interfaces.return_value.status_code = 200
         mock_array.get_network_interfaces.return_value.items = [mock_interface]
 
         result = _check_subinterfaces(mock_module, mock_array)
@@ -243,7 +246,9 @@ class TestCheckSubinterfacesAdditional:
         sub2 = Mock()
         sub2.name = "eth2.200"
         mock_interface.eth.subinterfaces = [sub1, sub2]
-        mock_array.get_network_interfaces.return_value = Mock(items=[mock_interface])
+        mock_array.get_network_interfaces.return_value = Mock(
+            status_code=200, items=[mock_interface]
+        )
 
         result = _check_subinterfaces(mock_module, mock_array)
 
@@ -259,7 +264,9 @@ class TestCheckSubinterfacesAdditional:
         mock_interface = Mock()
         mock_interface.eth = Mock()
         mock_interface.eth.subinterfaces = []
-        mock_array.get_network_interfaces.return_value = Mock(items=[mock_interface])
+        mock_array.get_network_interfaces.return_value = Mock(
+            status_code=200, items=[mock_interface]
+        )
 
         result = _check_subinterfaces(mock_module, mock_array)
 
@@ -278,7 +285,7 @@ class TestUpdateInterface:
         mock_module.fail_json.side_effect = SystemExit(1)
         mock_module.params = {"name": "eth2"}
         mock_array = Mock()
-        mock_array.get_network_interfaces.return_value = Mock(items=[])
+        mock_array.get_network_interfaces.return_value = Mock(status_code=200, items=[])
 
         with pytest.raises(SystemExit):
             update_interface(mock_module, mock_array)
@@ -328,7 +335,9 @@ class TestUpdateInterface:
         mock_interface.eth.subinterfaces = [_sub("ct1.eth1"), _sub("ct0.eth1")]
 
         mock_array = Mock()
-        mock_array.get_network_interfaces.return_value = Mock(items=[mock_interface])
+        mock_array.get_network_interfaces.return_value = Mock(
+            status_code=200, items=[mock_interface]
+        )
 
         # Must not raise TypeError, and must be a no-op
         update_interface(mock_module, mock_array)
@@ -352,7 +361,9 @@ class TestUpdateInterface:
         mock_array = Mock()
         mock_interface = Mock()
         mock_interface.enabled = False
-        mock_array.get_network_interfaces.return_value = Mock(items=[mock_interface])
+        mock_array.get_network_interfaces.return_value = Mock(
+            status_code=200, items=[mock_interface]
+        )
         mock_array.patch_network_interfaces.return_value = Mock(status_code=200)
 
         with pytest.raises(SystemExit):
@@ -377,7 +388,9 @@ class TestUpdateInterface:
         mock_array = Mock()
         mock_interface = Mock()
         mock_interface.enabled = True
-        mock_array.get_network_interfaces.return_value = Mock(items=[mock_interface])
+        mock_array.get_network_interfaces.return_value = Mock(
+            status_code=200, items=[mock_interface]
+        )
         mock_array.patch_network_interfaces.return_value = Mock(status_code=200)
 
         with pytest.raises(SystemExit):
@@ -401,7 +414,9 @@ class TestUpdateInterface:
         mock_array = Mock()
         mock_interface = Mock()
         mock_interface.enabled = True  # Already enabled
-        mock_array.get_network_interfaces.return_value = Mock(items=[mock_interface])
+        mock_array.get_network_interfaces.return_value = Mock(
+            status_code=200, items=[mock_interface]
+        )
 
         with pytest.raises(SystemExit):
             update_interface(mock_module, mock_array)
@@ -654,7 +669,9 @@ class TestUpdateInterfaceSuccess:
         mock_interface = Mock()
         mock_interface.enabled = True
         mock_interface.services = ["management"]
-        mock_array.get_network_interfaces.return_value = Mock(items=[mock_interface])
+        mock_array.get_network_interfaces.return_value = Mock(
+            status_code=200, items=[mock_interface]
+        )
         mock_array.patch_network_interfaces.return_value = Mock(status_code=200)
 
         with pytest.raises(SystemExit):
@@ -680,7 +697,9 @@ class TestUpdateInterfaceSuccess:
         mock_interface = Mock()
         mock_interface.enabled = False
         mock_interface.services = []
-        mock_array.get_network_interfaces.return_value = Mock(items=[mock_interface])
+        mock_array.get_network_interfaces.return_value = Mock(
+            status_code=200, items=[mock_interface]
+        )
         mock_array.patch_network_interfaces.return_value = Mock(status_code=200)
 
         with pytest.raises(SystemExit):
@@ -705,7 +724,9 @@ class TestUpdateInterfaceSuccess:
         mock_array = Mock()
         mock_interface = Mock()
         mock_interface.enabled = False
-        mock_array.get_network_interfaces.return_value = Mock(items=[mock_interface])
+        mock_array.get_network_interfaces.return_value = Mock(
+            status_code=200, items=[mock_interface]
+        )
 
         with pytest.raises(SystemExit):
             update_interface(mock_module, mock_array)
@@ -740,7 +761,9 @@ class TestCreateInterfaceSuccess:
         }
         mock_array = Mock()
         mock_array.get_subnets.return_value = Mock(status_code=404)
-        mock_array.post_network_interfaces.return_value = Mock(status_code=200)
+        mock_array.post_network_interfaces.return_value = Mock(
+            status_code=200, items=[]
+        )
         mock_array.patch_network_interfaces.return_value = Mock(status_code=200)
 
         create_interface(mock_module, mock_array)
@@ -864,7 +887,9 @@ class TestUpdateEthInterface:
         mock_interface.eth.gateway = None
         mock_interface.eth.address = None
         mock_interface.eth.netmask = None
-        mock_array.get_network_interfaces.return_value = Mock(items=[mock_interface])
+        mock_array.get_network_interfaces.return_value = Mock(
+            status_code=200, items=[mock_interface]
+        )
         mock_array.patch_network_interfaces.return_value = Mock(status_code=200)
 
         with pytest.raises(SystemExit):
@@ -902,7 +927,9 @@ class TestUpdateEthInterface:
         mock_interface.eth.gateway = None
         mock_interface.eth.address = None
         mock_interface.eth.netmask = None
-        mock_array.get_network_interfaces.return_value = Mock(items=[mock_interface])
+        mock_array.get_network_interfaces.return_value = Mock(
+            status_code=200, items=[mock_interface]
+        )
 
         with pytest.raises(SystemExit):
             update_interface(mock_module, mock_array)
@@ -939,7 +966,9 @@ class TestUpdateEthInterface:
         mock_interface.eth.gateway = None
         mock_interface.eth.address = None
         mock_interface.eth.netmask = None
-        mock_array.get_network_interfaces.return_value = Mock(items=[mock_interface])
+        mock_array.get_network_interfaces.return_value = Mock(
+            status_code=200, items=[mock_interface]
+        )
 
         with pytest.raises(SystemExit):
             update_interface(mock_module, mock_array)
@@ -981,7 +1010,9 @@ class TestUpdateEthInterface:
         mock_interface.eth.gateway = None
         mock_interface.eth.address = None
         mock_interface.eth.netmask = None
-        mock_array.get_network_interfaces.return_value = Mock(items=[mock_interface])
+        mock_array.get_network_interfaces.return_value = Mock(
+            status_code=200, items=[mock_interface]
+        )
         mock_array.patch_network_interfaces.return_value = Mock(status_code=200)
 
         with pytest.raises(SystemExit):
@@ -1024,7 +1055,9 @@ class TestUpdateEthInterface:
         mock_interface.eth.gateway = None
         mock_interface.eth.address = None
         mock_interface.eth.netmask = None
-        mock_array.get_network_interfaces.return_value = Mock(items=[mock_interface])
+        mock_array.get_network_interfaces.return_value = Mock(
+            status_code=200, items=[mock_interface]
+        )
         mock_array.patch_network_interfaces.return_value = Mock(status_code=200)
 
         with pytest.raises(SystemExit):
@@ -1063,7 +1096,9 @@ class TestCreateInterfaceLacp:
         }
         mock_array = Mock()
         mock_array.get_subnets.return_value = Mock(status_code=404)
-        mock_array.post_network_interfaces.return_value = Mock(status_code=200)
+        mock_array.post_network_interfaces.return_value = Mock(
+            status_code=200, items=[]
+        )
         mock_array.patch_network_interfaces.return_value = Mock(status_code=200)
 
         create_interface(mock_module, mock_array)
@@ -1121,7 +1156,9 @@ class TestCreateInterfaceWithSubnet:
         }
         mock_array = Mock()
         mock_array.get_subnets.return_value = Mock(status_code=200)
-        mock_array.post_network_interfaces.return_value = Mock(status_code=200)
+        mock_array.post_network_interfaces.return_value = Mock(
+            status_code=200, items=[]
+        )
         mock_array.patch_network_interfaces.return_value = Mock(status_code=200)
 
         create_interface(mock_module, mock_array)
@@ -1155,7 +1192,9 @@ class TestCreateInterfaceWithSubnet:
         }
         mock_array = Mock()
         mock_array.get_subnets.return_value = Mock(status_code=404)
-        mock_array.post_network_interfaces.return_value = Mock(status_code=200)
+        mock_array.post_network_interfaces.return_value = Mock(
+            status_code=200, items=[]
+        )
         mock_array.patch_network_interfaces.return_value = Mock(status_code=200)
 
         create_interface(mock_module, mock_array)
@@ -1196,7 +1235,9 @@ class TestCreateInterfaceFailure:
         }
         mock_array = Mock()
         mock_array.get_subnets.return_value = Mock(status_code=200)
-        mock_array.post_network_interfaces.return_value = Mock(status_code=200)
+        mock_array.post_network_interfaces.return_value = Mock(
+            status_code=200, items=[]
+        )
         mock_error = Mock()
         mock_error.message = "Patch failed"
         mock_array.patch_network_interfaces.return_value = Mock(
@@ -1238,7 +1279,9 @@ class TestCreateInterfaceFailure:
         }
         mock_array = Mock()
         mock_array.get_subnets.return_value = Mock(status_code=404)
-        mock_array.post_network_interfaces.return_value = Mock(status_code=200)
+        mock_array.post_network_interfaces.return_value = Mock(
+            status_code=200, items=[]
+        )
         mock_error = Mock()
         mock_error.message = "Patch failed"
         mock_array.patch_network_interfaces.return_value = Mock(
@@ -1349,7 +1392,9 @@ class TestUpdateEthInterfaceWithSubinterfaces:
         mock_interface.eth.gateway = None
         mock_interface.eth.address = None
         mock_interface.eth.netmask = None
-        mock_array.get_network_interfaces.return_value = Mock(items=[mock_interface])
+        mock_array.get_network_interfaces.return_value = Mock(
+            status_code=200, items=[mock_interface]
+        )
         mock_array.patch_network_interfaces.return_value = Mock(status_code=200)
 
         with pytest.raises(SystemExit):
@@ -1398,8 +1443,13 @@ class TestUpdateEthInterfaceSubordinates:
         mock_interface.eth.gateway = None
         mock_interface.eth.address = None
         mock_interface.eth.netmask = None
-        mock_array.get_network_interfaces.return_value = Mock(items=[mock_interface])
+        mock_array.get_network_interfaces.return_value = Mock(
+            status_code=200, items=[mock_interface]
+        )
         mock_array.patch_network_interfaces.return_value = Mock(status_code=200)
+        mock_array.post_network_interfaces.return_value = Mock(
+            status_code=200, items=[]
+        )
 
         with pytest.raises(SystemExit):
             update_interface(mock_module, mock_array)
@@ -1437,7 +1487,9 @@ class TestCreateInterfaceLacpWithParams:
         }
         mock_array = Mock()
         mock_array.get_subnets.return_value = Mock(status_code=404)
-        mock_array.post_network_interfaces.return_value = Mock(status_code=200)
+        mock_array.post_network_interfaces.return_value = Mock(
+            status_code=200, items=[]
+        )
         mock_array.patch_network_interfaces.return_value = Mock(status_code=200)
 
         create_interface(mock_module, mock_array)
@@ -1476,7 +1528,9 @@ class TestCreateInterfaceVifWithSubnet:
         }
         mock_array = Mock()
         mock_array.get_subnets.return_value = Mock(status_code=200)
-        mock_array.post_network_interfaces.return_value = Mock(status_code=200)
+        mock_array.post_network_interfaces.return_value = Mock(
+            status_code=200, items=[]
+        )
         mock_array.patch_network_interfaces.return_value = Mock(status_code=200)
 
         create_interface(mock_module, mock_array)
@@ -1593,7 +1647,9 @@ class TestCheckSubinterfacesSuccess:
         mock_interface = Mock()
         mock_interface.eth = Mock()
         mock_interface.eth.subinterfaces = [_subref("ct0.eth8"), _subref("ct1.eth8")]
-        mock_array.get_network_interfaces.return_value = Mock(items=[mock_interface])
+        mock_array.get_network_interfaces.return_value = Mock(
+            status_code=200, items=[mock_interface]
+        )
 
         result = _check_subinterfaces(mock_module, mock_array)
 
@@ -1607,7 +1663,9 @@ class TestCheckSubinterfacesSuccess:
         mock_interface = Mock()
         mock_interface.eth = Mock()
         mock_interface.eth.subinterfaces = []
-        mock_array.get_network_interfaces.return_value = Mock(items=[mock_interface])
+        mock_array.get_network_interfaces.return_value = Mock(
+            status_code=200, items=[mock_interface]
+        )
 
         result = _check_subinterfaces(mock_module, mock_array)
 
@@ -2069,7 +2127,9 @@ class TestCreateInterfaceWithSubnetFailure:
         mock_module.fail_json.side_effect = SystemExit(1)
         mock_array = Mock()
         mock_array.get_subnets.return_value = Mock(status_code=200)
-        mock_array.post_network_interfaces.return_value = Mock(status_code=200)
+        mock_array.post_network_interfaces.return_value = Mock(
+            status_code=200, items=[]
+        )
         mock_error = Mock()
         mock_error.message = "Patch failed"
         mock_array.patch_network_interfaces.return_value = Mock(
@@ -2108,7 +2168,9 @@ class TestCreateInterfaceWithSubnetFailure:
         mock_module.fail_json.side_effect = SystemExit(1)
         mock_array = Mock()
         mock_array.get_subnets.return_value = Mock(status_code=200)
-        mock_array.post_network_interfaces.return_value = Mock(status_code=200)
+        mock_array.post_network_interfaces.return_value = Mock(
+            status_code=200, items=[]
+        )
         mock_error = Mock()
         mock_error.message = "Subnet patch failed"
         mock_array.patch_network_interfaces.return_value = Mock(
@@ -2195,7 +2257,9 @@ class TestCreateInterfaceNoSubnetNoSubinterfaces:
         mock_module.fail_json.side_effect = SystemExit(1)
         mock_array = Mock()
         mock_array.get_subnets.return_value = Mock(status_code=404)
-        mock_array.post_network_interfaces.return_value = Mock(status_code=200)
+        mock_array.post_network_interfaces.return_value = Mock(
+            status_code=200, items=[]
+        )
         mock_error = Mock()
         mock_error.message = "Patch error"
         mock_array.patch_network_interfaces.return_value = Mock(
@@ -2626,6 +2690,9 @@ class TestUpdateInterfaceSubinterfacesChange:
             status_code=200, items=[mock_interface]
         )
         mock_array.patch_network_interfaces.return_value = Mock(status_code=200)
+        mock_array.post_network_interfaces.return_value = Mock(
+            status_code=200, items=[]
+        )
 
         with pytest.raises(SystemExit):
             update_interface(mock_module, mock_array)
@@ -2893,7 +2960,9 @@ class TestCreateInterfaceIpv6:
         }
         mock_array = Mock()
         mock_array.get_subnets.return_value = Mock(status_code=404)
-        mock_array.post_network_interfaces.return_value = Mock(status_code=200)
+        mock_array.post_network_interfaces.return_value = Mock(
+            status_code=200, items=[]
+        )
         mock_array.patch_network_interfaces.return_value = Mock(status_code=200)
 
         with pytest.raises(SystemExit):
@@ -3377,7 +3446,9 @@ class TestUpdateEthInterfaceClearAddress:
                 gateway=None,
             )
         )
-        mock_array.get_network_interfaces.return_value = Mock(items=[interface])
+        mock_array.get_network_interfaces.return_value = Mock(
+            status_code=200, items=[interface]
+        )
 
         with pytest.raises(SystemExit):
             update_interface(mock_module, mock_array)
@@ -3405,7 +3476,9 @@ class TestUpdateEthInterfaceClearAddress:
                 gateway="0.0.0.0",
             )
         )
-        mock_array.get_network_interfaces.return_value = Mock(items=[interface])
+        mock_array.get_network_interfaces.return_value = Mock(
+            status_code=200, items=[interface]
+        )
 
         with pytest.raises(SystemExit):
             update_interface(mock_module, mock_array)
@@ -3434,7 +3507,9 @@ class TestUpdateEthInterfaceClearAddress:
                 gateway="10.21.200.1",
             )
         )
-        mock_array.get_network_interfaces.return_value = Mock(items=[interface])
+        mock_array.get_network_interfaces.return_value = Mock(
+            status_code=200, items=[interface]
+        )
         mock_array.patch_network_interfaces.return_value = Mock(status_code=200)
 
         with pytest.raises(SystemExit):
@@ -3466,7 +3541,9 @@ class TestUpdateEthInterfaceClearAddress:
                 gateway=None,
             )
         )
-        mock_array.get_network_interfaces.return_value = Mock(items=[interface])
+        mock_array.get_network_interfaces.return_value = Mock(
+            status_code=200, items=[interface]
+        )
         mock_array.patch_network_interfaces.return_value = Mock(status_code=200)
 
         with pytest.raises(SystemExit):
@@ -3504,7 +3581,9 @@ class TestUpdateEthInterfaceClearAddress:
                 gateway=None,
             )
         )
-        mock_array.get_network_interfaces.return_value = Mock(items=[interface])
+        mock_array.get_network_interfaces.return_value = Mock(
+            status_code=200, items=[interface]
+        )
         mock_array.patch_network_interfaces.return_value = Mock(status_code=200)
 
         with pytest.raises(SystemExit):
@@ -3744,7 +3823,7 @@ class TestUpdateInterfaceAttachedServer:
         mock_module.params = _server_params(server="filesvr1")
         mock_array = Mock()
         mock_array.get_network_interfaces.return_value = Mock(
-            items=[_attached_interface()]
+            status_code=200, items=[_attached_interface()]
         )
         mock_array.patch_network_interfaces.return_value = Mock(status_code=200)
 
@@ -3768,7 +3847,7 @@ class TestUpdateInterfaceAttachedServer:
         mock_module.params = _server_params(server="filesvr1")
         mock_array = Mock()
         mock_array.get_network_interfaces.return_value = Mock(
-            items=[_attached_interface("filesvr1")]
+            status_code=200, items=[_attached_interface("filesvr1")]
         )
 
         with pytest.raises(SystemExit):
@@ -3799,7 +3878,9 @@ class TestCreateInterfaceAttachedServer:
         mock_module.params["subinterfaces"] = ["eth8"]
         mock_module.params["servicelist"] = ["file"]
         mock_array = Mock()
-        mock_array.post_network_interfaces.return_value = Mock(status_code=200)
+        mock_array.post_network_interfaces.return_value = Mock(
+            status_code=200, items=[]
+        )
         mock_array.patch_network_interfaces.return_value = Mock(status_code=200)
 
         create_interface(mock_module, mock_array)
@@ -3831,7 +3912,9 @@ class TestCreateInterfaceAttachedServer:
         mock_module.params["interface"] = "vif"
         mock_module.params["subinterfaces"] = ["eth8"]
         mock_array = Mock()
-        mock_array.post_network_interfaces.return_value = Mock(status_code=200)
+        mock_array.post_network_interfaces.return_value = Mock(
+            status_code=200, items=[]
+        )
         mock_array.patch_network_interfaces.return_value = Mock(status_code=200)
 
         create_interface(mock_module, mock_array)
@@ -3857,7 +3940,9 @@ class TestCreateInterfaceAttachedServer:
         mock_module.params["interface"] = "vif"
         mock_module.params["subinterfaces"] = ["eth8"]
         mock_array = Mock()
-        mock_array.post_network_interfaces.return_value = Mock(status_code=200)
+        mock_array.post_network_interfaces.return_value = Mock(
+            status_code=200, items=[]
+        )
         mock_array.patch_network_interfaces.return_value = Mock(status_code=200)
 
         create_interface(mock_module, mock_array)
@@ -3878,7 +3963,9 @@ class TestCreateInterfaceAttachedServer:
         mock_module.params["interface"] = "vif"
         mock_module.params["subinterfaces"] = ["eth8"]
         mock_array = Mock()
-        mock_array.post_network_interfaces.return_value = Mock(status_code=200)
+        mock_array.post_network_interfaces.return_value = Mock(
+            status_code=200, items=[]
+        )
         mock_array.patch_network_interfaces.return_value = Mock(status_code=200)
 
         create_interface(mock_module, mock_array)
@@ -3928,9 +4015,14 @@ def _run_main(params, interface_exists):
     mock_module.exit_json.side_effect = SystemExit(0)
     mock_array = Mock()
     mock_array.get_controllers.return_value = Mock(items=[Mock(model="FA-X70R3")])
-    mock_array.get_network_interfaces.return_value = Mock(
-        status_code=200 if interface_exists else 400
-    )
+    # A lookup by a name the array does not store is an error response with
+    # nothing to read, not an empty list
+    if interface_exists:
+        mock_array.get_network_interfaces.return_value = Mock(
+            status_code=200, items=[_attached_interface(name=params["name"])]
+        )
+    else:
+        mock_array.get_network_interfaces.return_value = Mock(status_code=400)
     with patch(
         "plugins.modules.purefa_network.AnsibleModule", return_value=mock_module
     ), patch(
@@ -3966,6 +4058,8 @@ class TestMainDeleteMissingInterface:
         )
 
         mock_delete.assert_called_once()
+        # The delete is sent to the name the array stores, resolved once in main
+        assert mock_delete.call_args[0][2] == "faqa_vif"
 
     def test_present_on_missing_interface_still_fails(self):
         mock_module, mock_create, mock_delete = _run_main(
@@ -4019,6 +4113,228 @@ class TestMainVirtualInterfaceName:
 
         mock_module.fail_json.assert_not_called()
         mock_module.exit_json.assert_called_once_with(changed=False)
+
+
+class TestScopedNames:
+    """Newer Purity stores a server-attached VIF as <server>::<name>"""
+
+    def test_double_colon_splits_into_server_and_name(self):
+        assert _split_scope("faqa-server::faqavif") == ("faqa-server", "faqavif")
+
+    def test_single_colon_is_tolerated(self):
+        assert _split_scope("faqa-server:faqavif") == ("faqa-server", "faqavif")
+
+    def test_bare_name_has_no_server(self):
+        assert _split_scope("faqavif") == (None, "faqavif")
+
+    def test_created_name_comes_from_the_create_response(self):
+        res = Mock(status_code=200, items=[_subref("faqa-server::faqavif")])
+        assert _created_name(res, "faqavif") == "faqa-server::faqavif"
+
+    def test_created_name_falls_back_to_the_requested_name(self):
+        assert _created_name(Mock(status_code=200, items=[]), "faqavif") == "faqavif"
+
+
+def _array_storing(*interfaces):
+    """An array that answers interface lookups the way Purity 6.10 does
+
+    A lookup by a name the array does not store is an error response rather
+    than an empty list, and a listing without names returns every interface.
+    """
+    by_name = {interface.name: interface for interface in interfaces}
+
+    def get_network_interfaces(names=None, **kwargs):
+        if names is None:
+            return Mock(status_code=200, items=list(interfaces))
+        found = [by_name[name] for name in names if name in by_name]
+        if len(found) != len(names):
+            error = Mock()
+            error.message = "Specified network interface does not exist"
+            return Mock(status_code=400, errors=[error])
+        return Mock(status_code=200, items=found)
+
+    mock_array = Mock()
+    mock_array.get_controllers.return_value = Mock(items=[Mock(model="FA-X70R3")])
+    mock_array.get_servers.return_value = Mock(status_code=200)
+    mock_array.get_network_interfaces.side_effect = get_network_interfaces
+    mock_array.patch_network_interfaces.return_value = Mock(status_code=200)
+    mock_array.delete_network_interfaces.return_value = Mock(status_code=200)
+    mock_array.post_network_interfaces.return_value = Mock(status_code=200, items=[])
+    return mock_array
+
+
+def _run_main_against(params, mock_array):
+    """Run main() end to end against an array, with no helper patched out"""
+    mock_module = Mock()
+    mock_module.check_mode = False
+    mock_module.params = params
+    mock_module.fail_json.side_effect = SystemExit(1)
+    mock_module.exit_json.side_effect = SystemExit(0)
+    with patch(
+        "plugins.modules.purefa_network.AnsibleModule", return_value=mock_module
+    ), patch("plugins.modules.purefa_network.get_array", return_value=mock_array):
+        try:
+            main()
+        except SystemExit:
+            pass
+    return mock_module
+
+
+def _patched_names(mock_array):
+    """The names every patch was sent to, in order"""
+    return [
+        call[1]["names"] for call in mock_array.patch_network_interfaces.call_args_list
+    ]
+
+
+def _stored_vif(server="faqa-server", name="faqa-server::faqavif"):
+    """A file VIF as a newer array stores it: under its file server's name"""
+    return _attached_interface(server, name=name)
+
+
+class TestMainScopedFileVif:
+    """A file VIF stored as <server>::<name>, given to the module by its bare name
+
+    The bare lookup is refused with "Specified network interface does not
+    exist" and only the listing reveals the interface, under its stored name.
+    Every read, update and delete then has to go to that name.
+    """
+
+    def test_present_matching_the_array_is_a_no_op(self):
+        mock_array = _array_storing(_stored_vif())
+
+        mock_module = _run_main_against(_server_params(name="faqavif"), mock_array)
+
+        mock_module.fail_json.assert_not_called()
+        mock_array.patch_network_interfaces.assert_not_called()
+        mock_module.exit_json.assert_called_once_with(changed=False)
+
+    def test_present_with_the_server_named_is_a_no_op(self):
+        mock_array = _array_storing(_stored_vif())
+
+        mock_module = _run_main_against(
+            _server_params(name="faqavif", server="faqa-server"), mock_array
+        )
+
+        mock_module.fail_json.assert_not_called()
+        mock_array.patch_network_interfaces.assert_not_called()
+        mock_module.exit_json.assert_called_once_with(changed=False)
+
+    def test_the_stored_name_is_accepted_as_given(self):
+        mock_array = _array_storing(_stored_vif())
+
+        mock_module = _run_main_against(
+            _server_params(name="faqa-server::faqavif"), mock_array
+        )
+
+        mock_module.fail_json.assert_not_called()
+        mock_module.exit_json.assert_called_once_with(changed=False)
+
+    def test_a_settings_change_patches_the_stored_name(self):
+        mock_array = _array_storing(_stored_vif())
+        params = _server_params(name="faqavif")
+        params["enabled"] = False
+
+        mock_module = _run_main_against(params, mock_array)
+
+        mock_module.fail_json.assert_not_called()
+        mock_module.exit_json.assert_called_once_with(changed=True)
+        patched = _patched_names(mock_array)
+        assert patched, "nothing was patched"
+        assert all(names == ["faqa-server::faqavif"] for names in patched), patched
+
+    def test_absent_deletes_the_stored_name(self):
+        mock_array = _array_storing(_stored_vif())
+
+        mock_module = _run_main_against(
+            _main_params(name="faqavif", state="absent"), mock_array
+        )
+
+        mock_module.fail_json.assert_not_called()
+        mock_array.delete_network_interfaces.assert_called_once_with(
+            names=["faqa-server::faqavif"]
+        )
+        mock_module.exit_json.assert_called_once_with(changed=True)
+
+    def test_absent_again_is_a_no_op(self):
+        """After the delete neither the bare nor the stored name exists"""
+        mock_array = _array_storing()
+
+        mock_module = _run_main_against(
+            _main_params(name="faqavif", state="absent"), mock_array
+        )
+
+        mock_module.fail_json.assert_not_called()
+        mock_array.delete_network_interfaces.assert_not_called()
+        mock_module.exit_json.assert_called_once_with(changed=False)
+
+    def test_an_ambiguous_bare_name_fails_naming_both(self):
+        """The same bare name under two file servers cannot be guessed"""
+        mock_array = _array_storing(
+            _stored_vif("srv1", "srv1::faqavif"), _stored_vif("srv2", "srv2::faqavif")
+        )
+
+        mock_module = _run_main_against(_server_params(name="faqavif"), mock_array)
+
+        mock_module.fail_json.assert_called_once()
+        msg = mock_module.fail_json.call_args[1]["msg"]
+        assert "srv1::faqavif" in msg
+        assert "srv2::faqavif" in msg
+        assert "server" in msg
+        mock_array.patch_network_interfaces.assert_not_called()
+        mock_array.delete_network_interfaces.assert_not_called()
+
+    def test_the_server_option_settles_an_ambiguous_name(self):
+        mock_array = _array_storing(
+            _stored_vif("srv1", "srv1::faqavif"), _stored_vif("srv2", "srv2::faqavif")
+        )
+
+        mock_module = _run_main_against(
+            _server_params(name="faqavif", server="srv2"), mock_array
+        )
+
+        mock_module.fail_json.assert_not_called()
+        mock_array.patch_network_interfaces.assert_not_called()
+        mock_module.exit_json.assert_called_once_with(changed=False)
+
+
+class TestMainCreateScopedFileVif:
+    """A create whose response reports the new interface as <server>::<name>"""
+
+    def test_follow_up_settings_go_to_the_stored_name(self):
+        mock_array = _array_storing(_attached_interface(name="ct0.eth8"))
+        mock_array.post_network_interfaces.return_value = Mock(
+            status_code=200, items=[_subref("faqa-server::faqavif")]
+        )
+
+        mock_module = _run_main_against(
+            _main_params(
+                name="faqavif",
+                interface="vif",
+                subinterfaces=["eth8"],
+                servicelist=["file"],
+                server="faqa-server",
+            ),
+            mock_array,
+        )
+
+        mock_module.fail_json.assert_not_called()
+        mock_array.post_network_interfaces.assert_called_once()
+        assert mock_array.post_network_interfaces.call_args[1]["names"] == ["faqavif"]
+        assert _patched_names(mock_array) == [["faqa-server::faqavif"]]
+        mock_module.exit_json.assert_called_once_with(changed=True)
+
+    def test_a_server_name_with_a_hyphen_passes_the_name_check(self):
+        """Only the interface's own part of <server>::<name> may not have one"""
+        mock_module, mock_create, mock_delete = _run_main(
+            _main_params(
+                name="faqa-server::faqavif", interface="vif", subinterfaces=["eth8"]
+            ),
+            interface_exists=False,
+        )
+
+        mock_module.fail_json.assert_not_called()
+        mock_create.assert_called_once()
 
 
 class TestUpdateInterfaceNoGatewayPatchBody:
