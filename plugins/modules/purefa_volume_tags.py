@@ -47,7 +47,8 @@ options:
   kvp:
     description:
     - List of key value pairs to assign to the volume.
-    - Separate the key from the value using a colon (:) only.
+    - Separate the key from the value using a colon (:). Only the first colon
+      splits the pair, so a value may itself contain colons (a URL, a time).
     - All items in list will use I(namespace) and I(copyable) settings.
     - See examples for exact formatting requirements
     - With I(state=absent) and no I(tag), the keys of these pairs are the tags
@@ -164,12 +165,8 @@ def create_tag(module, array):
     if not module.check_mode:
         pairs = []
         for tag in module.params["kvp"]:
-            pairs.append(
-                (
-                    tag.split(":")[0],
-                    tag.split(":")[1],
-                )
-            )
+            # split on the first colon only: the value may contain colons
+            pairs.append(tuple(tag.split(":", 1)))
         tags = [
             TagBatch(
                 copyable=module.params["copyable"],
@@ -202,12 +199,7 @@ def update_tags(module, array, current_tags):
     for tag in current_tags:
         current_pairs.append((tag.key, tag.value))
     for new_tag in module.params["kvp"]:
-        new_pairs.append(
-            (
-                new_tag.split(":")[0],
-                new_tag.split(":")[1],
-            )
-        )
+        new_pairs.append(tuple(new_tag.split(":", 1)))
     add_pairs = list(set(new_pairs) - set(current_pairs))
     if add_pairs:
         changed = True
@@ -245,7 +237,7 @@ def delete_tags(module, array, current_tags):
     if module.params["tag"]:
         requested = list(module.params["tag"])
     else:
-        requested = [pair.split(":")[0] for pair in module.params["kvp"] or []]
+        requested = [pair.split(":", 1)[0] for pair in module.params["kvp"] or []]
     if not requested:
         module.fail_json(msg="tag or kvp is required to remove volume tags")
     held = {tag.key for tag in current_tags}
