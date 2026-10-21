@@ -93,9 +93,12 @@ def main():
         if id_state is not None and id_state != module.params["enabled"]:
             changed = True
             if not module.check_mode:
+                # HardwarePatch is the request model. Hardware is the response
+                # model and serialises to an empty body, which the array
+                # rejects with "No operation was specified".
                 res = array.patch_hardware(
                     names=[module.params["name"]],
-                    hardware=flasharray.Hardware(
+                    hardware=flasharray.HardwarePatch(
                         identify_enabled=module.params["enabled"]
                     ),
                 )
