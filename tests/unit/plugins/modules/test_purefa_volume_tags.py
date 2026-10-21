@@ -355,3 +355,54 @@ class TestDeleteTags:
 
         assert "tag or kvp is required" in mock_module.fail_json.call_args[1]["msg"]
         mock_delete.assert_not_called()
+
+
+class TestValuesWithColons:
+    """A value may contain colons; only the first colon splits key from value"""
+
+    @patch("plugins.modules.purefa_volume_tags.TagBatch")
+    @patch("plugins.modules.purefa_volume_tags.check_response")
+    @patch("plugins.modules.purefa_volume_tags.get_with_context")
+    def test_create_tag_keeps_the_whole_value(self, mock_gwc, mock_check, mock_tag):
+        """Test create_tag sends url=https://pure.example.com:8443, not url=https"""
+        mock_module = Mock()
+        mock_module.params = {
+            "name": "test-vol",
+            "context": "",
+            "kvp": ["url:https://pure.example.com:8443", "when:2026-10-20T18:00:00Z"],
+            "copyable": True,
+            "namespace": "default",
+        }
+        mock_module.check_mode = False
+        mock_gwc.return_value = Mock(status_code=200)
+
+        create_tag(mock_module, Mock())
+
+        sent = {c.kwargs["key"]: c.kwargs["value"] for c in mock_tag.call_args_list}
+        assert sent == {
+            "url": "https://pure.example.com:8443",
+            "when": "2026-10-20T18:00:00Z",
+        }
+
+    @patch("plugins.modules.purefa_volume_tags.TagBatch")
+    @patch("plugins.modules.purefa_volume_tags.check_response")
+    @patch("plugins.modules.purefa_volume_tags.get_with_context")
+    def test_update_tags_compares_the_whole_value(self, mock_gwc, mock_check, mock_tag):
+        """Test an existing url tag with a port is recognised as unchanged"""
+        mock_module = Mock()
+        mock_module.params = {
+            "name": "test-vol",
+            "context": "",
+            "kvp": ["url:https://pure.example.com:8443"],
+            "copyable": True,
+            "namespace": "default",
+        }
+        mock_module.check_mode = False
+        current = Mock()
+        current.key = "url"
+        current.value = "https://pure.example.com:8443"
+
+        update_tags(mock_module, Mock(), [current])
+
+        mock_tag.assert_not_called()
+        mock_module.exit_json.assert_called_once_with(changed=False)
