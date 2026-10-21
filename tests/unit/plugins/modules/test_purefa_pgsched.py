@@ -8,7 +8,7 @@ from __future__ import absolute_import, division, print_function
 __metaclass__ = type
 
 import sys
-from unittest.mock import Mock, patch, MagicMock
+from unittest.mock import Mock, call, patch, MagicMock
 
 # Mock external dependencies before importing module
 sys.modules["grp"] = MagicMock()
@@ -243,9 +243,7 @@ class TestUpdateScheduleClearAtValue:
         # Verify that get_with_context was called
         assert mock_get_with_context.called
         # Verify SnapshotSchedule was called with at=-1 to clear the value
-        mock_snapshot_schedule.assert_called_with(
-            enabled=True, frequency=86400000, at=-1
-        )
+        mock_snapshot_schedule.assert_called_with(frequency=86400000, at=-1)
 
     @patch("plugins.modules.purefa_pgsched.get_with_context")
     @patch("plugins.modules.purefa_pgsched.check_response")
@@ -299,9 +297,7 @@ class TestUpdateScheduleClearAtValue:
         # Verify that get_with_context was called
         assert mock_get_with_context.called
         # Verify ReplicationSchedule was called with at=-1 to clear the value
-        mock_replication_schedule.assert_called_with(
-            enabled=True, frequency=86400000, at=-1
-        )
+        mock_replication_schedule.assert_called_with(frequency=86400000, at=-1)
 
     @patch("plugins.modules.purefa_pgsched.get_with_context")
     @patch("plugins.modules.purefa_pgsched.check_response")
@@ -350,9 +346,7 @@ class TestUpdateScheduleClearAtValue:
 
         # Should have made API call with at=-1 to clear (non-day frequency)
         assert mock_get_with_context.called
-        mock_snapshot_schedule.assert_called_with(
-            enabled=True, frequency=3600000, at=-1
-        )
+        mock_snapshot_schedule.assert_called_with(frequency=3600000, at=-1)
 
     @patch("plugins.modules.purefa_pgsched.get_with_context")
     @patch("plugins.modules.purefa_pgsched.check_response")
@@ -898,9 +892,7 @@ class TestQaFixes:
 
         update_schedule(mock_module, mock_array, None, None)
 
-        mock_snapshot_schedule.assert_called_with(
-            enabled=True, frequency=86400000, at=54000
-        )
+        mock_snapshot_schedule.assert_called_with(frequency=86400000, at=54000)
         mock_module.exit_json.assert_called_once_with(changed=True)
 
     @patch("plugins.modules.purefa_pgsched.get_with_context")
@@ -1028,25 +1020,36 @@ class TestQaFixes:
             "context": "",
         }
         delete_schedule(mock_module, mock_array)
-        assert mock_replication_schedule.call_args[1]["frequency"] == 14400000
+        frequencies = [
+            c.kwargs["frequency"]
+            for c in mock_replication_schedule.call_args_list
+            if "frequency" in c.kwargs
+        ]
+        assert frequencies == [14400000]
 
         mock_module = Mock()
         mock_module.check_mode = False
         mock_module.params = {"name": "test-pg", "schedule": "snapshot", "context": ""}
         delete_schedule(mock_module, mock_array)
-        assert mock_snapshot_schedule.call_args[1]["frequency"] == 300000
+        frequencies = [
+            c.kwargs["frequency"]
+            for c in mock_snapshot_schedule.call_args_list
+            if "frequency" in c.kwargs
+        ]
+        assert frequencies == [300000]
 
 
-class TestScheduleBodyCarriesEnabled:
-    """frequency + at without enabled is rejected by the array ("Missing or
-    invalid parameter"), so every body that sends at also sends enabled
+class TestEnabledPatchedAlone:
+    """Hardware (Purity 6.10.6): a PATCH body carrying ``enabled`` applies
+    only ``enabled`` and silently ignores any frequency/at sent with it, so
+    frequency and at go in one body without enabled, and enabled in another
     """
 
     @patch("plugins.modules.purefa_pgsched.get_with_context")
     @patch("plugins.modules.purefa_pgsched.check_response")
     @patch("plugins.modules.purefa_pgsched.SnapshotSchedule")
     @patch("plugins.modules.purefa_pgsched.ProtectionGroup")
-    def test_snap_at_body_includes_current_enabled(
+    def test_snap_at_body_has_no_enabled(
         self,
         mock_protection_group,
         mock_snapshot_schedule,
@@ -1073,16 +1076,16 @@ class TestScheduleBodyCarriesEnabled:
 
         update_schedule(mock_module, Mock(), None, None)
 
-        mock_snapshot_schedule.assert_called_once_with(
-            enabled=False, frequency=86400000, at=64800
-        )
+        # one GET plus exactly one PATCH, whose body has no enabled
+        assert mock_get_with_context.call_count == 2
+        mock_snapshot_schedule.assert_called_once_with(frequency=86400000, at=64800)
         mock_module.exit_json.assert_called_once_with(changed=True)
 
     @patch("plugins.modules.purefa_pgsched.get_with_context")
     @patch("plugins.modules.purefa_pgsched.check_response")
     @patch("plugins.modules.purefa_pgsched.SnapshotSchedule")
     @patch("plugins.modules.purefa_pgsched.ProtectionGroup")
-    def test_snap_enabled_and_at_change_is_one_patch(
+    def test_snap_enabled_and_at_change_are_two_patches_frequency_first(
         self,
         mock_protection_group,
         mock_snapshot_schedule,
@@ -1109,18 +1112,52 @@ class TestScheduleBodyCarriesEnabled:
 
         update_schedule(mock_module, Mock(), None, None)
 
-        # one GET of the pgroup plus exactly one PATCH carrying all three
+        # one GET of the pgroup plus two PATCHes
+        assert mock_get_with_context.call_count == 3
+        assert mock_snapshot_schedule.call_args_list == [
+            call(frequency=86400000, at=64800),
+            call(enabled=True),
+        ]
+        mock_module.exit_json.assert_called_once_with(changed=True)
+
+    @patch("plugins.modules.purefa_pgsched.get_with_context")
+    @patch("plugins.modules.purefa_pgsched.check_response")
+    @patch("plugins.modules.purefa_pgsched.SnapshotSchedule")
+    @patch("plugins.modules.purefa_pgsched.ProtectionGroup")
+    def test_snap_enabled_only_change_is_one_patch(
+        self,
+        mock_protection_group,
+        mock_snapshot_schedule,
+        mock_check_response,
+        mock_get_with_context,
+    ):
+        mock_module = Mock()
+        mock_module.check_mode = False
+        mock_module.params = {
+            "name": "test-pg",
+            "schedule": "snapshot",
+            "context": "",
+            "snap_at": None,
+            "snap_frequency": None,
+            "enabled": False,
+            "days": None,
+            "per_day": None,
+            "all_for": None,
+        }
+        mock_pg = create_mock_protection_group(snap_enabled=True)
+        mock_get_with_context.return_value = Mock(status_code=200, items=[mock_pg])
+
+        update_schedule(mock_module, Mock(), None, None)
+
         assert mock_get_with_context.call_count == 2
-        mock_snapshot_schedule.assert_called_once_with(
-            enabled=True, frequency=86400000, at=64800
-        )
+        mock_snapshot_schedule.assert_called_once_with(enabled=False)
         mock_module.exit_json.assert_called_once_with(changed=True)
 
     @patch("plugins.modules.purefa_pgsched.get_with_context")
     @patch("plugins.modules.purefa_pgsched.check_response")
     @patch("plugins.modules.purefa_pgsched.ReplicationSchedule")
     @patch("plugins.modules.purefa_pgsched.ProtectionGroup")
-    def test_replicate_at_body_includes_enabled(
+    def test_replicate_at_body_has_no_enabled(
         self,
         mock_protection_group,
         mock_replication_schedule,
@@ -1149,7 +1186,120 @@ class TestScheduleBodyCarriesEnabled:
 
         update_schedule(mock_module, Mock(), None, None)
 
-        mock_replication_schedule.assert_called_once_with(
-            enabled=True, frequency=86400000, at=64800
+        assert mock_get_with_context.call_count == 2
+        mock_replication_schedule.assert_called_once_with(frequency=86400000, at=64800)
+        mock_module.exit_json.assert_called_once_with(changed=True)
+
+    @patch("plugins.modules.purefa_pgsched.get_with_context")
+    @patch("plugins.modules.purefa_pgsched.check_response")
+    @patch("plugins.modules.purefa_pgsched.ReplicationSchedule")
+    @patch("plugins.modules.purefa_pgsched.ProtectionGroup")
+    def test_replicate_enabled_and_frequency_change_are_two_patches(
+        self,
+        mock_protection_group,
+        mock_replication_schedule,
+        mock_check_response,
+        mock_get_with_context,
+    ):
+        mock_module = Mock()
+        mock_module.check_mode = False
+        mock_module.params = {
+            "name": "test-pg",
+            "schedule": "replication",
+            "context": "",
+            "enabled": True,
+            "replicate_frequency": 3600,
+            "replicate_at": None,
+            "target_days": None,
+            "target_per_day": None,
+            "target_all_for": None,
+            "blackout_start": None,
+            "blackout_end": None,
+        }
+        mock_pg = create_mock_protection_group(
+            repl_frequency=86400000, repl_at=54000, repl_enabled=False
         )
+        mock_get_with_context.return_value = Mock(status_code=200, items=[mock_pg])
+
+        update_schedule(mock_module, Mock(), None, None)
+
+        assert mock_get_with_context.call_count == 3
+        assert mock_replication_schedule.call_args_list == [
+            call(frequency=3600000, at=-1),
+            call(enabled=True),
+        ]
+        mock_module.exit_json.assert_called_once_with(changed=True)
+
+
+class TestDeleteScheduleSplitsBodies:
+    """The schedule reset of state=absent is sent as separate bodies, the
+    disable last, because a body carrying enabled applies nothing else
+    """
+
+    @patch("plugins.modules.purefa_pgsched.TimeWindow")
+    @patch("plugins.modules.purefa_pgsched.ReplicationSchedule")
+    @patch("plugins.modules.purefa_pgsched.ProtectionGroup")
+    @patch("plugins.modules.purefa_pgsched.get_with_context")
+    @patch("plugins.modules.purefa_pgsched.check_response")
+    def test_replication_reset_blackout_frequency_then_disable(
+        self,
+        mock_check_response,
+        mock_get_with_context,
+        mock_protection_group,
+        mock_replication_schedule,
+        mock_time_window,
+    ):
+        mock_module = Mock()
+        mock_module.check_mode = False
+        mock_module.params = {
+            "name": "test-pg",
+            "schedule": "replication",
+            "context": "",
+        }
+        mock_schedule = Mock()
+        mock_schedule.replication_schedule.enabled = True
+        mock_get_with_context.return_value = Mock(
+            status_code=200, items=[mock_schedule]
+        )
+
+        delete_schedule(mock_module, Mock())
+
+        mock_time_window.assert_called_once_with(start=0, end=0)
+        assert mock_replication_schedule.call_args_list == [
+            call(blackout=mock_time_window.return_value),
+            call(frequency=14400000, at=-1),
+            call(enabled=False),
+        ]
+        # GET + blackout + frequency + enabled + target retention
+        assert mock_get_with_context.call_count == 5
+        mock_module.exit_json.assert_called_once_with(changed=True)
+
+    @patch("plugins.modules.purefa_pgsched.SnapshotSchedule")
+    @patch("plugins.modules.purefa_pgsched.ProtectionGroup")
+    @patch("plugins.modules.purefa_pgsched.get_with_context")
+    @patch("plugins.modules.purefa_pgsched.check_response")
+    def test_snapshot_reset_frequency_then_disable(
+        self,
+        mock_check_response,
+        mock_get_with_context,
+        mock_protection_group,
+        mock_snapshot_schedule,
+    ):
+        mock_module = Mock()
+        mock_module.check_mode = False
+        mock_module.params = {"name": "test-pg", "schedule": "snapshot", "context": ""}
+        mock_schedule = Mock()
+        mock_schedule.snapshot_schedule.enabled = True
+        mock_get_with_context.return_value = Mock(
+            status_code=200, items=[mock_schedule]
+        )
+
+        delete_schedule(mock_module, Mock())
+
+        assert mock_snapshot_schedule.call_args_list == [
+            call(frequency=300000, at=-1),
+            call(enabled=False),
+        ]
+        # GET + frequency + enabled + source retention
+        assert mock_get_with_context.call_count == 4
         mock_module.exit_json.assert_called_once_with(changed=True)

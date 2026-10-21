@@ -374,9 +374,34 @@ def update_schedule(module, array, snap_time, repl_time):
             or snap_at != current_snap["snap_at"]
         )
 
-        # Patch snap_enabled on its own only when the frequency/at body
-        # below is not sent, as that body carries enabled too
-        if snap_enabled != current_snap["snap_enabled"] and not snap_schedule_changed:
+        # Patch frequency and at together, never with enabled: a body that
+        # carries enabled applies only enabled and silently ignores the
+        # frequency and at sent with it (verified on Purity 6.10.6)
+        if snap_schedule_changed:
+            changed = True
+            if freq_is_days and snap_at is not None:
+                # Day frequency with at value set
+                schedule = SnapshotSchedule(frequency=snap_frequency, at=snap_at)
+            else:
+                # Non-day frequency, or clearing at value (snap_at is None)
+                # Send at=-1 to clear the value on the array
+                schedule = SnapshotSchedule(frequency=snap_frequency, at=-1)
+            res = get_with_context(
+                array,
+                "patch_protection_groups",
+                CONTEXT_API_VERSION,
+                module,
+                names=[module.params["name"]],
+                protection_group=ProtectionGroup(snapshot_schedule=schedule),
+            )
+            check_response(
+                res,
+                module,
+                f"Failed to update snap_frequency/at for pgroup {module.params['name']}",
+            )
+
+        # Patch enabled on its own, for the same reason
+        if snap_enabled != current_snap["snap_enabled"]:
             changed = True
             res = get_with_context(
                 array,
@@ -392,37 +417,6 @@ def update_schedule(module, array, snap_time, repl_time):
                 res,
                 module,
                 f"Failed to update snap_enabled for pgroup {module.params['name']}",
-            )
-
-        # Patch frequency and at together
-        # Handle clearing at value: when snap_at is None and current has a value, clear it
-        # The array rejects a body with frequency and at but no enabled
-        # ("Missing or invalid parameter"), so enabled always goes with at
-        if snap_schedule_changed:
-            changed = True
-            if freq_is_days and snap_at is not None:
-                # Day frequency with at value set
-                schedule = SnapshotSchedule(
-                    enabled=snap_enabled, frequency=snap_frequency, at=snap_at
-                )
-            else:
-                # Non-day frequency, or clearing at value (snap_at is None)
-                # Send at=-1 to clear the value on the array
-                schedule = SnapshotSchedule(
-                    enabled=snap_enabled, frequency=snap_frequency, at=-1
-                )
-            res = get_with_context(
-                array,
-                "patch_protection_groups",
-                CONTEXT_API_VERSION,
-                module,
-                names=[module.params["name"]],
-                protection_group=ProtectionGroup(snapshot_schedule=schedule),
-            )
-            check_response(
-                res,
-                module,
-                f"Failed to update snap_frequency/at for pgroup {module.params['name']}",
             )
 
         # Patch retention separately
@@ -511,12 +505,36 @@ def update_schedule(module, array, snap_time, repl_time):
             or replicate_at != current_repl["replicate_at"]
         )
 
-        # Patch replicate_enabled on its own only when the frequency/at body
-        # below is not sent, as that body carries enabled too
-        if (
-            replicate_enabled != current_repl["replicate_enabled"]
-            and not repl_schedule_changed
-        ):
+        # Patch frequency and at together, never with enabled: a body that
+        # carries enabled applies only enabled and silently ignores the
+        # frequency and at sent with it (verified on Purity 6.10.6)
+        if repl_schedule_changed:
+            changed = True
+            if freq_is_days and replicate_at is not None:
+                # Day frequency with at value set
+                schedule = ReplicationSchedule(
+                    frequency=replicate_frequency, at=replicate_at
+                )
+            else:
+                # Non-day frequency, or clearing at value (replicate_at is None)
+                # Send at=-1 to clear the value on the array
+                schedule = ReplicationSchedule(frequency=replicate_frequency, at=-1)
+            res = get_with_context(
+                array,
+                "patch_protection_groups",
+                CONTEXT_API_VERSION,
+                module,
+                names=[module.params["name"]],
+                protection_group=ProtectionGroup(replication_schedule=schedule),
+            )
+            check_response(
+                res,
+                module,
+                f"Failed to update replicate_frequency/at for pgroup {module.params['name']}",
+            )
+
+        # Patch enabled on its own, for the same reason
+        if replicate_enabled != current_repl["replicate_enabled"]:
             changed = True
             res = get_with_context(
                 array,
@@ -532,39 +550,6 @@ def update_schedule(module, array, snap_time, repl_time):
                 res,
                 module,
                 f"Failed to update replicate_enabled for pgroup {module.params['name']}",
-            )
-
-        # Patch frequency and at together
-        # Handle clearing at value: when replicate_at is None and current has a value, clear it
-        # The array rejects a body with frequency and at but no enabled
-        # ("Missing or invalid parameter"), so enabled always goes with at
-        if repl_schedule_changed:
-            changed = True
-            if freq_is_days and replicate_at is not None:
-                # Day frequency with at value set
-                schedule = ReplicationSchedule(
-                    enabled=replicate_enabled,
-                    frequency=replicate_frequency,
-                    at=replicate_at,
-                )
-            else:
-                # Non-day frequency, or clearing at value (replicate_at is None)
-                # Send at=-1 to clear the value on the array
-                schedule = ReplicationSchedule(
-                    enabled=replicate_enabled, frequency=replicate_frequency, at=-1
-                )
-            res = get_with_context(
-                array,
-                "patch_protection_groups",
-                CONTEXT_API_VERSION,
-                module,
-                names=[module.params["name"]],
-                protection_group=ProtectionGroup(replication_schedule=schedule),
-            )
-            check_response(
-                res,
-                module,
-                f"Failed to update replicate_frequency/at for pgroup {module.params['name']}",
             )
 
         # Patch blackout separately
@@ -621,8 +606,25 @@ def update_schedule(module, array, snap_time, repl_time):
     module.exit_json(changed=changed)
 
 
+def _patch_schedule(module, array, schedule, failure):
+    """PATCH one schedule body and fail the module if the array refuses it"""
+    res = get_with_context(
+        array,
+        "patch_protection_groups",
+        CONTEXT_API_VERSION,
+        module,
+        names=[module.params["name"]],
+        protection_group=ProtectionGroup(**schedule),
+    )
+    check_response(res, module, failure)
+
+
 def delete_schedule(module, array):
-    """Delete, ie. disable, Protection Group Schedules"""
+    """Delete, ie. disable, Protection Group Schedules
+
+    The reset is sent as separate PATCH bodies: a body carrying ``enabled``
+    applies only ``enabled`` and silently ignores everything sent with it.
+    """
     changed = False
 
     res = get_with_context(
@@ -633,30 +635,39 @@ def delete_schedule(module, array):
         names=[module.params["name"]],
     )
     schedule = list(res.items)[0]
+    reset_failed = f"Resetting pgroup {module.params['name']} {module.params['schedule']} schedule failed"
 
     if module.params["schedule"] == "replication":
         if schedule.replication_schedule.enabled:
             changed = True
             if not module.check_mode:
-                # Reset replication schedule
-                res = get_with_context(
+                # Reset blackout window, then frequency (clearing at), then
+                # disable, each on its own
+                _patch_schedule(
+                    module,
                     array,
-                    "patch_protection_groups",
-                    CONTEXT_API_VERSION,
-                    module,
-                    names=[module.params["name"]],
-                    protection_group=ProtectionGroup(
+                    dict(
                         replication_schedule=ReplicationSchedule(
-                            blackout=TimeWindow(start=0, end=0),
-                            frequency=14400000,
-                            enabled=False,
-                        ),
+                            blackout=TimeWindow(start=0, end=0)
+                        )
                     ),
+                    reset_failed,
                 )
-                check_response(
-                    res,
+                _patch_schedule(
                     module,
-                    f"Resetting pgroup {module.params['name']} {module.params['schedule']} schedule failed",
+                    array,
+                    dict(
+                        replication_schedule=ReplicationSchedule(
+                            frequency=14400000, at=-1
+                        )
+                    ),
+                    reset_failed,
+                )
+                _patch_schedule(
+                    module,
+                    array,
+                    dict(replication_schedule=ReplicationSchedule(enabled=False)),
+                    reset_failed,
                 )
                 # Reset target retention
                 res = get_with_context(
@@ -682,23 +693,18 @@ def delete_schedule(module, array):
         if schedule.snapshot_schedule.enabled:
             changed = True
             if not module.check_mode:
-                # Reset snapshot schedule
-                res = get_with_context(
+                # Reset frequency (clearing at), then disable, each on its own
+                _patch_schedule(
+                    module,
                     array,
-                    "patch_protection_groups",
-                    CONTEXT_API_VERSION,
-                    module,
-                    names=[module.params["name"]],
-                    protection_group=ProtectionGroup(
-                        snapshot_schedule=SnapshotSchedule(
-                            frequency=300000, enabled=False
-                        ),
-                    ),
+                    dict(snapshot_schedule=SnapshotSchedule(frequency=300000, at=-1)),
+                    reset_failed,
                 )
-                check_response(
-                    res,
+                _patch_schedule(
                     module,
-                    f"Resetting pgroup {module.params['name']} {module.params['schedule']} schedule failed",
+                    array,
+                    dict(snapshot_schedule=SnapshotSchedule(enabled=False)),
+                    reset_failed,
                 )
                 # Reset source retention
                 res = get_with_context(

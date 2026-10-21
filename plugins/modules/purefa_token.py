@@ -115,6 +115,7 @@ from ansible_collections.everpure.flasharray.plugins.module_utils.version import
 )
 from os import environ
 import platform
+from types import SimpleNamespace
 
 VERSION = 1.5
 USER_AGENT_BASE = "Ansible_token"
@@ -229,6 +230,43 @@ def token_exists(array, username):
     return bool(token_info)
 
 
+def token_from(result):
+    """The api_token in a purestorage (REST 1) token response.
+
+    ``get_api_token``, ``create_api_token`` and ``delete_api_token`` answer
+    with a dict carrying ``api_token``; a one-item list is unwrapped so the
+    shape of the answer cannot hide the token that was just created.
+    """
+    if isinstance(result, list):
+        result = result[0] if result else None
+    if isinstance(result, dict):
+        return result.get("api_token")
+    return None
+
+
+def get_token_array(module, api_token):
+    """Open the REST 2 client for the timeout path with ``api_token`` only.
+
+    ``get_array`` reads every credential it finds in the module parameters,
+    and this module's ``username``/``password`` must not take part in the
+    REST 2 login: the array refuses them ("Unable to list user for API
+    token") while a login with the user's own API token works, even for a
+    readonly user. ``get_array`` is therefore given a view of the module
+    that carries only the array address, the token just created or read
+    back, and the warnings switch; ``fail_json`` is the module's own.
+    """
+    view = SimpleNamespace(
+        params={
+            "fa_url": module.params["fa_url"],
+            "api_token": api_token,
+            "disable_warnings": module.params["disable_warnings"],
+        },
+        fail_json=module.fail_json,
+        warn=module.warn,
+    )
+    return get_array(view)
+
+
 def main():
     argument_spec = dict(
         fa_url=dict(required=False),
@@ -272,11 +310,17 @@ def main():
         result = array.delete_api_token(admin=username)
         changed = True
 
-    api_token = (result or {}).get("api_token")
+    api_token = token_from(result)
 
     if module.params["timeout"] and state == "present":
-        module.params["api_token"] = api_token
-        array6 = get_array(module)
+        if not api_token:
+            module.fail_json(
+                msg="Failed to read back the API token for {0}, so its "
+                "lifetime cannot be set".format(username)
+            )
+        # Log in to REST 2 with the token just created or read back, and
+        # with nothing else: username/password are refused there.
+        array6 = get_token_array(module, api_token)
         # The lifetime is a REST 2 feature, so compare against the REST 2
         # version, not the REST 1 list the purestorage client reports.
         if LooseVersion(TIMEOUT_API_VERSION) <= LooseVersion(array6.get_rest_version()):

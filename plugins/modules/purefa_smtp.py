@@ -106,49 +106,14 @@ EXAMPLES = r"""
 RETURN = r"""
 """
 
+import json
+import uuid
+
 HAS_PURESTORAGE = True
 try:
     from pypureclient.flasharray import SmtpServer
 except ImportError:
     HAS_PURESTORAGE = False
-    SmtpServer = object  # pylint: disable=invalid-name
-
-
-def request_dict_with_nulls(model, body):
-    """Put the fields explicitly set to None on ``model`` back into ``body``.
-
-    The SDK's ``as_request_dict`` drops every None field, so there is no way
-    to send an explicit null through a stock model. Fields passed to the
-    constructor (``__fields_set__``) but missing from the body were None.
-    """
-    for field in model.__fields_set__:
-        body.setdefault(field, None)
-    return body
-
-
-def call_with_nulls(api_call, model_class, **kwargs):
-    """Call ``api_call(**kwargs)`` with ``model_class`` sending the fields
-    explicitly set to None as JSON null.
-
-    The array refuses ``relay_host: ""`` ("Not a valid hostname") and only
-    clears the relay host with ``relay_host: null``. Every SDK API method is
-    wrapped in pydantic ``validate_arguments``, which re-validates the body
-    into a plain ``model_class`` copy before the transport serialises it with
-    ``as_request_dict``, so an override on a subclass never reaches the
-    wire. The copy does keep ``__fields_set__``, so the method is swapped on
-    the base class for the duration of the call and restored afterwards.
-    """
-    original = model_class.as_request_dict
-
-    def as_request_dict(self):
-        return request_dict_with_nulls(self, original(self))
-
-    model_class.as_request_dict = as_request_dict
-    try:
-        return api_call(**kwargs)
-    finally:
-        model_class.as_request_dict = original
-
 
 from ansible.module_utils.basic import AnsibleModule
 from ansible_collections.everpure.flasharray.plugins.module_utils.purefa import (
@@ -197,26 +162,74 @@ def _get_current_smtp(array):
     return {field: getattr(current_smtp, field, "") or "" for field in SMTP_FIELDS}
 
 
+def _api_error_message(error):
+    """The array's error text from an exception raised by the SDK transport.
+
+    The transport's ApiException carries the response body as JSON, either
+    ``{"errors": [{"message": ...}]}`` from the array or ``{"message": ...}``
+    from the gateway on 403/429.
+    """
+    try:
+        body = json.loads(getattr(error, "body", None))
+        errors = body.get("errors")
+        return (errors[0] if errors else body).get("message") or str(error)
+    except (TypeError, ValueError, AttributeError, IndexError, KeyError):
+        return str(error)
+
+
+def patch_smtp_servers_raw(array, body):
+    """PATCH /smtp-servers with ``body``, a dict, serialised exactly as given.
+
+    The array refuses ``relay_host: ""`` ("Not a valid hostname") and only
+    clears the relay host with ``relay_host: null``, but no SDK model can put
+    a null on the wire: ``as_request_dict`` drops every None field, and the
+    client re-validates the body into a fresh model before serialising it,
+    so neither a subclass nor a swapped method on the model class survives
+    to the transport. The transport itself serialises a dict as it is
+    (``sanitize_for_serialization`` keeps None values and ``json.dumps``
+    writes them as null), so the body is handed to the client's transport
+    directly, with the session header and user agent the client has already
+    set as default headers.
+
+    Returns ``(status_code, error_message)``; ``error_message`` is None when
+    the array accepted the request.
+    """
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "X-Request-ID": str(uuid.uuid4()),
+    }
+    try:
+        response = array._api_client.call_api(
+            "/api/{0}/smtp-servers".format(array.get_rest_version()),
+            "PATCH",
+            path_params={},
+            query_params=[],
+            header_params=headers,
+            body=body,
+            response_types_map={},
+            auth_settings=[],
+            _request_timeout=getattr(array, "_timeout", None),
+        )
+    except Exception as error:  # pylint: disable=broad-except
+        return getattr(error, "status", None), _api_error_message(error)
+    return response.status_code, None
+
+
 def delete_smtp(module, array):
     """Delete SMTP settings"""
     changed = _get_current_smtp(array) != CLEARED_SMTP
     if changed and not module.check_mode:
-        res = call_with_nulls(
-            array.patch_smtp_servers,
-            SmtpServer,
-            smtp=SmtpServer(
-                sender_domain=CLEARED_SMTP["sender_domain"],
-                user_name=CLEARED_SMTP["user_name"],
-                password="",
-                # "" is "Not a valid hostname" to the array; null clears it
-                relay_host=None,
-                encryption_mode=CLEARED_SMTP["encryption_mode"],
-                sender_username=CLEARED_SMTP["sender_username"],
-                subject_prefix=CLEARED_SMTP["subject_prefix"],
-                body_prefix=CLEARED_SMTP["body_prefix"],
-            ),
-        )
-        check_response(res, module, "Delete SMTP settings failed")
+        body = dict(CLEARED_SMTP, password="")
+        # "" is "Not a valid hostname" to the array; null clears it
+        body["relay_host"] = None
+        status_code, error = patch_smtp_servers_raw(array, body)
+        if error is not None:
+            module.fail_json(
+                msg="Delete SMTP settings failed. Error: {0}".format(error),
+                status_code=status_code,
+                changed=False,
+            )
     module.exit_json(changed=changed)
 
 
