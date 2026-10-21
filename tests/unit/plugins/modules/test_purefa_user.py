@@ -791,3 +791,190 @@ class TestApiTokenCheckMode:
         mock_array.delete_admins_api_tokens.assert_not_called()
         mock_array.post_admins_api_tokens.assert_not_called()
         assert mock_module.exit_json.call_args[1]["changed"] is True
+
+
+def _token_response(token):
+    item = Mock()
+    item.api_token = Mock()
+    item.api_token.token = token
+    return Mock(status_code=200, items=[item])
+
+
+class TestApiTokenOnlyDeletedWhenPresent:
+    """api: true on an admin without a token must not try to delete one
+
+    Seen on hardware: "Failed to delete original API token failed. Error:
+    No API token created".
+    """
+
+    @patch("plugins.modules.purefa_user.check_response")
+    @patch("plugins.modules.purefa_user.convert_time_to_millisecs")
+    def test_local_user_without_token(self, mock_convert_time, mock_check_response):
+        mock_convert_time.return_value = 0
+        mock_module = Mock()
+        mock_module.check_mode = False
+        mock_module.params = {
+            "name": "ansible",
+            "role": "readonly",
+            "password": None,
+            "old_password": None,
+            "api": True,
+            "timeout": "0",
+            "public_key": None,
+        }
+        mock_array = Mock()
+        mock_array.post_admins_api_tokens.return_value = _token_response("fresh")
+        # The SDK model has no api_token attribute at all for such an admin
+        mock_user = Mock(spec=["name", "role", "is_local"])
+        mock_user.role = Mock()
+        mock_user.role.name = "readonly"
+
+        create_local_user(mock_module, mock_array, user=mock_user)
+
+        mock_array.delete_admins_api_tokens.assert_not_called()
+        mock_array.post_admins_api_tokens.assert_called_once()
+        call_kwargs = mock_module.exit_json.call_args[1]
+        assert call_kwargs["changed"] is True
+        assert call_kwargs["user_info"] == "fresh"
+
+    @patch("plugins.modules.purefa_user.check_response")
+    @patch("plugins.modules.purefa_user.convert_time_to_millisecs")
+    def test_local_user_with_token(self, mock_convert_time, mock_check_response):
+        mock_convert_time.return_value = 0
+        mock_module = Mock()
+        mock_module.check_mode = False
+        mock_module.params = {
+            "name": "ansible",
+            "role": "readonly",
+            "password": None,
+            "old_password": None,
+            "api": True,
+            "timeout": "0",
+            "public_key": None,
+        }
+        mock_array = Mock()
+        mock_array.post_admins_api_tokens.return_value = _token_response("fresh")
+        mock_user = Mock()
+        mock_user.role.name = "readonly"
+        mock_user.api_token.created_at = 1700000000000
+
+        create_local_user(mock_module, mock_array, user=mock_user)
+
+        mock_array.delete_admins_api_tokens.assert_called_once_with(names=["ansible"])
+        mock_array.post_admins_api_tokens.assert_called_once()
+
+    @patch("plugins.modules.purefa_user.check_response")
+    @patch("plugins.modules.purefa_user.convert_time_to_millisecs")
+    def test_ad_user_with_admin_entry_but_no_token(
+        self, mock_convert_time, mock_check_response
+    ):
+        mock_convert_time.return_value = 0
+        mock_module = Mock()
+        mock_module.check_mode = False
+        mock_module.params = {
+            "name": "ad-user",
+            "api": True,
+            "timeout": "0",
+            "public_key": None,
+        }
+        mock_array = Mock()
+        mock_array.post_admins_api_tokens.return_value = _token_response("fresh")
+        mock_user = Mock(spec=["name", "role", "is_local", "public_key"])
+
+        update_ad_user(mock_module, mock_array, user=mock_user)
+
+        mock_array.delete_admins_api_tokens.assert_not_called()
+        mock_array.post_admins_api_tokens.assert_called_once()
+
+    @patch("plugins.modules.purefa_user.check_response")
+    def test_delete_ad_user_without_token(self, mock_check_response):
+        mock_module = Mock()
+        mock_module.check_mode = False
+        mock_module.params = {"name": "ad-user"}
+        mock_array = Mock()
+        mock_user = Mock(spec=["name", "role", "public_key"])
+        mock_user.public_key = "****"
+
+        delete_ad_user(mock_module, mock_array, user=mock_user)
+
+        mock_array.delete_admins_api_tokens.assert_not_called()
+        mock_array.patch_admins.assert_called_once()
+        mock_module.exit_json.assert_called_once_with(changed=True)
+
+
+class TestPasswordWithoutOldPassword:
+    """password without old_password no longer short-circuits the other
+    attributes; it is skipped with a warning."""
+
+    @patch("plugins.modules.purefa_user.check_response")
+    def test_role_change_still_applied(self, mock_check_response):
+        mock_module = Mock()
+        mock_module.check_mode = False
+        mock_module.params = {
+            "name": "ansible",
+            "role": "array_admin",
+            "password": "newpass",
+            "old_password": None,
+            "api": False,
+            "timeout": "0",
+            "public_key": None,
+        }
+        mock_array = Mock()
+        mock_user = Mock()
+        mock_user.role.name = "readonly"
+
+        create_local_user(mock_module, mock_array, user=mock_user)
+
+        mock_module.warn.assert_called_once()
+        mock_array.patch_admins.assert_called_once()
+        call_kwargs = mock_module.exit_json.call_args[1]
+        assert call_kwargs["changed"] is True
+
+
+class TestPublicKeyComparison:
+    """Setting a key is documented as not idempotent; clearing one is"""
+
+    @patch("plugins.modules.purefa_user.check_response")
+    def test_setting_key_on_local_user_always_patches(self, mock_check_response):
+        mock_module = Mock()
+        mock_module.check_mode = False
+        mock_module.params = {
+            "name": "ansible",
+            "role": "readonly",
+            "password": None,
+            "old_password": None,
+            "api": False,
+            "timeout": "0",
+            "public_key": "ssh-ed25519 AAAAC3...",
+        }
+        mock_array = Mock()
+        mock_user = Mock()
+        mock_user.role.name = "readonly"
+        mock_user.public_key = "****"
+
+        create_local_user(mock_module, mock_array, user=mock_user)
+
+        mock_array.patch_admins.assert_called_once()
+        assert mock_module.exit_json.call_args[1]["changed"] is True
+
+    def test_clearing_absent_key_on_local_user_is_noop(self):
+        mock_module = Mock()
+        mock_module.check_mode = False
+        mock_module.params = {
+            "name": "ansible",
+            "role": "readonly",
+            "password": None,
+            "old_password": None,
+            "api": False,
+            "timeout": "0",
+            "public_key": "",
+        }
+        mock_array = Mock()
+        mock_user = Mock(spec=["name", "role"])
+        mock_user.role = Mock()
+        mock_user.role.name = "readonly"
+
+        create_local_user(mock_module, mock_array, user=mock_user)
+
+        mock_array.patch_admins.assert_not_called()
+        assert mock_module.exit_json.call_args[1]["changed"] is False

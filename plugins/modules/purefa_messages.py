@@ -88,7 +88,7 @@ from ansible_collections.everpure.flasharray.plugins.module_utils.api_helpers im
 
 MIN_REQUIRED_API_VERSION = "2.2"
 ALLOWED_PERIODS = ["h", "d", "w", "y"]
-# Time periods in micro-seconds
+# Time periods in milliseconds
 HOUR = 3600000
 DAY = HOUR * 24
 WEEK = DAY * 7
@@ -97,8 +97,14 @@ CONTEXT_VERSION = "2.38"
 
 
 def _create_time_window(window):
+    """Return the window length in milliseconds, or None if it is malformed"""
     period = window[-1].lower()
-    multiple = int(window[0:-1])
+    try:
+        multiple = int(window[0:-1])
+    except ValueError:
+        return None
+    if multiple < 1:
+        return None
     if period == "h":
         return HOUR * multiple
     if period == "d":
@@ -136,8 +142,14 @@ def main():
             "Minimum version required: {0}".format(MIN_REQUIRED_API_VERSION)
         )
     if module.params["history"][-1].lower() not in ALLOWED_PERIODS:
-        module.fail_json(msg="historical window value is not an allowsd time period")
-    since_time = str(time_now - _create_time_window(module.params["history"].lower()))
+        module.fail_json(msg="historical window value is not an allowed time period")
+    time_window = _create_time_window(module.params["history"].lower())
+    if time_window is None:
+        module.fail_json(
+            msg="history must be a positive integer followed by one of "
+            "h, d, w or y, for example 4w"
+        )
+    since_time = str(time_now - time_window)
     if module.params["flagged"]:
         flagged = " and flagged='True'"
     else:

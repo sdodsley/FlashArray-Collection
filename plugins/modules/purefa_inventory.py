@@ -187,6 +187,25 @@ def generate_new_hardware_dict(array):
         port_details = list(array.get_network_interfaces_port_details().items)
         for port_detail in port_details:
             port_name = port_detail.name
+            # Port details can name a port that get_hardware did not list
+            hw_info["interfaces"].setdefault(
+                port_name,
+                {
+                    "type": None,
+                    "status": None,
+                    "speed": None,
+                    "connector_type": None,
+                    "rx_los": None,
+                    "rx_power": None,
+                    "static": {},
+                    "temperature": None,
+                    "tx_bias": None,
+                    "tx_fault": None,
+                    "tx_power": None,
+                    "voltage": None,
+                    "slot": None,
+                },
+            )
             hw_info["interfaces"][port_name][
                 "interface_type"
             ] = port_detail.interface_type

@@ -137,30 +137,44 @@ MIN_REQUIRED_API_VERSION = "2.11"
 def test_saml(module, array):
     """Test SAML2 IdP configuration"""
     test_response = []
-    response = list(array.get_sso_saml2_idps_test(names=[module.params["name"]]).items)
-    for component in response:
-        if component.enabled:
-            enabled = "true"
-        else:
-            enabled = "false"
-        if component.success:
-            success = "true"
-        else:
-            success = "false"
+    res = array.get_sso_saml2_idps_test(names=[module.params["name"]])
+    check_response(res, module, f"Test of SAML2 IdP {module.params['name']}")
+    # The TestResult model only carries the fields the array chose to report,
+    # so every field is read with a default (resource in particular may be
+    # absent).
+    for component in list(res.items):
+        enabled = "true" if getattr(component, "enabled", False) else "false"
+        success = "true" if getattr(component, "success", False) else "false"
+        resource = getattr(component, "resource", None)
         test_response.append(
             {
-                "component_address": component.component_address,
-                "component_name": component.component_name,
-                "description": component.description,
-                "destination": component.destination,
+                "component_address": getattr(component, "component_address", None),
+                "component_name": getattr(component, "component_name", None),
+                "description": getattr(component, "description", None),
+                "destination": getattr(component, "destination", None),
                 "enabled": enabled,
                 "result_details": getattr(component, "result_details", ""),
                 "success": success,
-                "test_type": component.test_type,
-                "resource_name": component.resource.name,
+                "test_type": getattr(component, "test_type", None),
+                "resource_name": getattr(resource, "name", None),
             }
         )
-    module.exit_json(changed=True, test_response=test_response)
+    # Running a test does not modify the array
+    module.exit_json(changed=False, test_response=test_response)
+
+
+def _service_provider(decryption_credential, signing_credential):
+    """Build the SP object, naming only the credentials that were given
+
+    A ReferenceNoId(name=None) is rejected by the array, so an unset
+    credential is left out rather than sent as a null reference.
+    """
+    sp_fields = {}
+    if decryption_credential:
+        sp_fields["decryption_credential"] = ReferenceNoId(name=decryption_credential)
+    if signing_credential:
+        sp_fields["signing_credential"] = ReferenceNoId(name=signing_credential)
+    return Saml2SsoSp(**sp_fields)
 
 
 def delete_saml(module, array):
@@ -239,10 +253,7 @@ def update_saml(module, array):
     if old_idp != new_idp:
         changed = True
         if not module.check_mode:
-            sp = Saml2SsoSp(
-                decryption_credential=ReferenceNoId(name=new_idp["sp_decrypt_cred"]),
-                signing_credential=ReferenceNoId(name=new_idp["sp_sign_cred"]),
-            )
+            sp = _service_provider(new_idp["sp_decrypt_cred"], new_idp["sp_sign_cred"])
             idp = Saml2SsoIdp(
                 url=new_idp["id_url"],
                 metadata_url=new_idp["id_metadata"],
@@ -269,11 +280,8 @@ def create_saml(module, array):
     """Create SAML2 IdP"""
     changed = True
     if not module.check_mode:
-        sp = Saml2SsoSp(
-            decryption_credential=ReferenceNoId(
-                name=module.params["decryption_credential"]
-            ),
-            signing_credential=ReferenceNoId(name=module.params["signing_credential"]),
+        sp = _service_provider(
+            module.params["decryption_credential"], module.params["signing_credential"]
         )
         idp = Saml2SsoIdp(
             url=module.params["url"],

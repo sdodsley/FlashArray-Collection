@@ -29,6 +29,9 @@ options:
     - Start date and time (based on array local time)
     - If not provided epoch is assumed
     - Expected format "YYYY-MM-DD hh:mm:ss"
+    - Besides the sessions that started at or after this time, the array
+      also returns the sessions that carry no start time, such as failed
+      login attempts.
     type: str
   end:
     description:
@@ -98,28 +101,33 @@ from ansible_collections.everpure.flasharray.plugins.module_utils.common import 
 TZ_VERSION = "2.26"
 
 
+def _to_timestamp(module, name, timezone):
+    """Convert the date/time in parameter ``name`` to epoch milliseconds"""
+    value = module.params[name] + " " + timezone
+    try:
+        return int(
+            1000
+            * datetime.datetime.timestamp(
+                datetime.datetime.strptime(value, "%Y-%m-%d %H:%M:%S %z")
+            )
+        )
+    except ValueError:
+        module.fail_json(
+            msg="{0} value {1} is not a valid date/time. "
+            'Expected format is "YYYY-MM-DD hh:mm:ss"'.format(name, module.params[name])
+        )
+
+
 def _get_filter_string(module, timezone):
     filter_string = ""
     if module.params["end"]:
         if module.params["end"] != "0":
-            end = module.params["end"] + " " + timezone
-            end_timestamp = int(
-                1000
-                * datetime.datetime.timestamp(
-                    datetime.datetime.strptime(end, "%Y-%m-%d %H:%M:%S %z")
-                )
-            )
+            end_timestamp = _to_timestamp(module, "end", timezone)
         else:
             end_timestamp = 0
     if module.params["start"]:
         if module.params["start"] != "0":
-            start = module.params["start"] + " " + timezone
-            start_timestamp = int(
-                1000
-                * datetime.datetime.timestamp(
-                    datetime.datetime.strptime(start, "%Y-%m-%d %H:%M:%S %z")
-                )
-            )
+            start_timestamp = _to_timestamp(module, "start", timezone)
         else:
             start_timestamp = 0
     if module.params["end"] and module.params["start"]:

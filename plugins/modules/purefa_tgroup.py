@@ -135,7 +135,6 @@ except ImportError:
 from ansible.module_utils.basic import AnsibleModule
 from ansible_collections.everpure.flasharray.plugins.module_utils.api_helpers import (
     check_api_version,
-    check_response,
     delete_with_context,
     get_with_context,
     patch_with_context,
@@ -165,6 +164,47 @@ def _missing_names(requested_names, items):
         getattr(item, "name", None) for item in items if getattr(item, "name", None)
     }
     return sorted(set(requested_names or []).difference(found_names))
+
+
+def _error_text(res):
+    """Render every error of an ErrorResponse, message and context included.
+
+    Topology group errors often carry the useful detail in `context` while
+    `message` is None, so reporting only errors[0].message loses the cause.
+    """
+    parts = []
+    for err in getattr(res, "errors", None) or []:
+        message = getattr(err, "message", None)
+        context = getattr(err, "context", None)
+        if message and context:
+            parts.append(f"{message} ({context})")
+        elif message or context:
+            parts.append(str(message or context))
+    if not parts:
+        return f"HTTP {getattr(res, 'status_code', 'unknown')} with no error detail"
+    return "; ".join(parts)
+
+
+def fail_on_error(res, module, operation):
+    """Fail the module with the full error list when a response is not 200."""
+    status_code = getattr(res, "status_code", None)
+    if isinstance(status_code, int) and status_code != 200:
+        module.fail_json(
+            msg=f"{operation} failed. Error: {_error_text(res)}",
+            status_code=status_code,
+            changed=False,
+        )
+
+
+def check_fleet_membership(module, array):
+    """Topology groups describe fleet topology; fail early outside a fleet."""
+    res = array.get_fleets()
+    if getattr(res, "status_code", None) == 200 and not list(
+        getattr(res, "items", []) or []
+    ):
+        module.fail_json(
+            msg="Topology groups require the array to be a member of a fleet."
+        )
 
 
 def get_tgroup(module, array, name=None):
@@ -238,7 +278,7 @@ def add_members(module, array, tgroup_name, array_members=None, child_tgroups=No
         topology_group_names=[tgroup_name],
         members=_build_members_payload(array_members, child_tgroups),
     )
-    check_response(
+    fail_on_error(
         res,
         module,
         f"Failed to add members to topology group {tgroup_name}",
@@ -256,7 +296,7 @@ def remove_members(module, array, tgroup_name, member_names):
         topology_group_names=[tgroup_name],
         member_names=member_names,
     )
-    check_response(
+    fail_on_error(
         res,
         module,
         f"Failed to remove members from topology group {tgroup_name}",
@@ -309,7 +349,7 @@ def validate_inputs(module, array, current_tgroup=None, current_members=None):
             module,
             names=requested_children,
         )
-        check_response(res, module, "Child topology group not found")
+        fail_on_error(res, module, "Child topology group not found")
         missing_children = _missing_names(requested_children, getattr(res, "items", []))
         if missing_children:
             module.fail_json(
@@ -318,7 +358,7 @@ def validate_inputs(module, array, current_tgroup=None, current_members=None):
 
     if module.params["array"]:
         res = array.get_remote_arrays(current_fleet_only=True)
-        check_response(res, module, "Array not found")
+        fail_on_error(res, module, "Array not found")
         missing_arrays = _missing_names(
             module.params["array"], getattr(res, "items", [])
         )
@@ -347,7 +387,7 @@ def create_tgroup(module, array):
             module,
             **kwargs,
         )
-        check_response(
+        fail_on_error(
             res,
             module,
             f"Failed to create topology group {module.params['name']}",
@@ -391,7 +431,7 @@ def update_tgroup(module, array, tgroup=None, members=None):
                             topology_group=NewName(name=module.params["rename"])
                         ),
                     )
-                    check_response(
+                    fail_on_error(
                         res,
                         module,
                         f"Rename to {module.params['rename']} failed",
@@ -419,7 +459,7 @@ def update_tgroup(module, array, tgroup=None, members=None):
                     topology_group=TgroupPatch(),
                     to_parent_topology_group_names=[module.params["parent"]],
                 )
-                check_response(
+                fail_on_error(
                     res,
                     module,
                     (
@@ -474,7 +514,7 @@ def delete_tgroup(module, array):
             module,
             names=[module.params["name"]],
         )
-        check_response(
+        fail_on_error(
             res,
             module,
             f"Failed to delete topology group {module.params['name']}",
@@ -507,6 +547,7 @@ def main():
 
     array = get_array(module)
     check_api_version(array, TGROUP_API_VERSION, module, "Topology groups")
+    check_fleet_membership(module, array)
 
     current_tgroup = get_tgroup(module, array)
     current_members = get_tgroup_members(module, array) if current_tgroup else []
@@ -523,6 +564,13 @@ def main():
     elif current_tgroup and module.params["state"] == "absent":
         delete_tgroup(module, array)
     elif current_tgroup is None and module.params["state"] == "absent":
+        module.exit_json(changed=False)
+    elif (
+        current_tgroup is None
+        and module.params["rename"]
+        and rename_exists(module, array)
+    ):
+        # Rename already completed on an earlier run
         module.exit_json(changed=False)
     else:
         create_tgroup(module, array)

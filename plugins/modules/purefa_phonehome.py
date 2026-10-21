@@ -115,7 +115,11 @@ def main():
                 check_response(res, module, "Updating Phonehome failed")
     elif module.params["state"] == "present" and phonehome:
         if LooseVersion(EXCLUDES_API_VERSION) <= LooseVersion(api_version):
-            if module.params["excludes"] != excludes:
+            # Only compare when excludes was supplied; an omitted parameter
+            # is None while the array reports no excludes as an empty list.
+            if module.params["excludes"] is not None and sorted(
+                module.params["excludes"]
+            ) != sorted(excludes or []):
                 changed = True
                 if not module.check_mode:
                     res = array.patch_support(

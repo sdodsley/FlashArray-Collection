@@ -30,6 +30,9 @@ options:
   state:
     description:
     - Set or delete SMTP configuration
+    - I(state=absent) clears the relay host, user, password, encryption mode,
+      sender and prefixes. The sender domain is kept, because the array
+      refuses to clear it; set a new value with I(state=present) instead.
     default: present
     type: str
     choices: [ absent, present ]
@@ -40,6 +43,7 @@ options:
   user:
     description:
     - The SMTP username.
+    - Use an empty string, together with an empty I(password), to clear.
     type: str
   relay_host:
     description:
@@ -52,6 +56,7 @@ options:
   sender:
     description:
     - The local-part of the email address used when sending alert email messages.
+    - Use an empty string to clear.
     type: str
     version_added: "1.33.0"
   subject_prefix:
@@ -59,6 +64,7 @@ options:
     - Optional string added to the beginning of the subject when sending alert
       email messages.
     - HTML tags are not allowed.
+    - Use an empty string to clear.
     type: str
     version_added: "1.33.0"
   body_prefix:
@@ -66,6 +72,7 @@ options:
     - Optional string added to the beginning of the email body when sending
       alert email messages.
     - HTML tags are not allowed.
+    - Use an empty string to clear.
     type: str
     version_added: "1.33.0"
   encryption_mode:
@@ -127,10 +134,10 @@ SMTP_FIELDS = (
     "body_prefix",
 )
 
-# The settings written by ``state: absent``, and therefore the state in which
-# there is nothing left to delete.
+# The settings ``state: absent`` clears, and therefore the state in which
+# there is nothing left to delete. sender_domain is not among them: the
+# array refuses to clear it (see delete_smtp).
 CLEARED_SMTP = {
-    "sender_domain": "None",
     "relay_host": "",
     "user_name": "",
     "encryption_mode": "",
@@ -155,21 +162,19 @@ def _get_current_smtp(array):
 
 
 def delete_smtp(module, array):
-    """Delete SMTP settings"""
-    changed = _get_current_smtp(array) != CLEARED_SMTP
+    """Clear the SMTP settings.
+
+    Hardware rules (Purity 6.10.6, wire-level probe): every setting clears
+    with "" (``relay_host: null`` is accepted but changes nothing), except
+    the sender domain, which the array refuses to clear ("" is "Not a valid
+    hostname" and null is ignored) and is therefore left as it is. The
+    credentials are only accepted together, so the password goes with the
+    user.
+    """
+    current = _get_current_smtp(array)
+    changed = {k: current.get(k, "") for k in CLEARED_SMTP} != CLEARED_SMTP
     if changed and not module.check_mode:
-        res = array.patch_smtp_servers(
-            smtp=SmtpServer(
-                sender_domain=CLEARED_SMTP["sender_domain"],
-                user_name=CLEARED_SMTP["user_name"],
-                password="",
-                relay_host=CLEARED_SMTP["relay_host"],
-                encryption_mode=CLEARED_SMTP["encryption_mode"],
-                sender_username=CLEARED_SMTP["sender_username"],
-                subject_prefix=CLEARED_SMTP["subject_prefix"],
-                body_prefix=CLEARED_SMTP["body_prefix"],
-            )
-        )
+        res = array.patch_smtp_servers(smtp=SmtpServer(password="", **CLEARED_SMTP))
         check_response(res, module, "Delete SMTP settings failed")
     module.exit_json(changed=changed)
 
@@ -184,16 +189,16 @@ def create_smtp(module, array):
         new_server["sender_domain"] = module.params["sender_domain"]
     if module.params["relay_host"]:
         new_server["relay_host"] = module.params["relay_host"]
-    if module.params["user"]:
+    # An empty string is a valid value for the remaining settings - it clears
+    # the setting - so they are checked against None rather than for truthiness.
+    if module.params["user"] is not None:
         new_server["user_name"] = module.params["user"]
-    if module.params["sender"]:
+    if module.params["sender"] is not None:
         new_server["sender_username"] = module.params["sender"]
-    if module.params["body_prefix"]:
+    if module.params["body_prefix"] is not None:
         new_server["body_prefix"] = module.params["body_prefix"]
-    if module.params["subject_prefix"]:
+    if module.params["subject_prefix"] is not None:
         new_server["subject_prefix"] = module.params["subject_prefix"]
-    # An empty string is a valid encryption_mode - it clears the setting - so
-    # this parameter is checked against None rather than for truthiness.
     if module.params["encryption_mode"] is not None:
         new_server["encryption_mode"] = module.params["encryption_mode"]
 
@@ -208,9 +213,13 @@ def create_smtp(module, array):
                 "subject_prefix": new_server["subject_prefix"],
                 "body_prefix": new_server["body_prefix"],
             }
-            if module.params["password"]:
-                smtp_settings["user_name"] = module.params["user"]
-                smtp_settings["password"] = module.params["password"]
+            # The username and password are only accepted together
+            if (
+                module.params["user"] is not None
+                or module.params["password"] is not None
+            ):
+                smtp_settings["user_name"] = new_server["user_name"]
+                smtp_settings["password"] = module.params["password"] or ""
             res = array.patch_smtp_servers(smtp=SmtpServer(**smtp_settings))
             check_response(res, module, "Failed to change SMTP server details")
     module.exit_json(changed=changed)

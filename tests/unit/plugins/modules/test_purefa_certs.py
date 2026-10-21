@@ -327,6 +327,7 @@ class TestUpdateCert:
             "org_unit": None,
             "province": None,
             "generate": True,
+            "days": 3650,
         }
         mock_array = Mock()
 
@@ -364,6 +365,7 @@ class TestUpdateCert:
             "org_unit": None,
             "province": None,
             "generate": False,
+            "days": 3650,
         }
         mock_array = Mock()
 
@@ -403,6 +405,7 @@ class TestUpdateCert:
             "org_unit": "New Unit",
             "province": "New State",
             "generate": True,
+            "days": 3650,
         }
         mock_array = Mock()
 
@@ -424,6 +427,48 @@ class TestUpdateCert:
         mock_array.patch_certificates.assert_called_once()
         call_kwargs = mock_array.patch_certificates.call_args
         assert call_kwargs[1]["generate_new_key"] is True
+        mock_module.exit_json.assert_called_once_with(changed=True)
+
+    @patch("plugins.modules.purefa_certs.flasharray")
+    @patch("plugins.modules.purefa_certs.check_response")
+    def test_generate_regenerates_without_subject_change(
+        self, mock_check_response, mock_flasharray
+    ):
+        """generate: true on an unchanged certificate must still regenerate
+        the key, as the "Regenerate key" example promises, with `days`"""
+        mock_module = Mock()
+        mock_module.check_mode = False
+        mock_module.params = {
+            "name": "test-cert",
+            "common_name": "test.example.com",
+            "country": "US",
+            "email": "test@example.com",
+            "key_size": 2048,
+            "locality": "Test City",
+            "organization": "Test Org",
+            "org_unit": "Test Unit",
+            "province": "Test State",
+            "generate": True,
+            "days": 365,
+        }
+        mock_array = Mock()
+        mock_cert = Mock()
+        mock_cert.common_name = "test.example.com"
+        mock_cert.country = "US"
+        mock_cert.email = "test@example.com"
+        mock_cert.key_size = 2048
+        mock_cert.locality = "Test City"
+        mock_cert.organization = "Test Org"
+        mock_cert.organizational_unit = "Test Unit"
+        mock_cert.state = "Test State"
+        mock_array.get_certificates.return_value = Mock(items=[mock_cert])
+        mock_array.patch_certificates.return_value = Mock(status_code=200)
+
+        update_cert(mock_module, mock_array)
+
+        mock_array.patch_certificates.assert_called_once()
+        assert mock_array.patch_certificates.call_args[1]["generate_new_key"] is True
+        assert mock_flasharray.CertificatePost.call_args.kwargs["days"] == 365
         mock_module.exit_json.assert_called_once_with(changed=True)
 
 

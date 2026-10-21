@@ -938,6 +938,7 @@ class TestCreateFromSnapshotSuccess:
             "name": "source-vol",
             "suffix": "snap1",
             "target": "new-vol",
+            "with_default_protection": True,
             "context": "",
         }
         mock_array = Mock()
@@ -1584,3 +1585,167 @@ class TestStateCopySnapshotNotFound:
         call_args = mock_module.fail_json.call_args
         assert "test-volume.snap1" in call_args[1]["msg"]
         assert "not found" in call_args[1]["msg"].lower()
+
+
+class TestQaFixes:
+    """Regression tests for defects found by the hardware QA suite"""
+
+    @patch("plugins.modules.purefa_snap.LooseVersion", side_effect=LooseVersion)
+    @patch("plugins.modules.purefa_snap.get_deleted_snapshot")
+    @patch("plugins.modules.purefa_snap.get_snapshot")
+    @patch("plugins.modules.purefa_snap.get_volume")
+    @patch("plugins.modules.purefa_snap.create_snapshot")
+    @patch("plugins.modules.purefa_snap.get_array")
+    @patch("plugins.modules.purefa_snap.AnsibleModule")
+    def test_present_existing_suffix_is_noop(
+        self,
+        mock_ansible_module,
+        mock_get_array,
+        mock_create_snapshot,
+        mock_get_volume,
+        mock_get_snapshot,
+        mock_get_deleted_snapshot,
+        mock_lv,
+    ):
+        """Repeating state=present with an existing suffix exits changed=False"""
+        from plugins.modules.purefa_snap import main
+
+        mock_module = Mock()
+        mock_module.params = {
+            "name": "test-volume",
+            "suffix": "snap1",
+            "target": None,
+            "state": "present",
+            "offload": None,
+            "context": "",
+            "overwrite": False,
+            "eradicate": False,
+        }
+        mock_module.check_mode = False
+        mock_module.exit_json.side_effect = SystemExit("exit_json called")
+        mock_ansible_module.return_value = mock_module
+        mock_array = Mock()
+        mock_array.get_rest_version.return_value = "2.38"
+        mock_array.get_fleets.return_value = Mock(status_code=400, items=[])
+        mock_get_array.return_value = mock_array
+        mock_get_volume.return_value = Mock()
+        mock_get_snapshot.return_value = Mock()  # snapshot already exists
+        mock_get_deleted_snapshot.return_value = False
+
+        try:
+            main()
+        except SystemExit:
+            pass
+
+        mock_create_snapshot.assert_not_called()
+        mock_module.exit_json.assert_called_once_with(changed=False, suffix="snap1")
+
+    @patch("plugins.modules.purefa_snap.check_response")
+    @patch("plugins.modules.purefa_snap.get_target")
+    @patch("plugins.modules.purefa_snap.LooseVersion", side_effect=LooseVersion)
+    def test_create_from_snapshot_passes_default_protection(
+        self, mock_lv, mock_get_target, mock_check_response
+    ):
+        """Copy to a new volume passes with_default_protection on REST >= 2.16"""
+        mock_get_target.return_value = None
+        mock_module = Mock()
+        mock_module.check_mode = False
+        mock_module.params = {
+            "name": "source-vol",
+            "suffix": "snap1",
+            "target": "new-vol",
+            "with_default_protection": False,
+            "context": "",
+        }
+        mock_array = Mock()
+        mock_array.get_rest_version.return_value = "2.38"
+        mock_array.post_volumes.return_value = Mock(status_code=200)
+
+        create_from_snapshot(mock_module, mock_array)
+
+        kwargs = mock_array.post_volumes.call_args[1]
+        assert kwargs["with_default_protection"] is False
+        assert kwargs["names"] == ["new-vol"]
+        mock_module.exit_json.assert_called_once_with(changed=True)
+
+    @patch("plugins.modules.purefa_snap.check_response")
+    @patch("plugins.modules.purefa_snap.get_target")
+    @patch("plugins.modules.purefa_snap.LooseVersion", side_effect=LooseVersion)
+    def test_create_from_snapshot_old_api_no_default_protection(
+        self, mock_lv, mock_get_target, mock_check_response
+    ):
+        """Copy on REST < 2.16 does not send with_default_protection"""
+        mock_get_target.return_value = None
+        mock_module = Mock()
+        mock_module.check_mode = False
+        mock_module.params = {
+            "name": "source-vol",
+            "suffix": "snap1",
+            "target": "new-vol",
+            "with_default_protection": True,
+            "context": "",
+        }
+        mock_array = Mock()
+        mock_array.get_rest_version.return_value = "2.10"
+        mock_array.post_volumes.return_value = Mock(status_code=200)
+
+        create_from_snapshot(mock_module, mock_array)
+
+        kwargs = mock_array.post_volumes.call_args[1]
+        assert "with_default_protection" not in kwargs
+
+    @patch("plugins.modules.purefa_snap.check_response")
+    @patch("plugins.modules.purefa_snap.get_target")
+    @patch("plugins.modules.purefa_snap.LooseVersion", side_effect=LooseVersion)
+    def test_create_from_snapshot_overwrite_checks_response(
+        self, mock_lv, mock_get_target, mock_check_response
+    ):
+        """Overwrite copy passes its response through check_response"""
+        mock_get_target.return_value = Mock()
+        mock_module = Mock()
+        mock_module.check_mode = False
+        mock_module.params = {
+            "name": "source-vol",
+            "suffix": "snap1",
+            "target": "existing-vol",
+            "overwrite": True,
+            "with_default_protection": True,
+            "context": "",
+        }
+        mock_array = Mock()
+        mock_array.get_rest_version.return_value = "2.38"
+        mock_response = Mock(status_code=400)
+        mock_array.post_volumes.return_value = mock_response
+
+        create_from_snapshot(mock_module, mock_array)
+
+        mock_check_response.assert_called_once()
+        assert mock_check_response.call_args[0][0] is mock_response
+
+    @patch("plugins.modules.purefa_snap.check_response")
+    @patch("plugins.modules.purefa_snap._check_offload")
+    @patch("plugins.modules.purefa_snap.LooseVersion", side_effect=LooseVersion)
+    def test_recover_snapshot_offload_name_has_separator(
+        self, mock_lv, mock_check_offload, mock_check_response
+    ):
+        """Offload recovery names the snapshot <array>:<volume>.<suffix>"""
+        mock_check_offload.return_value = True
+        mock_module = Mock()
+        mock_module.check_mode = False
+        mock_module.params = {
+            "name": "test-vol",
+            "suffix": "snap1",
+            "offload": "nfs-target",
+            "context": "",
+        }
+        mock_array = Mock()
+        mock_array.get_rest_version.return_value = "2.38"
+        mock_arr_item = Mock()
+        mock_arr_item.name = "local-array"
+        mock_array.get_arrays.return_value = Mock(items=[mock_arr_item])
+        mock_array.patch_remote_volume_snapshots.return_value = Mock(status_code=200)
+
+        recover_snapshot(mock_module, mock_array)
+
+        kwargs = mock_array.patch_remote_volume_snapshots.call_args[1]
+        assert kwargs["names"] == ["local-array:test-vol.snap1"]

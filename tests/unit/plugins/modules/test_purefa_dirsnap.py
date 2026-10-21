@@ -859,3 +859,96 @@ class TestMain:
         main()
 
         mock_module.exit_json.assert_called_with(changed=False)
+
+
+class TestUpdateSnapKeepForIdempotency:
+    """keep_for is only (re)applied when the current retention differs"""
+
+    @staticmethod
+    def _module(keep_for):
+        mock_module = Mock()
+        mock_module.params = {
+            "name": "dir1",
+            "filesystem": "fs1",
+            "client": "client1",
+            "suffix": "snap",
+            "context": "",
+            "rename": False,
+            "keep_for": keep_for,
+            "new_client": None,
+            "new_suffix": None,
+        }
+        mock_module.check_mode = False
+        return mock_module
+
+    @patch("plugins.modules.purefa_dirsnap.DirectorySnapshotPatch")
+    @patch("plugins.modules.purefa_dirsnap.patch_with_context")
+    def test_keep_for_within_remaining_time_is_noop(
+        self, mock_patch_with_context, mock_snap_patch
+    ):
+        """A snapshot counting down inside the requested period is unchanged"""
+        snap_detail = Mock()
+        snap_detail.destroyed = False
+        snap_detail.time_remaining = 1800 * 1000
+        mock_module = self._module(3600)
+
+        update_snap(mock_module, Mock(), snap_detail)
+
+        mock_patch_with_context.assert_not_called()
+        mock_snap_patch.assert_not_called()
+        mock_module.exit_json.assert_called_once_with(changed=False)
+
+    @patch("plugins.modules.purefa_dirsnap.check_response")
+    @patch("plugins.modules.purefa_dirsnap.DirectorySnapshotPatch")
+    @patch("plugins.modules.purefa_dirsnap.patch_with_context")
+    def test_shorter_keep_for_than_remaining_is_applied(
+        self, mock_patch_with_context, mock_snap_patch, mock_check_response
+    ):
+        """Shortening the retention below the remaining time patches the snapshot"""
+        mock_patch_with_context.return_value = Mock(status_code=200)
+        snap_detail = Mock()
+        snap_detail.destroyed = False
+        snap_detail.time_remaining = 7200 * 1000
+        mock_module = self._module(3600)
+
+        update_snap(mock_module, Mock(), snap_detail)
+
+        mock_patch_with_context.assert_called_once()
+        mock_snap_patch.assert_called_once_with(keep_for=3600 * 1000)
+        mock_module.exit_json.assert_called_once_with(changed=True)
+
+    @patch("plugins.modules.purefa_dirsnap.check_response")
+    @patch("plugins.modules.purefa_dirsnap.DirectorySnapshotPatch")
+    @patch("plugins.modules.purefa_dirsnap.patch_with_context")
+    def test_no_retention_applies_keep_for(
+        self, mock_patch_with_context, mock_snap_patch, mock_check_response
+    ):
+        """A snapshot without retention gets the requested keep_for"""
+        mock_patch_with_context.return_value = Mock(status_code=200)
+        snap_detail = Mock()
+        snap_detail.destroyed = False
+        snap_detail.time_remaining = None
+        mock_module = self._module(3600)
+
+        update_snap(mock_module, Mock(), snap_detail)
+
+        mock_patch_with_context.assert_called_once()
+        mock_module.exit_json.assert_called_once_with(changed=True)
+
+    @patch("plugins.modules.purefa_dirsnap.check_response")
+    @patch("plugins.modules.purefa_dirsnap.DirectorySnapshotPatch")
+    @patch("plugins.modules.purefa_dirsnap.patch_with_context")
+    def test_recover_without_keep_for_sends_single_patch(
+        self, mock_patch_with_context, mock_snap_patch, mock_check_response
+    ):
+        """Recovering with no keep_for must not send keep_for=None"""
+        mock_patch_with_context.return_value = Mock(status_code=200)
+        snap_detail = Mock()
+        snap_detail.destroyed = True
+        mock_module = self._module(None)
+
+        update_snap(mock_module, Mock(), snap_detail)
+
+        mock_patch_with_context.assert_called_once()
+        mock_snap_patch.assert_called_once_with(destroyed=False)
+        mock_module.exit_json.assert_called_once_with(changed=True)

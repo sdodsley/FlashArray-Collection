@@ -114,7 +114,8 @@ class TestKmipTest:
         mock_array.get_kmip_test.assert_called_once_with(names=["kmip1"])
         mock_module.exit_json.assert_called_once()
         call_args = mock_module.exit_json.call_args
-        assert call_args[1]["changed"] is True
+        # Running a test is read-only
+        assert call_args[1]["changed"] is False
         assert len(call_args[1]["test_response"]) == 1
         assert call_args[1]["test_response"][0]["enabled"] == "true"
         assert call_args[1]["test_response"][0]["success"] == "true"
@@ -145,6 +146,55 @@ class TestKmipTest:
         call_args = mock_module.exit_json.call_args
         assert call_args[1]["test_response"][0]["enabled"] == "false"
         assert call_args[1]["test_response"][0]["success"] == "false"
+
+    def test_kmip_test_sparse_result(self):
+        """A TestResult without resource or optional fields must not crash"""
+        mock_module = Mock()
+        mock_module.params = {"name": "kmip1"}
+        mock_array = Mock()
+
+        mock_component = Mock(spec=["enabled", "success", "component_name"])
+        mock_component.enabled = True
+        mock_component.success = False
+        mock_component.component_name = "ct0"
+        mock_array.get_kmip_test.return_value = Mock(
+            status_code=200, items=[mock_component]
+        )
+
+        kmip_test(mock_module, mock_array)
+
+        result = mock_module.exit_json.call_args[1]["test_response"][0]
+        assert result["enabled"] == "true"
+        assert result["success"] == "false"
+        assert result["component_name"] == "ct0"
+        assert result["resource_name"] is None
+        assert result["destination"] is None
+        assert result["component_address"] is None
+        assert result["test_type"] is None
+        assert result["result_details"] == ""
+
+    @patch("plugins.modules.purefa_kmip.check_response")
+    def test_kmip_test_error_response(self, mock_check_response):
+        """An error response is handed to check_response before .items is read"""
+        import pytest
+
+        mock_module = Mock()
+        mock_module.params = {"name": "kmip1"}
+        mock_module.fail_json.side_effect = SystemExit(1)
+        mock_array = Mock()
+        error_response = Mock(spec=["status_code", "errors"])
+        error_response.status_code = 400
+        error_response.errors = [Mock(message="boom")]
+        mock_array.get_kmip_test.return_value = error_response
+        mock_check_response.side_effect = lambda res, module, op: module.fail_json(
+            msg=op
+        )
+
+        with pytest.raises(SystemExit):
+            kmip_test(mock_module, mock_array)
+
+        assert mock_check_response.call_args[0][0] is error_response
+        mock_module.exit_json.assert_not_called()
 
 
 class TestCreateKmip:
@@ -187,6 +237,60 @@ class TestCreateKmip:
 
         mock_array.post_kmip.assert_called_once()
         mock_module.exit_json.assert_called_once_with(changed=True)
+
+
+class TestCertificateLengthCheck:
+    """The 3000 character limit applies to ca_certificate, not the name of
+    the array certificate"""
+
+    def _params(self, certificate, ca_certificate):
+        return {
+            "state": "present",
+            "name": "kmip1",
+            "certificate": certificate,
+            "ca_certificate": ca_certificate,
+            "uris": ["kmip://server1:5696"],
+        }
+
+    @patch("plugins.modules.purefa_kmip.get_array")
+    @patch("plugins.modules.purefa_kmip.AnsibleModule")
+    def test_oversized_ca_certificate_fails(self, mock_ansible_module, mock_get_array):
+        import pytest
+        from plugins.modules.purefa_kmip import main
+
+        mock_module = Mock()
+        mock_module.params = self._params("cert1", "A" * 3001)
+        mock_module.fail_json.side_effect = SystemExit(1)
+        mock_ansible_module.return_value = mock_module
+        mock_array = Mock()
+        mock_array.get_kmip.return_value = Mock(status_code=404)
+        mock_get_array.return_value = mock_array
+
+        with pytest.raises(SystemExit):
+            main()
+
+        assert "3000" in mock_module.fail_json.call_args[1]["msg"]
+        mock_array.post_kmip.assert_not_called()
+
+    @patch("plugins.modules.purefa_kmip.create_kmip")
+    @patch("plugins.modules.purefa_kmip.get_array")
+    @patch("plugins.modules.purefa_kmip.AnsibleModule")
+    def test_certificate_name_length_is_not_checked(
+        self, mock_ansible_module, mock_get_array, mock_create_kmip
+    ):
+        from plugins.modules.purefa_kmip import main
+
+        mock_module = Mock()
+        mock_module.params = self._params("c" * 3001, "A" * 100)
+        mock_ansible_module.return_value = mock_module
+        mock_array = Mock()
+        mock_array.get_kmip.return_value = Mock(status_code=404)
+        mock_get_array.return_value = mock_array
+
+        main()
+
+        mock_module.fail_json.assert_not_called()
+        mock_create_kmip.assert_called_once_with(mock_module, mock_array)
 
 
 class TestUpdateKmip:

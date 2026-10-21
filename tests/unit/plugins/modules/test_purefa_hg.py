@@ -252,7 +252,7 @@ class TestDeleteHostgroup:
 
         delete_hostgroup(mock_module, mock_array)
 
-        mock_module.exit_json.assert_called_once_with(changed=False)
+        mock_module.exit_json.assert_called_once_with(changed=True)
 
     @patch("plugins.modules.purefa_hg.check_response")
     @patch("plugins.modules.purefa_hg.get_hostgroup_hosts")
@@ -1312,7 +1312,7 @@ class TestOldApiVersionPaths:
 
         call_kwargs = mock_array.delete_host_groups.call_args[1]
         assert "context_names" not in call_kwargs
-        mock_module.exit_json.assert_called_once_with(changed=False)
+        mock_module.exit_json.assert_called_once_with(changed=True)
 
     @patch("plugins.modules.purefa_hg.get_hostgroup_hosts")
     @patch("plugins.modules.purefa_hg.check_response")
@@ -1410,4 +1410,85 @@ class TestOldApiVersionPaths:
 
         call_kwargs = mock_array.delete_connections.call_args[1]
         assert "context_names" not in call_kwargs
+        mock_module.exit_json.assert_called_once_with(changed=True)
+
+
+class TestQaFixes:
+    """Regression tests for defects found by the hardware QA suite"""
+
+    @patch("plugins.modules.purefa_hg.check_response")
+    @patch("plugins.modules.purefa_hg.LooseVersion", side_effect=LooseVersion)
+    def test_make_hostgroup_rename_already_done(self, mock_lv, mock_check_response):
+        """Repeating a completed rename (source gone, target present) is a no-op"""
+        mock_module = Mock()
+        mock_module.check_mode = False
+        mock_module.params = {
+            "name": "old-hg",
+            "rename": "new-hg",
+            "host": None,
+            "volume": None,
+            "context": "",
+        }
+        mock_module.exit_json.side_effect = SystemExit("exit_json called")
+        mock_module.fail_json.side_effect = SystemExit("fail_json called")
+        mock_array = Mock()
+        mock_array.get_rest_version.return_value = "2.38"
+        mock_array.get_host_groups.return_value = Mock(status_code=200)
+
+        try:
+            make_hostgroup(mock_module, mock_array)
+        except SystemExit:
+            pass
+
+        mock_module.fail_json.assert_not_called()
+        mock_array.post_host_groups.assert_not_called()
+        mock_module.exit_json.assert_called_once_with(changed=False)
+
+    @patch("plugins.modules.purefa_hg.check_response")
+    @patch("plugins.modules.purefa_hg.LooseVersion", side_effect=LooseVersion)
+    def test_make_hostgroup_rename_target_missing_fails(
+        self, mock_lv, mock_check_response
+    ):
+        """Rename still fails when neither source nor target exists"""
+        mock_module = Mock()
+        mock_module.check_mode = False
+        mock_module.params = {
+            "name": "old-hg",
+            "rename": "new-hg",
+            "host": None,
+            "volume": None,
+            "context": "",
+        }
+        mock_module.fail_json.side_effect = SystemExit("fail_json called")
+        mock_array = Mock()
+        mock_array.get_rest_version.return_value = "2.38"
+        mock_array.get_host_groups.return_value = Mock(status_code=400)
+
+        try:
+            make_hostgroup(mock_module, mock_array)
+        except SystemExit:
+            pass
+
+        mock_module.fail_json.assert_called_once()
+        assert "rename failed" in mock_module.fail_json.call_args[1]["msg"]
+
+    @patch("plugins.modules.purefa_hg.check_response")
+    @patch("plugins.modules.purefa_hg.get_hostgroup_hosts")
+    @patch("plugins.modules.purefa_hg.LooseVersion", side_effect=LooseVersion)
+    def test_delete_empty_hostgroup_check_mode(
+        self, mock_lv, mock_get_hostgroup_hosts, mock_check_response
+    ):
+        """Deleting an empty host group in check mode reports a change
+        without calling the array"""
+        mock_module = Mock()
+        mock_module.check_mode = True
+        mock_module.params = {"name": "test-hg", "context": ""}
+        mock_array = Mock()
+        mock_array.get_rest_version.return_value = "2.38"
+        mock_array.get_connections.return_value = Mock(status_code=200, items=[])
+        mock_get_hostgroup_hosts.return_value = []
+
+        delete_hostgroup(mock_module, mock_array)
+
+        mock_array.delete_host_groups.assert_not_called()
         mock_module.exit_json.assert_called_once_with(changed=True)

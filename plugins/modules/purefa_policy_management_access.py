@@ -41,8 +41,9 @@ options:
   enabled:
     description:
     - Define whether the policy is enabled and grants its permissions.
+    - A new policy is enabled unless this is set to C(false). When omitted
+      on an existing policy the current setting is left unchanged.
     type: bool
-    default: true
   aggregation_strategy:
     description:
     - How the permissions from this policy combine with other policies that
@@ -51,8 +52,9 @@ options:
       defined here.
     - C(all-permissions) allows users to also receive access from other
       policies that apply to them.
+    - A new policy uses C(all-permissions) unless otherwise specified. When
+      omitted on an existing policy the current setting is left unchanged.
     type: str
-    default: all-permissions
     choices: [ all-permissions, least-common-permissions ]
   rename:
     description:
@@ -67,8 +69,9 @@ options:
     suboptions:
       role:
         description:
-        - Name of the role granted by this rule, for example C(storage) or
-          C(array_admin).
+        - Name of the role granted by this rule.
+        - The array accepts only C(viewer), C(support), C(admin) and
+          C(storage) in a management-access policy.
         type: str
         required: true
       scope:
@@ -124,6 +127,16 @@ RETURN = r"""
 
 MIN_API_VERSION = "2.36"
 CONTEXT_VERSION = "2.38"
+
+# The only roles the array accepts in a management-access policy rule. Any
+# other role is rejected with "unsupported role [...]"; checking here gives
+# the same message before anything is sent.
+SUPPORTED_ROLES = ("viewer", "support", "admin", "storage")
+# Settings that apply when a policy is created without them being given.
+# On an existing policy an omitted setting is left as it is, so that a
+# rename-only task does not re-enable the policy or reset its strategy.
+DEFAULT_ENABLED = True
+DEFAULT_AGGREGATION_STRATEGY = "all-permissions"
 
 HAS_PYPURECLIENT = True
 try:
@@ -189,14 +202,14 @@ def _build_rules(module):
     ]
 
 
-def get_policy(module, array):
-    """Return the management-access policy or None"""
+def get_policy(module, array, name=None):
+    """Return the named management-access policy (default: params name) or None"""
     res = get_with_context(
         array,
         "get_policies_management_access",
         CONTEXT_VERSION,
         module,
-        names=[module.params["name"]],
+        names=[name or module.params["name"]],
     )
     if res.status_code == 200:
         policies = list(res.items)
@@ -216,8 +229,15 @@ def create_policy(module, array):
             module,
             names=[module.params["name"]],
             policy=PolicyManagementAccessPost(
-                enabled=module.params["enabled"],
-                aggregation_strategy=module.params["aggregation_strategy"],
+                enabled=(
+                    DEFAULT_ENABLED
+                    if module.params["enabled"] is None
+                    else module.params["enabled"]
+                ),
+                aggregation_strategy=(
+                    module.params["aggregation_strategy"]
+                    or DEFAULT_AGGREGATION_STRATEGY
+                ),
                 rules=_build_rules(module),
             ),
         )
@@ -233,11 +253,13 @@ def update_policy(module, array, policy):
     """Update a management-access policy"""
     changed = False
     patch_kwargs = {}
-    if module.params["enabled"] != getattr(policy, "enabled", None):
-        patch_kwargs["enabled"] = module.params["enabled"]
-    if module.params["aggregation_strategy"] != getattr(
-        policy, "aggregation_strategy", None
+    if module.params["enabled"] is not None and module.params["enabled"] != getattr(
+        policy, "enabled", None
     ):
+        patch_kwargs["enabled"] = module.params["enabled"]
+    if module.params["aggregation_strategy"] is not None and module.params[
+        "aggregation_strategy"
+    ] != getattr(policy, "aggregation_strategy", None):
         patch_kwargs["aggregation_strategy"] = module.params["aggregation_strategy"]
     if module.params["rules"] is not None and _desired_rules(module) != _current_rules(
         policy
@@ -305,10 +327,9 @@ def main():
         dict(
             name=dict(type="str", required=True),
             state=dict(type="str", default="present", choices=["absent", "present"]),
-            enabled=dict(type="bool", default=True),
+            enabled=dict(type="bool"),
             aggregation_strategy=dict(
                 type="str",
-                default="all-permissions",
                 choices=["all-permissions", "least-common-permissions"],
             ),
             rename=dict(type="str"),
@@ -330,6 +351,14 @@ def main():
     if not HAS_PYPURECLIENT:
         module.fail_json(msg="py-pure-client sdk is required for this module")
 
+    for rule in module.params["rules"] or []:
+        if rule["role"] not in SUPPORTED_ROLES:
+            module.fail_json(
+                msg="unsupported role [{0}]. Supported roles are {1}".format(
+                    rule["role"], ", ".join(SUPPORTED_ROLES)
+                )
+            )
+
     state = module.params["state"]
     array = get_array(module)
     api_version = array.get_rest_version()
@@ -341,7 +370,18 @@ def main():
 
     policy = get_policy(module, array)
 
-    if state == "present" and not policy:
+    if state == "present" and not policy and module.params["rename"]:
+        if get_policy(module, array, module.params["rename"]):
+            # Already renamed, so re-running the same task has nothing left
+            # to do. Recreating the old name would be the opposite of what
+            # was asked for.
+            module.exit_json(changed=False)
+        module.fail_json(
+            msg="Management access policy {0} not found to rename".format(
+                module.params["name"]
+            )
+        )
+    elif state == "present" and not policy:
         create_policy(module, array)
     elif state == "present" and policy:
         update_policy(module, array, policy)

@@ -449,3 +449,98 @@ class TestEradicationDelayChange:
         mock_module.exit_json.assert_called_once_with(changed=True)
         # EradicationConfig should not have been instantiated in check_mode
         mock_erad_config.assert_not_called()
+
+
+class TestEradicationOneDelayAtATime:
+    """Delays not given keep the array's value; diverged delays still work"""
+
+    def _run(self, params, current, check_mode=False):
+        with patch(
+            "plugins.modules.purefa_eradication.AnsibleModule"
+        ) as mock_am, patch(
+            "plugins.modules.purefa_eradication.get_array"
+        ) as mock_get_array, patch(
+            "plugins.modules.purefa_eradication.get_with_context"
+        ) as mock_gwc, patch(
+            "plugins.modules.purefa_eradication.check_response"
+        ), patch(
+            "plugins.modules.purefa_eradication.Arrays"
+        ), patch(
+            "plugins.modules.purefa_eradication.EradicationConfig"
+        ) as mock_cfg:
+            mock_module = Mock()
+            mock_module.check_mode = check_mode
+            mock_module.params = {
+                "timer": None,
+                "disabled_delay": None,
+                "enabled_delay": None,
+                "context": "",
+                **params,
+            }
+            mock_am.return_value = mock_module
+            mock_array = Mock()
+            mock_array.get_rest_version.return_value = "2.30"
+            mock_get_array.return_value = mock_array
+            cfg = Mock()
+            cfg.eradication_delay = current.get("eradication_delay")
+            cfg.disabled_delay = current["disabled_delay"] * 86400000
+            cfg.enabled_delay = current["enabled_delay"] * 86400000
+            info = Mock()
+            info.eradication_config = cfg
+            mock_gwc.return_value = Mock(items=[info])
+            main()
+            return mock_module, mock_cfg
+
+    def test_only_enabled_delay_keeps_disabled_delay(self):
+        """Test enabled_delay alone lengthens it and resends the current disabled_delay"""
+        module, cfg = self._run(
+            {"enabled_delay": 2}, {"enabled_delay": 1, "disabled_delay": 12}
+        )
+        cfg.assert_called_once_with(
+            enabled_delay=2 * 86400000, disabled_delay=12 * 86400000
+        )
+        module.exit_json.assert_called_once_with(changed=True)
+
+    def test_only_disabled_delay_keeps_enabled_delay(self):
+        """Test disabled_delay alone keeps the current enabled_delay"""
+        module, cfg = self._run(
+            {"disabled_delay": 14}, {"enabled_delay": 3, "disabled_delay": 12}
+        )
+        cfg.assert_called_once_with(
+            enabled_delay=3 * 86400000, disabled_delay=14 * 86400000
+        )
+        module.exit_json.assert_called_once_with(changed=True)
+
+    def test_no_parameters_change_nothing(self):
+        """Test a call with no timer and no delays is a no-op (it used to set both to a day)"""
+        module, cfg = self._run({}, {"enabled_delay": 1, "disabled_delay": 12})
+        cfg.assert_not_called()
+        module.exit_json.assert_called_once_with(changed=False)
+
+    def test_timer_when_delays_have_diverged_sets_both(self):
+        """Test timer still works when the array no longer reports eradication_delay"""
+        module, cfg = self._run(
+            {"timer": 5}, {"enabled_delay": 1, "disabled_delay": 12}
+        )
+        cfg.assert_called_once_with(
+            enabled_delay=5 * 86400000, disabled_delay=5 * 86400000
+        )
+        module.exit_json.assert_called_once_with(changed=True)
+
+    def test_out_of_range_delay_still_fails(self):
+        """Test the range check still applies to a delay that is given"""
+        with patch("plugins.modules.purefa_eradication.AnsibleModule") as mock_am:
+            mock_module = Mock()
+            mock_module.params = {
+                "timer": None,
+                "disabled_delay": None,
+                "enabled_delay": 31,
+                "context": "",
+            }
+            mock_module.fail_json.side_effect = SystemExit(1)
+            mock_am.return_value = mock_module
+            with pytest.raises(SystemExit):
+                main()
+            mock_module.fail_json.assert_called_once_with(
+                msg="enabled_delay must be between 1 and 30 days."
+            )

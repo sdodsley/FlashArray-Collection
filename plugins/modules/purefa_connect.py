@@ -157,17 +157,25 @@ def _lookup(address):
 
 
 def _check_connected(module, array):
+    """Return the existing replication connection to the target, or None
+
+    A fleet-management connection to the same peer shares its management
+    address, so only replication connections are candidates; otherwise an
+    existing sync connection would be reported as needing a type change.
+    """
     res = get_with_context(array, "get_array_connections", CONTEXT_VERSION, module)
     if res.status_code != 200:
         return None
-    connected_arrays = list(res.items)
-    for target in connected_arrays:
-        remote_mgmt_address = target.management_address
-        if (
-            remote_mgmt_address == module.params["target_url"].strip("[]")
-            or remote_mgmt_address in [_lookup(module.params["target_url"].strip("[]"))]
-            and "connected" in target.status
-        ):
+    target_url = module.params["target_url"].strip("[]")
+    addresses = {target_url}
+    try:
+        addresses.update(_lookup(target_url))
+    except (OSError, UnicodeError):
+        pass
+    for target in list(res.items):
+        if getattr(target, "type", None) == "fleet-management":
+            continue
+        if getattr(target, "management_address", None) in addresses:
             return target
     return None
 
@@ -257,7 +265,7 @@ def update_connection(module, array, target_array):
     #
     # Special cases complete
     #
-    if LooseVersion(ENCRYPT_VERSION) >= LooseVersion(api_version):
+    if LooseVersion(ENCRYPT_VERSION) <= LooseVersion(api_version):
         if module.params["encrypted"]:
             encrypted = "encrypted"
         else:
@@ -337,18 +345,16 @@ def create_connection(module, array):
         connections = remote_system.get_array_connections_connection_key(
             encrypted=module.params["encrypted"]
         )
-    except TypeError as exc:
-        if module.params["encrypted"] == "encrypted":
-            module.warning(
-                msg=(
-                    "Remote array version of Purity//FA does not support "
-                    "encryption. Continuing without encryption"
-                ),
+    except TypeError:
+        if module.params["encrypted"]:
+            module.warn(
+                "Remote array version of Purity//FA does not support "
+                "encryption. Continuing without encryption"
             )
         connections = remote_system.get_array_connections_connection_key()
 
     connection_key = list(connections.items)[0].connection_key
-    if LooseVersion(ENCRYPT_VERSION) >= LooseVersion(api_version):
+    if LooseVersion(ENCRYPT_VERSION) <= LooseVersion(api_version):
         if module.params["encrypted"]:
             encrypted = "encrypted"
         else:

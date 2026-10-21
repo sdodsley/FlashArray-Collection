@@ -190,8 +190,10 @@ def generate_default_dict(array):
         default_info["password_policies"] = len(
             getattr(array.get_policies_password(), "items", []) or []
         )
+    array_data = list(array.get_arrays().items)[0]
+    # The login banner, as set by purefa_banner; absent when none is set
+    default_info["banner"] = getattr(array_data, "banner", None)
     if LooseVersion(ENCRYPTION_STATUS_API_VERSION) <= LooseVersion(api_version):
-        array_data = list(array.get_arrays().items)[0]
         encryption = array_data.encryption
         default_info["encryption_enabled"] = encryption.data_at_rest.enabled
         if default_info["encryption_enabled"]:
@@ -330,40 +332,93 @@ def generate_default_dict(array):
 def generate_perf_dict(array):
     perf_data = list(array.get_arrays_performance().items)[0]
     perf_info = {
-        "bytes_per_mirrored_write": perf_data.bytes_per_mirrored_write,
-        "bytes_per_op": perf_data.bytes_per_op,
-        "bytes_per_read": perf_data.bytes_per_read,
-        "bytes_per_write": perf_data.bytes_per_write,
-        "local_queue_usec_per_op": perf_data.bytes_per_write,
-        "mirrored_write_bytes_per_sec": perf_data.mirrored_write_bytes_per_sec,
-        "mirrored_writes_per_sec": perf_data.mirrored_writes_per_sec,
-        "others_per_sec": perf_data.others_per_sec,
-        "qos_rate_limit_usec_per_mirrored_write_op": perf_data.qos_rate_limit_usec_per_mirrored_write_op,
-        "qos_rate_limit_usec_per_read_op": perf_data.qos_rate_limit_usec_per_read_op,
-        "qos_rate_limit_usec_per_write_op": perf_data.qos_rate_limit_usec_per_write_op,
-        "queue_usec_per_mirrored_write_op": perf_data.queue_usec_per_mirrored_write_op,
-        "queue_usec_per_read_op": perf_data.queue_usec_per_read_op,
-        "queue_usec_per_write_op": perf_data.queue_usec_per_write_op,
-        "read_bytes_per_sec": perf_data.read_bytes_per_sec,
-        "reads_per_sec": perf_data.reads_per_sec,
-        "san_usec_per_mirrored_write_op": perf_data.san_usec_per_mirrored_write_op,
-        "san_usec_per_read_op": perf_data.san_usec_per_read_op,
-        "san_usec_per_write_op": perf_data.san_usec_per_write_op,
-        "service_usec_per_mirrored_write_op": perf_data.service_usec_per_mirrored_write_op,
-        "service_usec_per_read_op": perf_data.service_usec_per_read_op,
-        "service_usec_per_write_op": perf_data.service_usec_per_write_op,
-        "usec_per_mirrored_write_op": perf_data.usec_per_mirrored_write_op,
-        "usec_per_other_op": perf_data.usec_per_other_op,
-        "usec_per_read_op": perf_data.usec_per_read_op,
-        "usec_per_write_op": perf_data.usec_per_write_op,
-        "write_bytes_per_sec": perf_data.write_bytes_per_sec,
-        "writes_per_sec": perf_data.writes_per_sec,
+        "bytes_per_mirrored_write": getattr(
+            perf_data, "bytes_per_mirrored_write", None
+        ),
+        "bytes_per_op": getattr(perf_data, "bytes_per_op", None),
+        "bytes_per_read": getattr(perf_data, "bytes_per_read", None),
+        "bytes_per_write": getattr(perf_data, "bytes_per_write", None),
+        "local_queue_usec_per_op": getattr(perf_data, "local_queue_usec_per_op", None),
+        "mirrored_write_bytes_per_sec": getattr(
+            perf_data, "mirrored_write_bytes_per_sec", None
+        ),
+        "mirrored_writes_per_sec": getattr(perf_data, "mirrored_writes_per_sec", None),
+        "others_per_sec": getattr(perf_data, "others_per_sec", None),
+        "qos_rate_limit_usec_per_mirrored_write_op": getattr(
+            perf_data, "qos_rate_limit_usec_per_mirrored_write_op", None
+        ),
+        "qos_rate_limit_usec_per_read_op": getattr(
+            perf_data, "qos_rate_limit_usec_per_read_op", None
+        ),
+        "qos_rate_limit_usec_per_write_op": getattr(
+            perf_data, "qos_rate_limit_usec_per_write_op", None
+        ),
+        "queue_usec_per_mirrored_write_op": getattr(
+            perf_data, "queue_usec_per_mirrored_write_op", None
+        ),
+        "queue_usec_per_read_op": getattr(perf_data, "queue_usec_per_read_op", None),
+        "queue_usec_per_write_op": getattr(perf_data, "queue_usec_per_write_op", None),
+        "read_bytes_per_sec": getattr(perf_data, "read_bytes_per_sec", None),
+        "reads_per_sec": getattr(perf_data, "reads_per_sec", None),
+        "san_usec_per_mirrored_write_op": getattr(
+            perf_data, "san_usec_per_mirrored_write_op", None
+        ),
+        "san_usec_per_read_op": getattr(perf_data, "san_usec_per_read_op", None),
+        "san_usec_per_write_op": getattr(perf_data, "san_usec_per_write_op", None),
+        "service_usec_per_mirrored_write_op": getattr(
+            perf_data, "service_usec_per_mirrored_write_op", None
+        ),
+        "service_usec_per_read_op": getattr(
+            perf_data, "service_usec_per_read_op", None
+        ),
+        "service_usec_per_write_op": getattr(
+            perf_data, "service_usec_per_write_op", None
+        ),
+        "usec_per_mirrored_write_op": getattr(
+            perf_data, "usec_per_mirrored_write_op", None
+        ),
+        "usec_per_other_op": getattr(perf_data, "usec_per_other_op", None),
+        "usec_per_read_op": getattr(perf_data, "usec_per_read_op", None),
+        "usec_per_write_op": getattr(perf_data, "usec_per_write_op", None),
+        "write_bytes_per_sec": getattr(perf_data, "write_bytes_per_sec", None),
+        "writes_per_sec": getattr(perf_data, "writes_per_sec", None),
         # These are legacy values. Return 0 for backwards compatibility
         "input_per_sec": 0,
         "output_per_sec": 0,
         "queue_depth": 0,
     }
     return perf_info
+
+
+def _saml2sso_dict(idps):
+    """Report every SAML2 IdP, keyed by name"""
+    saml_info = {}
+    for idp in idps:
+        entry = {
+            "enabled": idp.enabled,
+            "array_url": idp.array_url,
+            "name": idp.name,
+            "idp": {},
+            "sp": {},
+        }
+        if hasattr(idp, "idp"):
+            entry["idp"] = {
+                "url": getattr(idp.idp, "url", None),
+                "encrypt_enabled": idp.idp.encrypt_assertion_enabled,
+                "sign_enabled": idp.idp.sign_request_enabled,
+                "metadata_url": idp.idp.metadata_url,
+            }
+        if hasattr(idp, "sp"):
+            entry["sp"] = {
+                "decrypt_cred": getattr(
+                    getattr(idp.sp, "decryption_credential", None), "name", None
+                ),
+                "sign_cred": getattr(
+                    getattr(idp.sp, "signing_credential", None), "name", None
+                ),
+            }
+        saml_info[idp.name] = entry
+    return saml_info
 
 
 def generate_config_dict(module, array):
@@ -377,6 +432,9 @@ def generate_config_dict(module, array):
     config_info["smtp"] = []
     for watcher in alert_info:
         config_info["smtp"].append({"name": watcher.name, "enabled": watcher.enabled})
+    # These are the alert watchers, not SMTP settings (those are in
+    # smtp_servers). The smtp key stays for compatibility.
+    config_info["alert_watchers"] = config_info["smtp"]
     snmp_info = list(array.get_snmp_managers().items)
     config_info["snmp"] = []
     snmp_agent = list(array.get_snmp_agents().items)[0]
@@ -469,36 +527,7 @@ def generate_config_dict(module, array):
             "source": getattr(config.source, "name", None),
         }
     if LooseVersion(SAML2_VERSION) <= LooseVersion(api_version):
-        config_info["saml2sso"] = {}
-        saml2 = list(array.get_sso_saml2_idps().items)
-        if saml2:
-            config_info["saml2sso"] = {
-                "enabled": saml2[0].enabled,
-                "array_url": saml2[0].array_url,
-                "name": saml2[0].name,
-                "idp": {},
-                "sp": {},
-            }
-            if hasattr(saml2[0], "idp"):
-                config_info["saml2sso"]["idp"] = {
-                    "url": getattr(saml2[0].idp, "url", None),
-                    "encrypt_enabled": saml2[0].idp.encrypt_assertion_enabled,
-                    "sign_enabled": saml2[0].idp.sign_request_enabled,
-                    "metadata_url": saml2[0].idp.metadata_url,
-                }
-            if hasattr(saml2[0], "sp"):
-                if hasattr(saml2[0].sp, "decryption_credential"):
-                    decrypt = getattr(saml2[0].sp.decryption_credential, "name", None)
-                else:
-                    decrypt = None
-                if hasattr(saml2[0].sp, "signing_credential"):
-                    sign = getattr(saml2[0].sp.signing_credential, "name", None)
-                else:
-                    sign = None
-                config_info["saml2sso"]["sp"] = {
-                    "decrypt_cred": decrypt,
-                    "sign_cred": sign,
-                }
+        config_info["saml2sso"] = _saml2sso_dict(list(array.get_sso_saml2_idps().items))
     config_info["active_directory"] = {}
     res = array.get_active_directory()
     if res.status_code != 200:
@@ -591,8 +620,36 @@ def generate_config_dict(module, array):
     return config_info
 
 
+def _directory_exports_by_name(array):
+    """Map full managed-directory name -> list of its exports
+
+    Exports are read once, unfiltered, and grouped here: filtering the call
+    by directory_names returned nothing for every directory on an array
+    serving live exports.
+    """
+    exports_by_dir = {}
+    res = array.get_directory_exports()
+    if getattr(res, "status_code", None) != 200:
+        return exports_by_dir
+    for export in list(getattr(res, "items", None) or []):
+        dir_name = getattr(getattr(export, "directory", None), "name", None)
+        exports_by_dir.setdefault(dir_name, []).append(
+            {
+                "enabled": export.enabled,
+                "export_name": export.export_name,
+                "policy": {
+                    "name": export.policy.name,
+                    "type": export.policy.resource_type,
+                },
+                "server": getattr(getattr(export, "server", None), "name", None),
+            }
+        )
+    return exports_by_dir
+
+
 def generate_filesystems_dict(array, performance):
     files_info = {}
+    exports_by_dir = _directory_exports_by_name(array)
     filesystems = list(array.get_file_systems().items)
     for filesystem in filesystems:
         fs_name = filesystem.name
@@ -623,7 +680,7 @@ def generate_filesystems_dict(array, performance):
                 "destroyed": directory.destroyed,
                 "full_name": directory.name,
                 "used_provisioned": getattr(directory.space, "used_provisioned", None),
-                "exports": [],
+                "exports": list(exports_by_dir.get(directory.name, [])),
                 "policies": [],
                 "limited_by": None,
                 "performance": [],
@@ -652,24 +709,6 @@ def generate_filesystems_dict(array, performance):
                         },
                     }
                 )
-            exports = list(
-                array.get_directory_exports(
-                    directory_names=[
-                        files_info[fs_name]["directories"][d_name]["full_name"]
-                    ]
-                ).items
-            )
-            for export in exports:
-                files_info[fs_name]["directories"][d_name]["exports"].append(
-                    {
-                        "enabled": export.enabled,
-                        "export_name": export.export_name,
-                        "policy": {
-                            "name": export.policy.name,
-                            "type": export.policy.resource_type,
-                        },
-                    }
-                )
             if (
                 performance
                 and not files_info[fs_name]["directories"][d_name]["destroyed"]
@@ -680,17 +719,21 @@ def generate_filesystems_dict(array, performance):
                     ).items
                 )[0]
                 files_info[fs_name]["directories"][d_name]["performance"] = {
-                    "bytes_per_op": perf_stats.bytes_per_op,
-                    "bytes_per_read": perf_stats.bytes_per_read,
-                    "bytes_per_write": perf_stats.bytes_per_write,
-                    "others_per_sec": perf_stats.others_per_sec,
-                    "read_bytes_per_sec": perf_stats.read_bytes_per_sec,
-                    "reads_per_sec": perf_stats.reads_per_sec,
-                    "usec_per_other_op": perf_stats.usec_per_other_op,
-                    "usec_per_read_op": perf_stats.usec_per_read_op,
-                    "usec_per_write_op": perf_stats.usec_per_write_op,
-                    "write_bytes_per_sec": perf_stats.write_bytes_per_sec,
-                    "writes_per_sec": perf_stats.writes_per_sec,
+                    "bytes_per_op": getattr(perf_stats, "bytes_per_op", None),
+                    "bytes_per_read": getattr(perf_stats, "bytes_per_read", None),
+                    "bytes_per_write": getattr(perf_stats, "bytes_per_write", None),
+                    "others_per_sec": getattr(perf_stats, "others_per_sec", None),
+                    "read_bytes_per_sec": getattr(
+                        perf_stats, "read_bytes_per_sec", None
+                    ),
+                    "reads_per_sec": getattr(perf_stats, "reads_per_sec", None),
+                    "usec_per_other_op": getattr(perf_stats, "usec_per_other_op", None),
+                    "usec_per_read_op": getattr(perf_stats, "usec_per_read_op", None),
+                    "usec_per_write_op": getattr(perf_stats, "usec_per_write_op", None),
+                    "write_bytes_per_sec": getattr(
+                        perf_stats, "write_bytes_per_sec", None
+                    ),
+                    "writes_per_sec": getattr(perf_stats, "writes_per_sec", None),
                 }
     return files_info
 
@@ -767,6 +810,19 @@ def generate_policies_dict(array, quota_available, autodir_available, nfs_user_m
             m_name = member.member.name
             policy_info[p_name]["members"].append(m_name)
         if policy.policy_type == "smb":
+            smb_res = array.get_policies_smb(names=[p_name])
+            smb_policies = (
+                list(getattr(smb_res, "items", None) or [])
+                if getattr(smb_res, "status_code", None) == 200
+                else []
+            )
+            if smb_policies:
+                policy_info[p_name]["access_based_enumeration_enabled"] = getattr(
+                    smb_policies[0], "access_based_enumeration_enabled", None
+                )
+                policy_info[p_name]["continuous_availability_enabled"] = getattr(
+                    smb_policies[0], "continuous_availability_enabled", None
+                )
             rules = list(
                 array.get_policies_smb_client_rules(policy_names=[p_name]).items
             )
@@ -858,6 +914,9 @@ def generate_policies_dict(array, quota_available, autodir_available, nfs_user_m
                 "min_character_groups": pwd_policy.min_character_groups,
                 "min_characters_per_group": pwd_policy.min_characters_per_group,
                 "min_password_length": pwd_policy.min_password_length,
+                "max_login_attempts": getattr(pwd_policy, "max_login_attempts", None),
+                "min_password_age": getattr(pwd_policy, "min_password_age", None),
+                "max_password_age": getattr(pwd_policy, "max_password_age", None),
             }
         if policy.policy_type == "qos":
             qos_policy = list(array.get_policies_qos(names=[p_name]).items)[0]
@@ -914,6 +973,27 @@ def generate_policies_dict(array, quota_available, autodir_available, nfs_user_m
                     "interfaces": rule.interfaces,
                 }
                 policy_info[p_name]["rules"].append(na_rules_dict)
+        if policy.policy_type == "management-access":
+            ma_res = array.get_policies_management_access(names=[p_name])
+            ma_policies = (
+                list(getattr(ma_res, "items", None) or [])
+                if ma_res.status_code == 200
+                else []
+            )
+            if ma_policies:
+                ma_policy = ma_policies[0]
+                policy_info[p_name]["aggregation_strategy"] = getattr(
+                    ma_policy, "aggregation_strategy", None
+                )
+                for rule in getattr(ma_policy, "rules", None) or []:
+                    scope = getattr(rule, "scope", None)
+                    policy_info[p_name]["rules"].append(
+                        {
+                            "role": getattr(getattr(rule, "role", None), "name", None),
+                            "scope": getattr(scope, "name", None),
+                            "resource_type": getattr(scope, "resource_type", None),
+                        }
+                    )
     return policy_info
 
 
@@ -1959,31 +2039,61 @@ def generate_vol_dict(array, performance):
         for perf in vols_performance:
             if perf.name in volume_info:
                 volume_info[perf.name]["performance"] = {
-                    "bytes_per_mirrored_write": perf.bytes_per_mirrored_write,
-                    "bytes_per_op": perf.bytes_per_op,
-                    "bytes_per_read": perf.bytes_per_read,
-                    "bytes_per_write": perf.bytes_per_write,
-                    "mirrored_write_bytes_per_sec": perf.mirrored_write_bytes_per_sec,
-                    "mirrored_writes_per_sec": perf.mirrored_writes_per_sec,
-                    "qos_rate_limit_usec_per_mirrored_write_op": perf.qos_rate_limit_usec_per_mirrored_write_op,
-                    "qos_rate_limit_usec_per_read_op": perf.qos_rate_limit_usec_per_mirrored_write_op,
-                    "qos_rate_limit_usec_per_write_op": perf.qos_rate_limit_usec_per_read_op,
-                    "queue_usec_per_mirrored_write_op": perf.queue_usec_per_mirrored_write_op,
-                    "queue_usec_per_read_op": perf.queue_usec_per_read_op,
-                    "queue_usec_per_write_op": perf.queue_usec_per_write_op,
-                    "read_bytes_per_sec": perf.read_bytes_per_sec,
-                    "reads_per_sec": perf.reads_per_sec,
-                    "san_usec_per_mirrored_write_op": perf.san_usec_per_mirrored_write_op,
-                    "san_usec_per_read_op": perf.san_usec_per_read_op,
-                    "san_usec_per_write_op": perf.san_usec_per_write_op,
-                    "service_usec_per_mirrored_write_op": perf.service_usec_per_mirrored_write_op,
-                    "service_usec_per_read_op": perf.service_usec_per_read_op,
-                    "service_usec_per_write_op": perf.service_usec_per_write_op,
-                    "usec_per_mirrored_write_op": perf.usec_per_mirrored_write_op,
-                    "usec_per_read_op": perf.usec_per_read_op,
-                    "usec_per_write_op": perf.usec_per_write_op,
-                    "write_bytes_per_sec": perf.write_bytes_per_sec,
-                    "writes_per_sec": perf.writes_per_sec,
+                    "bytes_per_mirrored_write": getattr(
+                        perf, "bytes_per_mirrored_write", None
+                    ),
+                    "bytes_per_op": getattr(perf, "bytes_per_op", None),
+                    "bytes_per_read": getattr(perf, "bytes_per_read", None),
+                    "bytes_per_write": getattr(perf, "bytes_per_write", None),
+                    "mirrored_write_bytes_per_sec": getattr(
+                        perf, "mirrored_write_bytes_per_sec", None
+                    ),
+                    "mirrored_writes_per_sec": getattr(
+                        perf, "mirrored_writes_per_sec", None
+                    ),
+                    "qos_rate_limit_usec_per_mirrored_write_op": getattr(
+                        perf, "qos_rate_limit_usec_per_mirrored_write_op", None
+                    ),
+                    "qos_rate_limit_usec_per_read_op": getattr(
+                        perf, "qos_rate_limit_usec_per_read_op", None
+                    ),
+                    "qos_rate_limit_usec_per_write_op": getattr(
+                        perf, "qos_rate_limit_usec_per_write_op", None
+                    ),
+                    "queue_usec_per_mirrored_write_op": getattr(
+                        perf, "queue_usec_per_mirrored_write_op", None
+                    ),
+                    "queue_usec_per_read_op": getattr(
+                        perf, "queue_usec_per_read_op", None
+                    ),
+                    "queue_usec_per_write_op": getattr(
+                        perf, "queue_usec_per_write_op", None
+                    ),
+                    "read_bytes_per_sec": getattr(perf, "read_bytes_per_sec", None),
+                    "reads_per_sec": getattr(perf, "reads_per_sec", None),
+                    "san_usec_per_mirrored_write_op": getattr(
+                        perf, "san_usec_per_mirrored_write_op", None
+                    ),
+                    "san_usec_per_read_op": getattr(perf, "san_usec_per_read_op", None),
+                    "san_usec_per_write_op": getattr(
+                        perf, "san_usec_per_write_op", None
+                    ),
+                    "service_usec_per_mirrored_write_op": getattr(
+                        perf, "service_usec_per_mirrored_write_op", None
+                    ),
+                    "service_usec_per_read_op": getattr(
+                        perf, "service_usec_per_read_op", None
+                    ),
+                    "service_usec_per_write_op": getattr(
+                        perf, "service_usec_per_write_op", None
+                    ),
+                    "usec_per_mirrored_write_op": getattr(
+                        perf, "usec_per_mirrored_write_op", None
+                    ),
+                    "usec_per_read_op": getattr(perf, "usec_per_read_op", None),
+                    "usec_per_write_op": getattr(perf, "usec_per_write_op", None),
+                    "write_bytes_per_sec": getattr(perf, "write_bytes_per_sec", None),
+                    "writes_per_sec": getattr(perf, "writes_per_sec", None),
                 }
     return volume_info
 
@@ -2097,31 +2207,61 @@ def generate_host_dict(array, performance):
         for perf in hosts_performance:
             if ":" not in perf.name:
                 host_info[perf.name]["performance"] = {
-                    "bytes_per_mirrored_write": perf.bytes_per_mirrored_write,
-                    "bytes_per_op": perf.bytes_per_op,
-                    "bytes_per_read": perf.bytes_per_read,
-                    "bytes_per_write": perf.bytes_per_write,
-                    "mirrored_write_bytes_per_sec": perf.mirrored_write_bytes_per_sec,
-                    "mirrored_writes_per_sec": perf.mirrored_writes_per_sec,
-                    "qos_rate_limit_usec_per_mirrored_write_op": perf.qos_rate_limit_usec_per_mirrored_write_op,
-                    "qos_rate_limit_usec_per_read_op": perf.qos_rate_limit_usec_per_mirrored_write_op,
-                    "qos_rate_limit_usec_per_write_op": perf.qos_rate_limit_usec_per_read_op,
-                    "queue_usec_per_mirrored_write_op": perf.queue_usec_per_mirrored_write_op,
-                    "queue_usec_per_read_op": perf.queue_usec_per_read_op,
-                    "queue_usec_per_write_op": perf.queue_usec_per_write_op,
-                    "read_bytes_per_sec": perf.read_bytes_per_sec,
-                    "reads_per_sec": perf.reads_per_sec,
-                    "san_usec_per_mirrored_write_op": perf.san_usec_per_mirrored_write_op,
-                    "san_usec_per_read_op": perf.san_usec_per_read_op,
-                    "san_usec_per_write_op": perf.san_usec_per_write_op,
-                    "service_usec_per_mirrored_write_op": perf.service_usec_per_mirrored_write_op,
-                    "service_usec_per_read_op": perf.service_usec_per_read_op,
-                    "service_usec_per_write_op": perf.service_usec_per_write_op,
-                    "usec_per_mirrored_write_op": perf.usec_per_mirrored_write_op,
-                    "usec_per_read_op": perf.usec_per_read_op,
-                    "usec_per_write_op": perf.usec_per_write_op,
-                    "write_bytes_per_sec": perf.write_bytes_per_sec,
-                    "writes_per_sec": perf.writes_per_sec,
+                    "bytes_per_mirrored_write": getattr(
+                        perf, "bytes_per_mirrored_write", None
+                    ),
+                    "bytes_per_op": getattr(perf, "bytes_per_op", None),
+                    "bytes_per_read": getattr(perf, "bytes_per_read", None),
+                    "bytes_per_write": getattr(perf, "bytes_per_write", None),
+                    "mirrored_write_bytes_per_sec": getattr(
+                        perf, "mirrored_write_bytes_per_sec", None
+                    ),
+                    "mirrored_writes_per_sec": getattr(
+                        perf, "mirrored_writes_per_sec", None
+                    ),
+                    "qos_rate_limit_usec_per_mirrored_write_op": getattr(
+                        perf, "qos_rate_limit_usec_per_mirrored_write_op", None
+                    ),
+                    "qos_rate_limit_usec_per_read_op": getattr(
+                        perf, "qos_rate_limit_usec_per_read_op", None
+                    ),
+                    "qos_rate_limit_usec_per_write_op": getattr(
+                        perf, "qos_rate_limit_usec_per_write_op", None
+                    ),
+                    "queue_usec_per_mirrored_write_op": getattr(
+                        perf, "queue_usec_per_mirrored_write_op", None
+                    ),
+                    "queue_usec_per_read_op": getattr(
+                        perf, "queue_usec_per_read_op", None
+                    ),
+                    "queue_usec_per_write_op": getattr(
+                        perf, "queue_usec_per_write_op", None
+                    ),
+                    "read_bytes_per_sec": getattr(perf, "read_bytes_per_sec", None),
+                    "reads_per_sec": getattr(perf, "reads_per_sec", None),
+                    "san_usec_per_mirrored_write_op": getattr(
+                        perf, "san_usec_per_mirrored_write_op", None
+                    ),
+                    "san_usec_per_read_op": getattr(perf, "san_usec_per_read_op", None),
+                    "san_usec_per_write_op": getattr(
+                        perf, "san_usec_per_write_op", None
+                    ),
+                    "service_usec_per_mirrored_write_op": getattr(
+                        perf, "service_usec_per_mirrored_write_op", None
+                    ),
+                    "service_usec_per_read_op": getattr(
+                        perf, "service_usec_per_read_op", None
+                    ),
+                    "service_usec_per_write_op": getattr(
+                        perf, "service_usec_per_write_op", None
+                    ),
+                    "usec_per_mirrored_write_op": getattr(
+                        perf, "usec_per_mirrored_write_op", None
+                    ),
+                    "usec_per_read_op": getattr(perf, "usec_per_read_op", None),
+                    "usec_per_write_op": getattr(perf, "usec_per_write_op", None),
+                    "write_bytes_per_sec": getattr(perf, "write_bytes_per_sec", None),
+                    "writes_per_sec": getattr(perf, "writes_per_sec", None),
                 }
     return host_info
 
@@ -2399,7 +2539,7 @@ def generate_rl_dict(array):
     rlinks = list(array.get_pod_replica_links().items)
     for rlink in rlinks:
         link_name = rlink.local_pod.name
-        if hasattr(rlinks, "recovery_point"):
+        if hasattr(rlink, "recovery_point"):
             since_epoch = rlink.recovery_point / 1000
             recovery_datatime = time.strftime(
                 "%Y-%m-%d %H:%M:%S", time.localtime(since_epoch)
@@ -2559,32 +2699,62 @@ def generate_pods_dict(array, performance):
         for perf in pods_performance:
             if perf.name in pods_info:
                 pods_info[perf.name]["performance"] = {
-                    "bytes_per_mirrored_write": perf.bytes_per_mirrored_write,
-                    "bytes_per_op": perf.bytes_per_op,
-                    "bytes_per_read": perf.bytes_per_read,
-                    "bytes_per_write": perf.bytes_per_write,
-                    "mirrored_write_bytes_per_sec": perf.mirrored_write_bytes_per_sec,
-                    "mirrored_writes_per_sec": perf.mirrored_writes_per_sec,
-                    "others_per_sec": perf.others_per_sec,
-                    "qos_rate_limit_usec_per_mirrored_write_op": perf.qos_rate_limit_usec_per_mirrored_write_op,
-                    "qos_rate_limit_usec_per_read_op": perf.qos_rate_limit_usec_per_mirrored_write_op,
-                    "qos_rate_limit_usec_per_write_op": perf.qos_rate_limit_usec_per_read_op,
-                    "queue_usec_per_mirrored_write_op": perf.queue_usec_per_mirrored_write_op,
-                    "queue_usec_per_read_op": perf.queue_usec_per_read_op,
-                    "queue_usec_per_write_op": perf.queue_usec_per_write_op,
-                    "read_bytes_per_sec": perf.read_bytes_per_sec,
-                    "reads_per_sec": perf.reads_per_sec,
-                    "san_usec_per_mirrored_write_op": perf.san_usec_per_mirrored_write_op,
-                    "san_usec_per_read_op": perf.san_usec_per_read_op,
-                    "san_usec_per_write_op": perf.san_usec_per_write_op,
-                    "service_usec_per_mirrored_write_op": perf.service_usec_per_mirrored_write_op,
-                    "service_usec_per_read_op": perf.service_usec_per_read_op,
-                    "service_usec_per_write_op": perf.service_usec_per_write_op,
-                    "usec_per_mirrored_write_op": perf.usec_per_mirrored_write_op,
-                    "usec_per_read_op": perf.usec_per_read_op,
-                    "usec_per_write_op": perf.usec_per_write_op,
-                    "write_bytes_per_sec": perf.write_bytes_per_sec,
-                    "writes_per_sec": perf.writes_per_sec,
+                    "bytes_per_mirrored_write": getattr(
+                        perf, "bytes_per_mirrored_write", None
+                    ),
+                    "bytes_per_op": getattr(perf, "bytes_per_op", None),
+                    "bytes_per_read": getattr(perf, "bytes_per_read", None),
+                    "bytes_per_write": getattr(perf, "bytes_per_write", None),
+                    "mirrored_write_bytes_per_sec": getattr(
+                        perf, "mirrored_write_bytes_per_sec", None
+                    ),
+                    "mirrored_writes_per_sec": getattr(
+                        perf, "mirrored_writes_per_sec", None
+                    ),
+                    "others_per_sec": getattr(perf, "others_per_sec", None),
+                    "qos_rate_limit_usec_per_mirrored_write_op": getattr(
+                        perf, "qos_rate_limit_usec_per_mirrored_write_op", None
+                    ),
+                    "qos_rate_limit_usec_per_read_op": getattr(
+                        perf, "qos_rate_limit_usec_per_read_op", None
+                    ),
+                    "qos_rate_limit_usec_per_write_op": getattr(
+                        perf, "qos_rate_limit_usec_per_write_op", None
+                    ),
+                    "queue_usec_per_mirrored_write_op": getattr(
+                        perf, "queue_usec_per_mirrored_write_op", None
+                    ),
+                    "queue_usec_per_read_op": getattr(
+                        perf, "queue_usec_per_read_op", None
+                    ),
+                    "queue_usec_per_write_op": getattr(
+                        perf, "queue_usec_per_write_op", None
+                    ),
+                    "read_bytes_per_sec": getattr(perf, "read_bytes_per_sec", None),
+                    "reads_per_sec": getattr(perf, "reads_per_sec", None),
+                    "san_usec_per_mirrored_write_op": getattr(
+                        perf, "san_usec_per_mirrored_write_op", None
+                    ),
+                    "san_usec_per_read_op": getattr(perf, "san_usec_per_read_op", None),
+                    "san_usec_per_write_op": getattr(
+                        perf, "san_usec_per_write_op", None
+                    ),
+                    "service_usec_per_mirrored_write_op": getattr(
+                        perf, "service_usec_per_mirrored_write_op", None
+                    ),
+                    "service_usec_per_read_op": getattr(
+                        perf, "service_usec_per_read_op", None
+                    ),
+                    "service_usec_per_write_op": getattr(
+                        perf, "service_usec_per_write_op", None
+                    ),
+                    "usec_per_mirrored_write_op": getattr(
+                        perf, "usec_per_mirrored_write_op", None
+                    ),
+                    "usec_per_read_op": getattr(perf, "usec_per_read_op", None),
+                    "usec_per_write_op": getattr(perf, "usec_per_write_op", None),
+                    "write_bytes_per_sec": getattr(perf, "write_bytes_per_sec", None),
+                    "writes_per_sec": getattr(perf, "writes_per_sec", None),
                 }
     return pods_info
 
@@ -2686,31 +2856,61 @@ def generate_vgroups_dict(array, performance):
         for perf in vgs_performance:
             if perf.name in vgroups_info:
                 vgroups_info[perf.name]["performance"] = {
-                    "bytes_per_mirrored_write": perf.bytes_per_mirrored_write,
-                    "bytes_per_op": perf.bytes_per_op,
-                    "bytes_per_read": perf.bytes_per_read,
-                    "bytes_per_write": perf.bytes_per_write,
-                    "mirrored_write_bytes_per_sec": perf.mirrored_write_bytes_per_sec,
-                    "mirrored_writes_per_sec": perf.mirrored_writes_per_sec,
-                    "qos_rate_limit_usec_per_mirrored_write_op": perf.qos_rate_limit_usec_per_mirrored_write_op,
-                    "qos_rate_limit_usec_per_read_op": perf.qos_rate_limit_usec_per_mirrored_write_op,
-                    "qos_rate_limit_usec_per_write_op": perf.qos_rate_limit_usec_per_read_op,
-                    "queue_usec_per_mirrored_write_op": perf.queue_usec_per_mirrored_write_op,
-                    "queue_usec_per_read_op": perf.queue_usec_per_read_op,
-                    "queue_usec_per_write_op": perf.queue_usec_per_write_op,
-                    "read_bytes_per_sec": perf.read_bytes_per_sec,
-                    "reads_per_sec": perf.reads_per_sec,
-                    "san_usec_per_mirrored_write_op": perf.san_usec_per_mirrored_write_op,
-                    "san_usec_per_read_op": perf.san_usec_per_read_op,
-                    "san_usec_per_write_op": perf.san_usec_per_write_op,
-                    "service_usec_per_mirrored_write_op": perf.service_usec_per_mirrored_write_op,
-                    "service_usec_per_read_op": perf.service_usec_per_read_op,
-                    "service_usec_per_write_op": perf.service_usec_per_write_op,
-                    "usec_per_mirrored_write_op": perf.usec_per_mirrored_write_op,
-                    "usec_per_read_op": perf.usec_per_read_op,
-                    "usec_per_write_op": perf.usec_per_write_op,
-                    "write_bytes_per_sec": perf.write_bytes_per_sec,
-                    "writes_per_sec": perf.writes_per_sec,
+                    "bytes_per_mirrored_write": getattr(
+                        perf, "bytes_per_mirrored_write", None
+                    ),
+                    "bytes_per_op": getattr(perf, "bytes_per_op", None),
+                    "bytes_per_read": getattr(perf, "bytes_per_read", None),
+                    "bytes_per_write": getattr(perf, "bytes_per_write", None),
+                    "mirrored_write_bytes_per_sec": getattr(
+                        perf, "mirrored_write_bytes_per_sec", None
+                    ),
+                    "mirrored_writes_per_sec": getattr(
+                        perf, "mirrored_writes_per_sec", None
+                    ),
+                    "qos_rate_limit_usec_per_mirrored_write_op": getattr(
+                        perf, "qos_rate_limit_usec_per_mirrored_write_op", None
+                    ),
+                    "qos_rate_limit_usec_per_read_op": getattr(
+                        perf, "qos_rate_limit_usec_per_read_op", None
+                    ),
+                    "qos_rate_limit_usec_per_write_op": getattr(
+                        perf, "qos_rate_limit_usec_per_write_op", None
+                    ),
+                    "queue_usec_per_mirrored_write_op": getattr(
+                        perf, "queue_usec_per_mirrored_write_op", None
+                    ),
+                    "queue_usec_per_read_op": getattr(
+                        perf, "queue_usec_per_read_op", None
+                    ),
+                    "queue_usec_per_write_op": getattr(
+                        perf, "queue_usec_per_write_op", None
+                    ),
+                    "read_bytes_per_sec": getattr(perf, "read_bytes_per_sec", None),
+                    "reads_per_sec": getattr(perf, "reads_per_sec", None),
+                    "san_usec_per_mirrored_write_op": getattr(
+                        perf, "san_usec_per_mirrored_write_op", None
+                    ),
+                    "san_usec_per_read_op": getattr(perf, "san_usec_per_read_op", None),
+                    "san_usec_per_write_op": getattr(
+                        perf, "san_usec_per_write_op", None
+                    ),
+                    "service_usec_per_mirrored_write_op": getattr(
+                        perf, "service_usec_per_mirrored_write_op", None
+                    ),
+                    "service_usec_per_read_op": getattr(
+                        perf, "service_usec_per_read_op", None
+                    ),
+                    "service_usec_per_write_op": getattr(
+                        perf, "service_usec_per_write_op", None
+                    ),
+                    "usec_per_mirrored_write_op": getattr(
+                        perf, "usec_per_mirrored_write_op", None
+                    ),
+                    "usec_per_read_op": getattr(perf, "usec_per_read_op", None),
+                    "usec_per_write_op": getattr(perf, "usec_per_write_op", None),
+                    "write_bytes_per_sec": getattr(perf, "write_bytes_per_sec", None),
+                    "writes_per_sec": getattr(perf, "writes_per_sec", None),
                 }
     vg_volumes = list(array.get_volume_groups_volumes().items)
     for vg_vol in vg_volumes:
@@ -2975,31 +3175,61 @@ def generate_hgroups_dict(array, performance):
         for perf in hgs_performance:
             if perf.name in hgroups_info:
                 hgroups_info[perf.name]["performance"] = {
-                    "bytes_per_mirrored_write": perf.bytes_per_mirrored_write,
-                    "bytes_per_op": perf.bytes_per_op,
-                    "bytes_per_read": perf.bytes_per_read,
-                    "bytes_per_write": perf.bytes_per_write,
-                    "mirrored_write_bytes_per_sec": perf.mirrored_write_bytes_per_sec,
-                    "mirrored_writes_per_sec": perf.mirrored_writes_per_sec,
-                    "qos_rate_limit_usec_per_mirrored_write_op": perf.qos_rate_limit_usec_per_mirrored_write_op,
-                    "qos_rate_limit_usec_per_read_op": perf.qos_rate_limit_usec_per_mirrored_write_op,
-                    "qos_rate_limit_usec_per_write_op": perf.qos_rate_limit_usec_per_read_op,
-                    "queue_usec_per_mirrored_write_op": perf.queue_usec_per_mirrored_write_op,
-                    "queue_usec_per_read_op": perf.queue_usec_per_read_op,
-                    "queue_usec_per_write_op": perf.queue_usec_per_write_op,
-                    "read_bytes_per_sec": perf.read_bytes_per_sec,
-                    "reads_per_sec": perf.reads_per_sec,
-                    "san_usec_per_mirrored_write_op": perf.san_usec_per_mirrored_write_op,
-                    "san_usec_per_read_op": perf.san_usec_per_read_op,
-                    "san_usec_per_write_op": perf.san_usec_per_write_op,
-                    "service_usec_per_mirrored_write_op": perf.service_usec_per_mirrored_write_op,
-                    "service_usec_per_read_op": perf.service_usec_per_read_op,
-                    "service_usec_per_write_op": perf.service_usec_per_write_op,
-                    "usec_per_mirrored_write_op": perf.usec_per_mirrored_write_op,
-                    "usec_per_read_op": perf.usec_per_read_op,
-                    "usec_per_write_op": perf.usec_per_write_op,
-                    "write_bytes_per_sec": perf.write_bytes_per_sec,
-                    "writes_per_sec": perf.writes_per_sec,
+                    "bytes_per_mirrored_write": getattr(
+                        perf, "bytes_per_mirrored_write", None
+                    ),
+                    "bytes_per_op": getattr(perf, "bytes_per_op", None),
+                    "bytes_per_read": getattr(perf, "bytes_per_read", None),
+                    "bytes_per_write": getattr(perf, "bytes_per_write", None),
+                    "mirrored_write_bytes_per_sec": getattr(
+                        perf, "mirrored_write_bytes_per_sec", None
+                    ),
+                    "mirrored_writes_per_sec": getattr(
+                        perf, "mirrored_writes_per_sec", None
+                    ),
+                    "qos_rate_limit_usec_per_mirrored_write_op": getattr(
+                        perf, "qos_rate_limit_usec_per_mirrored_write_op", None
+                    ),
+                    "qos_rate_limit_usec_per_read_op": getattr(
+                        perf, "qos_rate_limit_usec_per_read_op", None
+                    ),
+                    "qos_rate_limit_usec_per_write_op": getattr(
+                        perf, "qos_rate_limit_usec_per_write_op", None
+                    ),
+                    "queue_usec_per_mirrored_write_op": getattr(
+                        perf, "queue_usec_per_mirrored_write_op", None
+                    ),
+                    "queue_usec_per_read_op": getattr(
+                        perf, "queue_usec_per_read_op", None
+                    ),
+                    "queue_usec_per_write_op": getattr(
+                        perf, "queue_usec_per_write_op", None
+                    ),
+                    "read_bytes_per_sec": getattr(perf, "read_bytes_per_sec", None),
+                    "reads_per_sec": getattr(perf, "reads_per_sec", None),
+                    "san_usec_per_mirrored_write_op": getattr(
+                        perf, "san_usec_per_mirrored_write_op", None
+                    ),
+                    "san_usec_per_read_op": getattr(perf, "san_usec_per_read_op", None),
+                    "san_usec_per_write_op": getattr(
+                        perf, "san_usec_per_write_op", None
+                    ),
+                    "service_usec_per_mirrored_write_op": getattr(
+                        perf, "service_usec_per_mirrored_write_op", None
+                    ),
+                    "service_usec_per_read_op": getattr(
+                        perf, "service_usec_per_read_op", None
+                    ),
+                    "service_usec_per_write_op": getattr(
+                        perf, "service_usec_per_write_op", None
+                    ),
+                    "usec_per_mirrored_write_op": getattr(
+                        perf, "usec_per_mirrored_write_op", None
+                    ),
+                    "usec_per_read_op": getattr(perf, "usec_per_read_op", None),
+                    "usec_per_write_op": getattr(perf, "usec_per_write_op", None),
+                    "write_bytes_per_sec": getattr(perf, "write_bytes_per_sec", None),
+                    "writes_per_sec": getattr(perf, "writes_per_sec", None),
                 }
     hg_vols = list(array.get_connections().items)
     for hg_vol in hg_vols:
@@ -3399,33 +3629,59 @@ def generate_realms_dict(array, performance):
         r_perfs = list(array.get_realms_performance().items)
         for perf in r_perfs:
             realms_info[perf.name]["performance"] = {
-                "bytes_per_mirrored_write": perf.bytes_per_mirrored_write,
-                "bytes_per_op": perf.bytes_per_op,
-                "bytes_per_read": perf.bytes_per_read,
-                "bytes_per_write": perf.bytes_per_write,
-                "mirrored_write_bytes_per_sec": perf.mirrored_write_bytes_per_sec,
-                "mirrored_writes_per_sec": perf.mirrored_writes_per_sec,
-                "others_per_sec": perf.others_per_sec,
-                "qos_rate_limit_usec_per_mirrored_write_op": perf.qos_rate_limit_usec_per_mirrored_write_op,
-                "qos_rate_limit_usec_per_read_op": perf.qos_rate_limit_usec_per_mirrored_write_op,
-                "qos_rate_limit_usec_per_write_op": perf.qos_rate_limit_usec_per_read_op,
-                "queue_usec_per_mirrored_write_op": perf.queue_usec_per_mirrored_write_op,
-                "queue_usec_per_read_op": perf.queue_usec_per_read_op,
-                "queue_usec_per_write_op": perf.queue_usec_per_write_op,
-                "read_bytes_per_sec": perf.read_bytes_per_sec,
-                "reads_per_sec": perf.reads_per_sec,
-                "san_usec_per_mirrored_write_op": perf.san_usec_per_mirrored_write_op,
-                "san_usec_per_read_op": perf.san_usec_per_read_op,
-                "san_usec_per_write_op": perf.san_usec_per_write_op,
-                "service_usec_per_mirrored_write_op": perf.service_usec_per_mirrored_write_op,
-                "service_usec_per_read_op": perf.service_usec_per_read_op,
-                "service_usec_per_write_op": perf.service_usec_per_write_op,
-                "usec_per_mirrored_write_op": perf.usec_per_mirrored_write_op,
-                "usec_per_other_op": perf.usec_per_other_op,
-                "usec_per_read_op": perf.usec_per_read_op,
-                "usec_per_write_op": perf.usec_per_write_op,
-                "write_bytes_per_sec": perf.write_bytes_per_sec,
-                "writes_per_sec": perf.writes_per_sec,
+                "bytes_per_mirrored_write": getattr(
+                    perf, "bytes_per_mirrored_write", None
+                ),
+                "bytes_per_op": getattr(perf, "bytes_per_op", None),
+                "bytes_per_read": getattr(perf, "bytes_per_read", None),
+                "bytes_per_write": getattr(perf, "bytes_per_write", None),
+                "mirrored_write_bytes_per_sec": getattr(
+                    perf, "mirrored_write_bytes_per_sec", None
+                ),
+                "mirrored_writes_per_sec": getattr(
+                    perf, "mirrored_writes_per_sec", None
+                ),
+                "others_per_sec": getattr(perf, "others_per_sec", None),
+                "qos_rate_limit_usec_per_mirrored_write_op": getattr(
+                    perf, "qos_rate_limit_usec_per_mirrored_write_op", None
+                ),
+                "qos_rate_limit_usec_per_read_op": getattr(
+                    perf, "qos_rate_limit_usec_per_read_op", None
+                ),
+                "qos_rate_limit_usec_per_write_op": getattr(
+                    perf, "qos_rate_limit_usec_per_write_op", None
+                ),
+                "queue_usec_per_mirrored_write_op": getattr(
+                    perf, "queue_usec_per_mirrored_write_op", None
+                ),
+                "queue_usec_per_read_op": getattr(perf, "queue_usec_per_read_op", None),
+                "queue_usec_per_write_op": getattr(
+                    perf, "queue_usec_per_write_op", None
+                ),
+                "read_bytes_per_sec": getattr(perf, "read_bytes_per_sec", None),
+                "reads_per_sec": getattr(perf, "reads_per_sec", None),
+                "san_usec_per_mirrored_write_op": getattr(
+                    perf, "san_usec_per_mirrored_write_op", None
+                ),
+                "san_usec_per_read_op": getattr(perf, "san_usec_per_read_op", None),
+                "san_usec_per_write_op": getattr(perf, "san_usec_per_write_op", None),
+                "service_usec_per_mirrored_write_op": getattr(
+                    perf, "service_usec_per_mirrored_write_op", None
+                ),
+                "service_usec_per_read_op": getattr(
+                    perf, "service_usec_per_read_op", None
+                ),
+                "service_usec_per_write_op": getattr(
+                    perf, "service_usec_per_write_op", None
+                ),
+                "usec_per_mirrored_write_op": getattr(
+                    perf, "usec_per_mirrored_write_op", None
+                ),
+                "usec_per_other_op": getattr(perf, "usec_per_other_op", None),
+                "usec_per_read_op": getattr(perf, "usec_per_read_op", None),
+                "usec_per_write_op": getattr(perf, "usec_per_write_op", None),
+                "write_bytes_per_sec": getattr(perf, "write_bytes_per_sec", None),
+                "writes_per_sec": getattr(perf, "writes_per_sec", None),
             }
     return realms_info
 
@@ -3859,7 +4115,9 @@ def main():
             info["apps"] = generate_apps_dict(array)
         else:
             info["apps"] = {}
-        if "minimum" not in subset or "all" not in subset:
+        # The default section was read above only to tell CBS from a real
+        # array; keep it when the caller actually asked for it
+        if "minimum" not in subset and "all" not in subset:
             del info["default"]
     if "arrays" in subset or "all" in subset:
         info["arrays"] = generate_conn_array_dict(array)

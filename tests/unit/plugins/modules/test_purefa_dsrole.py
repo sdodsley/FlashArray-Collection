@@ -554,3 +554,86 @@ class TestAccessPolicy:
 
         mock_patch.assert_not_called()
         mock_module.exit_json.assert_called_once_with(changed=False)
+
+
+class TestRepeatedAbsent:
+    """A cleared role reads back with group "" and must count as
+    unconfigured, so a second absent run is a no-op"""
+
+    @patch("plugins.modules.purefa_dsrole.update_role")
+    @patch("plugins.modules.purefa_dsrole.delete_role")
+    @patch("plugins.modules.purefa_dsrole.get_with_context")
+    @patch("plugins.modules.purefa_dsrole.get_array")
+    @patch("plugins.modules.purefa_dsrole.AnsibleModule")
+    def test_absent_on_role_with_empty_group_is_noop(
+        self,
+        mock_ansible_module,
+        mock_get_array,
+        mock_get_with_context,
+        mock_delete_role,
+        mock_update_role,
+    ):
+        from plugins.modules.purefa_dsrole import main
+
+        for name in ("array_admin", "custom-role"):
+            mock_module = Mock()
+            mock_module.params = {
+                "name": name,
+                "role": None,
+                "access_policy": None,
+                "state": "absent",
+                "group": None,
+                "group_base": None,
+                "context": "",
+            }
+            mock_ansible_module.return_value = mock_module
+            mock_array = Mock()
+            mock_array.get_rest_version.return_value = "2.39"
+            mock_get_array.return_value = mock_array
+            role = Mock()
+            role.group = ""
+            role.group_base = ""
+            mock_get_with_context.return_value = Mock(status_code=200, items=[role])
+
+            main()
+
+            mock_module.exit_json.assert_called_once_with(changed=False)
+        mock_delete_role.assert_not_called()
+        mock_update_role.assert_not_called()
+
+    @patch("plugins.modules.purefa_dsrole.update_role")
+    @patch("plugins.modules.purefa_dsrole.delete_role")
+    @patch("plugins.modules.purefa_dsrole.get_with_context")
+    @patch("plugins.modules.purefa_dsrole.get_array")
+    @patch("plugins.modules.purefa_dsrole.AnsibleModule")
+    def test_absent_on_configured_role_still_deletes(
+        self,
+        mock_ansible_module,
+        mock_get_array,
+        mock_get_with_context,
+        mock_delete_role,
+        mock_update_role,
+    ):
+        from plugins.modules.purefa_dsrole import main
+
+        mock_module = Mock()
+        mock_module.params = {
+            "name": "custom-role",
+            "role": None,
+            "access_policy": None,
+            "state": "absent",
+            "group": None,
+            "group_base": None,
+            "context": "",
+        }
+        mock_ansible_module.return_value = mock_module
+        mock_array = Mock()
+        mock_array.get_rest_version.return_value = "2.39"
+        mock_get_array.return_value = mock_array
+        role = Mock()
+        role.group = "admins"
+        mock_get_with_context.return_value = Mock(status_code=200, items=[role])
+
+        main()
+
+        mock_delete_role.assert_called_once_with(mock_module, mock_array)

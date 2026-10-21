@@ -712,6 +712,191 @@ class TestMain:
         mock_module.warn.assert_not_called()
         assert mock_module.params["name"] == "third-dns"
 
+
+def _multi_dns_params(**overrides):
+    params = {
+        "name": "management",
+        "domain": None,
+        "nameservers": None,
+        "service": None,
+        "source": None,
+        "context": "",
+    }
+    params.update(overrides)
+    return params
+
+
+class TestUpdateMultiDnsServices:
+    """A configuration can serve more than one service"""
+
+    @patch("plugins.modules.purefa_dns.get_with_context")
+    def test_management_among_several_services_is_not_a_change(
+        self, mock_get_with_context
+    ):
+        """The management config reports ['management', 'file'] on an array
+        with file services; comparing against ['management'] rejected it
+        """
+        mock_module = Mock()
+        mock_module.check_mode = False
+        mock_module.fail_json.side_effect = SystemExit(1)
+        mock_module.params = _multi_dns_params(
+            service="management",
+            domain="example.com",
+            nameservers=["ns1.example.com"],
+        )
+        mock_dns = Mock()
+        mock_dns.domain = "example.com"
+        mock_dns.nameservers = ["ns1.example.com"]
+        mock_dns.services = ["management", "file"]
+        mock_dns.source = Mock()
+        mock_dns.source.name = ""
+        mock_get_with_context.return_value = Mock(status_code=200, items=[mock_dns])
+
+        update_multi_dns(mock_module, Mock())
+
+        mock_module.fail_json.assert_not_called()
+        mock_module.exit_json.assert_called_once_with(changed=False)
+
+    @patch("plugins.modules.purefa_dns.get_with_context")
+    def test_service_not_served_still_fails(self, mock_get_with_context):
+        import pytest
+
+        mock_module = Mock()
+        mock_module.check_mode = False
+        mock_module.fail_json.side_effect = SystemExit(1)
+        mock_module.params = _multi_dns_params(name="file-dns", service="file")
+        mock_dns = Mock()
+        mock_dns.domain = "example.com"
+        mock_dns.nameservers = ["ns1.example.com"]
+        mock_dns.services = ["management"]
+        mock_get_with_context.return_value = Mock(status_code=200, items=[mock_dns])
+
+        with pytest.raises(SystemExit):
+            update_multi_dns(mock_module, Mock())
+
+        mock_module.fail_json.assert_called_once_with(
+            msg="Changing service type is not permitted"
+        )
+
+
+class TestUpdateMultiDnsSource:
+    """source is only sent when it was given, and a config may have none"""
+
+    @patch("plugins.modules.purefa_dns.check_response")
+    @patch("plugins.modules.purefa_dns.DnsPatch")
+    @patch("plugins.modules.purefa_dns.get_with_context")
+    def test_config_without_source_is_updated_without_source(
+        self, mock_get_with_context, mock_dns_patch, mock_check_response
+    ):
+        """The SDK model has no source attribute at all when none is set, so
+        new_dns.source.name raised AttributeError, and the PATCH then sent
+        source=None for a config whose source was never mentioned
+        """
+        mock_module = Mock()
+        mock_module.check_mode = False
+        mock_module.params = _multi_dns_params(domain="newdomain.com")
+        mock_dns = Mock(spec=["domain", "nameservers", "services"])
+        mock_dns.domain = "olddomain.com"
+        mock_dns.nameservers = ["ns1.example.com"]
+        mock_dns.services = ["management"]
+        mock_get_with_context.side_effect = [
+            Mock(status_code=200, items=[mock_dns]),
+            Mock(status_code=200),
+        ]
+
+        update_multi_dns(mock_module, Mock())
+
+        mock_module.exit_json.assert_called_once_with(changed=True)
+        sent = mock_dns_patch.call_args[1]
+        assert sent["domain"] == "newdomain.com"
+        assert "source" not in sent
+
+    @patch("plugins.modules.purefa_dns.check_response")
+    @patch("plugins.modules.purefa_dns.ReferenceNoId")
+    @patch("plugins.modules.purefa_dns.DnsPatch")
+    @patch("plugins.modules.purefa_dns.get_with_context")
+    def test_given_source_is_sent(
+        self, mock_get_with_context, mock_dns_patch, mock_ref, mock_check_response
+    ):
+        mock_module = Mock()
+        mock_module.check_mode = False
+        mock_module.params = _multi_dns_params(name="file-dns", source="filevif1")
+        mock_dns = Mock(spec=["domain", "nameservers", "services"])
+        mock_dns.domain = "example.com"
+        mock_dns.nameservers = ["ns1.example.com"]
+        mock_dns.services = ["file"]
+        mock_get_with_context.side_effect = [
+            Mock(status_code=200, items=[mock_dns]),
+            Mock(status_code=200),
+        ]
+
+        update_multi_dns(mock_module, Mock())
+
+        mock_module.exit_json.assert_called_once_with(changed=True)
+        mock_ref.assert_called_once_with(name="filevif1")
+        assert mock_dns_patch.call_args[1]["source"] is mock_ref.return_value
+
+
+class TestDeleteMultiDnsManagementCheckMode:
+    def test_management_clear_honours_check_mode(self):
+        """The management branch used to patch the array in check mode"""
+        mock_module = Mock()
+        mock_module.check_mode = True
+        mock_module.params = {"name": "management", "context": ""}
+        with patch("plugins.modules.purefa_dns.get_with_context") as mock_get:
+            delete_multi_dns(mock_module, Mock())
+
+        mock_get.assert_not_called()
+        mock_module.exit_json.assert_called_once_with(changed=True)
+
+
+class TestMainAbsentUnknownName:
+    """state: absent never redirects an unknown name to management"""
+
+    @patch("plugins.modules.purefa_dns.delete_multi_dns")
+    @patch("plugins.modules.purefa_dns.AnsibleModule")
+    @patch("plugins.modules.purefa_dns.get_array")
+    @patch("plugins.modules.purefa_dns.LooseVersion")
+    @patch("plugins.modules.purefa_dns.get_with_context")
+    def test_absent_unknown_name_is_a_no_op(
+        self,
+        mock_get_with_context,
+        mock_loose_version,
+        mock_get_array,
+        mock_ansible_module,
+        mock_delete_multi_dns,
+    ):
+        """`name: faqa-dns, state: absent` without `service: file` deleted
+        the management DNS configuration
+        """
+        mock_loose_version.side_effect = lambda x: x
+        mock_module = Mock()
+        mock_module.params = {
+            "state": "absent",
+            "name": "faqa-dns",
+            "service": "management",
+            "domain": None,
+            "nameservers": None,
+            "source": None,
+            "context": "",
+        }
+        mock_ansible_module.return_value = mock_module
+        mock_array = Mock()
+        mock_array.get_rest_version.return_value = "2.38"
+        mock_dns = Mock()
+        mock_dns.name = "management"
+        mock_get_with_context.return_value = Mock(items=[mock_dns])
+        mock_get_array.return_value = mock_array
+
+        import plugins.modules.purefa_dns as dns_module
+
+        dns_module.main()
+
+        mock_module.warn.assert_not_called()
+        mock_delete_multi_dns.assert_not_called()
+        assert mock_module.params["name"] == "faqa-dns"
+        mock_module.exit_json.assert_called_with(changed=False)
+
     @patch("plugins.modules.purefa_dns.AnsibleModule")
     @patch("plugins.modules.purefa_dns.get_array")
     @patch("plugins.modules.purefa_dns.LooseVersion")

@@ -215,7 +215,7 @@ def update_default(module, array, current_default):
         new_list = []
     if not new_list:
         delete_default(module, array)
-    elif new_list == current:
+    elif new_list == sorted(current):
         changed = False
     else:
         changed = True
@@ -290,7 +290,7 @@ def delete_default(module, array):
                 CONTEXT_API_VERSION,
                 module,
                 names=[module.params["pod"]],
-                container_default_protection=[],
+                container_default_protection=protection,
             )
         if res.status_code != 200:
             if res.status_code == 403:
@@ -324,9 +324,7 @@ def main():
     )
     state = module.params["state"]
     if not HAS_PURESTORAGE:
-        module.fail_json(
-            msg="py-pure-client sdk is required to support 'count' parameter"
-        )
+        module.fail_json(msg="py-pure-client sdk is required for this module")
     module.params["name"] = sorted(module.params["name"])
     array = get_array(module)
     api_version = array.get_rest_version()

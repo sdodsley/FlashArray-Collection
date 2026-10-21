@@ -215,7 +215,8 @@ class TestTestAlert:
         )
         mock_module.exit_json.assert_called_once()
         call_args = mock_module.exit_json.call_args
-        assert call_args[1]["changed"] is True
+        # Running a test is read-only
+        assert call_args[1]["changed"] is False
         assert "test_response" in call_args[1]
 
     def test_test_alert_disabled_component(self):
@@ -247,3 +248,55 @@ class TestTestAlert:
         test_response = call_args[1]["test_response"]
         assert test_response[0]["enabled"] == "false"
         assert test_response[0]["success"] == "false"
+
+    def test_test_alert_sparse_result(self):
+        """A TestResult without resource or optional fields must not crash"""
+        from plugins.modules.purefa_alert import test_alert
+
+        mock_module = Mock()
+        mock_module.params = {"address": "test@example.com"}
+        mock_array = Mock()
+
+        mock_component = Mock(spec=["enabled", "success", "component_name"])
+        mock_component.enabled = True
+        mock_component.success = False
+        mock_component.component_name = "ct0"
+        mock_array.get_alert_watchers_test.return_value = Mock(
+            status_code=200, items=[mock_component]
+        )
+
+        test_alert(mock_module, mock_array)
+
+        result = mock_module.exit_json.call_args[1]["test_response"][0]
+        assert result["enabled"] == "true"
+        assert result["success"] == "false"
+        assert result["component_name"] == "ct0"
+        assert result["resource_name"] is None
+        assert result["destination"] is None
+        assert result["component_address"] is None
+        assert result["test_type"] is None
+        assert result["result_details"] == ""
+
+    @patch("plugins.modules.purefa_alert.check_response")
+    def test_test_alert_error_response(self, mock_check_response):
+        """An error response is handed to check_response before .items is read"""
+        import pytest
+        from plugins.modules.purefa_alert import test_alert
+
+        mock_module = Mock()
+        mock_module.params = {"address": "test@example.com"}
+        mock_module.fail_json.side_effect = SystemExit(1)
+        mock_array = Mock()
+        error_response = Mock(spec=["status_code", "errors"])
+        error_response.status_code = 400
+        error_response.errors = [Mock(message="boom")]
+        mock_array.get_alert_watchers_test.return_value = error_response
+        mock_check_response.side_effect = lambda res, module, op: module.fail_json(
+            msg=op
+        )
+
+        with pytest.raises(SystemExit):
+            test_alert(mock_module, mock_array)
+
+        assert mock_check_response.call_args[0][0] is error_response
+        mock_module.exit_json.assert_not_called()

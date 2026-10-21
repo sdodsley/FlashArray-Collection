@@ -82,6 +82,9 @@ options:
     - Specify in seconds. Range 300 - 31536000 (5 minutes to 1 year)
     - Value of 0 will set no retention period.
     - If not specified on create will default to 0 (no retention period)
+    - On an existing snapshot the value is only applied when the snapshot
+      has no retention, or its remaining time exceeds the requested period,
+      so repeating a task does not reset the retention clock.
     type: int
   context:
     description:
@@ -318,20 +321,8 @@ def update_snap(module, array, snap_detail):
                 directory_snapshot=directory_snapshot,
             )
             check_response(res, module, f"Failed to recover snapshot {snapname}")
-            if keep_for != 0:  # Set a new keep-for after recovery if requested
-                directory_snapshot = DirectorySnapshotPatch(keep_for=keep_for)
-                res = patch_with_context(
-                    array,
-                    "patch_directory_snapshots",
-                    CONTEXT_VERSION,
-                    module,
-                    names=[snapname],
-                    directory_snapshot=directory_snapshot,
-                )
-                check_response(
-                    res, module, f"Failed to set retention time for snapshot {snapname}"
-                )
-    if keep_for:
+    # snapname already holds the new name when a rename was performed
+    if keep_for and (snap_detail.destroyed or keep_for_differs(snap_detail, keep_for)):
         directory_snapshot = DirectorySnapshotPatch(keep_for=keep_for)
         changed = True
         if not module.check_mode:
@@ -346,24 +337,20 @@ def update_snap(module, array, snap_detail):
             check_response(
                 res, module, f"Failed to set retention time for snapshot {snapname}"
             )
-    if module.params["rename"] and keep_for:
-        directory_snapshot = DirectorySnapshotPatch(keep_for=keep_for)
-        changed = True
-        if not module.check_mode:
-            res = patch_with_context(
-                array,
-                "patch_directory_snapshots",
-                CONTEXT_VERSION,
-                module,
-                names=[new_snapname],
-                directory_snapshot=directory_snapshot,
-            )
-            check_response(
-                res,
-                module,
-                f"Failed to set retention time for renamed snapshot {snapname}",
-            )
     module.exit_json(changed=changed)
+
+
+def keep_for_differs(snap_detail, keep_for):
+    """Decide whether a retention period needs to be (re)applied
+
+    The array only reports time_remaining (milliseconds), never the keep_for
+    it was set with, so a snapshot counting down within the requested period
+    is treated as already having that retention.
+    """
+    time_remaining = getattr(snap_detail, "time_remaining", None)
+    if not isinstance(time_remaining, int) or time_remaining <= 0:
+        return True
+    return time_remaining > keep_for
 
 
 def create_snap(module, array):

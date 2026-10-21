@@ -94,6 +94,9 @@ options:
     description:
     - Generate a new private key.
     - If not selected, the certificate will use the existing key
+    - On an existing self-signed certificate this always regenerates the key
+      and re-issues the certificate with I(days) validity, so a task that
+      sets it is NOT IDEMPOTENT.
   certificate:
     type: str
     description:
@@ -157,7 +160,7 @@ EXAMPLES = r"""
     fa_url: 10.10.10.2
     api_token: e31060a7-21fc-e277-6240-25983c6c4592
 
-- name: Regenerate key for SSL foo
+- name: Regenerate key for SSL foo (NOT IDEMPOTENT)
   everpure.flasharray.purefa_certs:
     generate: true
     name: foo
@@ -258,6 +261,11 @@ def update_cert(module, array):
         new_organizational_unit = module.params["org_unit"]
         changed = True
 
+    # A key regeneration is always a change, whether or not any subject
+    # field differs; the re-issued certificate takes the requested validity.
+    if module.params["generate"]:
+        changed = True
+
     if changed:
         certificate = flasharray.CertificatePost(
             common_name=new_common_name,
@@ -268,6 +276,7 @@ def update_cert(module, array):
             organization=new_organization,
             organizational_unit=new_organizational_unit,
             state=new_state,
+            days=module.params["days"],
         )
         if not module.check_mode:
             res = array.patch_certificates(

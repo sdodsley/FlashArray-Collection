@@ -561,6 +561,41 @@ class TestGenerateHardwareDict:
         assert result["interfaces"]["CT0.FC0"]["tx_power"] == -2.5
         assert result["interfaces"]["CT0.FC0"]["voltage"] == 3.3
 
+    @patch("plugins.modules.purefa_inventory.LooseVersion")
+    def test_port_details_for_port_not_in_hardware(self, mock_lv):
+        """Port details can name a port get_hardware did not list (KeyError)"""
+        mock_array = Mock()
+        mock_array.get_rest_version.return_value = "2.54"
+        mock_lv.side_effect = float
+
+        mock_array.get_hardware.return_value = Mock(items=[])
+        mock_array.get_drives.return_value = Mock(items=[])
+
+        mock_port_detail = Mock()
+        mock_port_detail.name = "CT0.ETH9"
+        mock_port_detail.interface_type = "eth"
+        mock_port_detail.rx_los = [Mock(flag=False)]
+        mock_port_detail.rx_power = [Mock(measurement=-3.5)]
+        mock_port_detail.temperature = [Mock(measurement=40)]
+        mock_port_detail.tx_bias = [Mock(measurement=7.5)]
+        mock_port_detail.tx_fault = [Mock(flag=False)]
+        mock_port_detail.tx_power = [Mock(measurement=-2.5)]
+        mock_port_detail.voltage = [Mock(measurement=3.3)]
+        mock_port_detail.static = Mock()
+        mock_port_detail.static.connector_type = "LC"
+        mock_array.get_network_interfaces_port_details.return_value = Mock(
+            items=[mock_port_detail]
+        )
+
+        result = generate_new_hardware_dict(mock_array)
+
+        port = result["interfaces"]["CT0.ETH9"]
+        assert port["interface_type"] == "eth"
+        assert port["type"] is None
+        assert port["status"] is None
+        assert port["rx_power"] == -3.5
+        assert port["static"]["connector_type"] == "LC"
+
 
 class FakeComponent:
     """Stand-in for the SDK's Hardware model.

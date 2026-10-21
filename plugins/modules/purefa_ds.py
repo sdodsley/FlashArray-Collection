@@ -451,7 +451,8 @@ def main():
             dirserv = dirs
     if dirserv:
         if state == "absent":
-            if dirserv.uris != []:
+            # An unconfigured service reads back as [], None or [""]
+            if any(getattr(dirserv, "uris", None) or []):
                 delete_ds(module, array)
         elif state == "test":
             test_ds(module, array)
