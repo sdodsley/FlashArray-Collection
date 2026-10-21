@@ -243,7 +243,9 @@ class TestUpdateScheduleClearAtValue:
         # Verify that get_with_context was called
         assert mock_get_with_context.called
         # Verify SnapshotSchedule was called with at=-1 to clear the value
-        mock_snapshot_schedule.assert_called_with(frequency=86400000, at=-1)
+        mock_snapshot_schedule.assert_called_with(
+            enabled=True, frequency=86400000, at=-1
+        )
 
     @patch("plugins.modules.purefa_pgsched.get_with_context")
     @patch("plugins.modules.purefa_pgsched.check_response")
@@ -297,7 +299,9 @@ class TestUpdateScheduleClearAtValue:
         # Verify that get_with_context was called
         assert mock_get_with_context.called
         # Verify ReplicationSchedule was called with at=-1 to clear the value
-        mock_replication_schedule.assert_called_with(frequency=86400000, at=-1)
+        mock_replication_schedule.assert_called_with(
+            enabled=True, frequency=86400000, at=-1
+        )
 
     @patch("plugins.modules.purefa_pgsched.get_with_context")
     @patch("plugins.modules.purefa_pgsched.check_response")
@@ -346,7 +350,9 @@ class TestUpdateScheduleClearAtValue:
 
         # Should have made API call with at=-1 to clear (non-day frequency)
         assert mock_get_with_context.called
-        mock_snapshot_schedule.assert_called_with(frequency=3600000, at=-1)
+        mock_snapshot_schedule.assert_called_with(
+            enabled=True, frequency=3600000, at=-1
+        )
 
     @patch("plugins.modules.purefa_pgsched.get_with_context")
     @patch("plugins.modules.purefa_pgsched.check_response")
@@ -888,7 +894,9 @@ class TestQaFixes:
 
         update_schedule(mock_module, mock_array, None, None)
 
-        mock_snapshot_schedule.assert_called_with(frequency=86400000, at=54000000)
+        mock_snapshot_schedule.assert_called_with(
+            enabled=True, frequency=86400000, at=54000000
+        )
         mock_module.exit_json.assert_called_once_with(changed=True)
 
     @patch("plugins.modules.purefa_pgsched.get_with_context")
@@ -989,3 +997,121 @@ class TestQaFixes:
         mock_module.params = {"name": "test-pg", "schedule": "snapshot", "context": ""}
         delete_schedule(mock_module, mock_array)
         assert mock_snapshot_schedule.call_args[1]["frequency"] == 300000
+
+
+class TestScheduleBodyCarriesEnabled:
+    """frequency + at without enabled is rejected by the array ("Missing or
+    invalid parameter"), so every body that sends at also sends enabled
+    """
+
+    @patch("plugins.modules.purefa_pgsched.get_with_context")
+    @patch("plugins.modules.purefa_pgsched.check_response")
+    @patch("plugins.modules.purefa_pgsched.SnapshotSchedule")
+    @patch("plugins.modules.purefa_pgsched.ProtectionGroup")
+    def test_snap_at_body_includes_current_enabled(
+        self,
+        mock_protection_group,
+        mock_snapshot_schedule,
+        mock_check_response,
+        mock_get_with_context,
+    ):
+        mock_module = Mock()
+        mock_module.check_mode = False
+        mock_module.params = {
+            "name": "test-pg",
+            "schedule": "snapshot",
+            "context": "",
+            "snap_at": "6PM",
+            "snap_frequency": 86400,
+            "enabled": None,
+            "days": None,
+            "per_day": None,
+            "all_for": None,
+        }
+        mock_pg = create_mock_protection_group(
+            snap_frequency=86400000, snap_at=54000, snap_enabled=False
+        )
+        mock_get_with_context.return_value = Mock(status_code=200, items=[mock_pg])
+
+        update_schedule(mock_module, Mock(), None, None)
+
+        mock_snapshot_schedule.assert_called_once_with(
+            enabled=False, frequency=86400000, at=64800000
+        )
+        mock_module.exit_json.assert_called_once_with(changed=True)
+
+    @patch("plugins.modules.purefa_pgsched.get_with_context")
+    @patch("plugins.modules.purefa_pgsched.check_response")
+    @patch("plugins.modules.purefa_pgsched.SnapshotSchedule")
+    @patch("plugins.modules.purefa_pgsched.ProtectionGroup")
+    def test_snap_enabled_and_at_change_is_one_patch(
+        self,
+        mock_protection_group,
+        mock_snapshot_schedule,
+        mock_check_response,
+        mock_get_with_context,
+    ):
+        mock_module = Mock()
+        mock_module.check_mode = False
+        mock_module.params = {
+            "name": "test-pg",
+            "schedule": "snapshot",
+            "context": "",
+            "snap_at": "6PM",
+            "snap_frequency": 86400,
+            "enabled": True,
+            "days": None,
+            "per_day": None,
+            "all_for": None,
+        }
+        mock_pg = create_mock_protection_group(
+            snap_frequency=86400000, snap_at=54000, snap_enabled=False
+        )
+        mock_get_with_context.return_value = Mock(status_code=200, items=[mock_pg])
+
+        update_schedule(mock_module, Mock(), None, None)
+
+        # one GET of the pgroup plus exactly one PATCH carrying all three
+        assert mock_get_with_context.call_count == 2
+        mock_snapshot_schedule.assert_called_once_with(
+            enabled=True, frequency=86400000, at=64800000
+        )
+        mock_module.exit_json.assert_called_once_with(changed=True)
+
+    @patch("plugins.modules.purefa_pgsched.get_with_context")
+    @patch("plugins.modules.purefa_pgsched.check_response")
+    @patch("plugins.modules.purefa_pgsched.ReplicationSchedule")
+    @patch("plugins.modules.purefa_pgsched.ProtectionGroup")
+    def test_replicate_at_body_includes_enabled(
+        self,
+        mock_protection_group,
+        mock_replication_schedule,
+        mock_check_response,
+        mock_get_with_context,
+    ):
+        mock_module = Mock()
+        mock_module.check_mode = False
+        mock_module.params = {
+            "name": "test-pg",
+            "schedule": "replication",
+            "context": "",
+            "enabled": None,
+            "replicate_frequency": 86400,
+            "replicate_at": "6PM",
+            "target_days": None,
+            "target_per_day": None,
+            "target_all_for": None,
+            "blackout_start": None,
+            "blackout_end": None,
+        }
+        mock_pg = create_mock_protection_group(
+            repl_frequency=86400000, repl_at=54000, repl_enabled=True
+        )
+        mock_get_with_context.return_value = Mock(status_code=200, items=[mock_pg])
+
+        update_schedule(mock_module, Mock(), None, None)
+
+        mock_replication_schedule.assert_called_once_with(
+            enabled=True, frequency=86400000, at=64800000
+        )
+        mock_module.exit_json.assert_called_once_with(changed=True)

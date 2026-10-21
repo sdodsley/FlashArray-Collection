@@ -186,6 +186,27 @@ def get_session(module):
     return system
 
 
+def token_exists(array, username):
+    """Return True when the admin already has an API token.
+
+    ``GET admin/<name>/apitoken`` (``array.get_api_token``) creates a token
+    for a user who has none, so it cannot tell whether one exists.
+    ``GET admin?api_token=true`` (``array.list_admins``) only reports them:
+    ``api_token.created`` is null for a user without a token, and a user
+    missing from the list has none either.
+    """
+    admins = array.list_admins(api_token=True)
+    if isinstance(admins, dict):
+        admins = [admins]
+    info = next((admin for admin in admins or [] if admin.get("name") == username), {})
+    token_info = info.get("api_token")
+    if isinstance(token_info, dict):
+        return bool(token_info.get("created"))
+    if "created" in info:
+        return bool(info.get("created"))
+    return bool(token_info)
+
+
 def main():
     argument_spec = dict(
         fa_url=dict(required=False),
@@ -208,20 +229,25 @@ def main():
     state = module.params["state"]
     recreate = module.params["recreate"]
 
-    result = array.get_api_token(admin=username)
-    # A missing token reads back as None or "", never as a value
-    if state == "present" and not result.get("api_token"):
+    # Reading the token with get_api_token creates one when the user has
+    # none, which made every run report changed=False. Find out whether a
+    # token exists first and only read it back once it is known to exist.
+    has_token = token_exists(array, username)
+    result = {}
+    if state == "present" and not has_token:
         result = array.create_api_token(admin=username)
         changed = True
     elif state == "present" and recreate:
         array.delete_api_token(admin=username)
         result = array.create_api_token(admin=username)
         changed = True
-    elif state == "absent" and result.get("api_token"):
+    elif state == "present":
+        result = array.get_api_token(admin=username)
+    elif state == "absent" and has_token:
         result = array.delete_api_token(admin=username)
         changed = True
 
-    api_token = result.get("api_token")
+    api_token = (result or {}).get("api_token")
 
     if module.params["timeout"] and state == "present":
         module.params["api_token"] = api_token

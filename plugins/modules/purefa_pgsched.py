@@ -354,8 +354,14 @@ def update_schedule(module, array, snap_time, repl_time):
             else module.params["all_for"]
         )
 
-        # Patch snap_enabled separately
-        if snap_enabled != current_snap["snap_enabled"]:
+        snap_schedule_changed = (
+            snap_frequency != current_snap["snap_frequency"]
+            or snap_at != current_snap["snap_at"]
+        )
+
+        # Patch snap_enabled on its own only when the frequency/at body
+        # below is not sent, as that body carries enabled too
+        if snap_enabled != current_snap["snap_enabled"] and not snap_schedule_changed:
             changed = True
             res = get_with_context(
                 array,
@@ -375,18 +381,21 @@ def update_schedule(module, array, snap_time, repl_time):
 
         # Patch frequency and at together
         # Handle clearing at value: when snap_at is None and current has a value, clear it
-        if (
-            snap_frequency != current_snap["snap_frequency"]
-            or snap_at != current_snap["snap_at"]
-        ):
+        # The array rejects a body with frequency and at but no enabled
+        # ("Missing or invalid parameter"), so enabled always goes with at
+        if snap_schedule_changed:
             changed = True
             if freq_is_days and snap_at is not None:
                 # Day frequency with at value set
-                schedule = SnapshotSchedule(frequency=snap_frequency, at=snap_at)
+                schedule = SnapshotSchedule(
+                    enabled=snap_enabled, frequency=snap_frequency, at=snap_at
+                )
             else:
                 # Non-day frequency, or clearing at value (snap_at is None)
                 # Send at=-1 to clear the value on the array
-                schedule = SnapshotSchedule(frequency=snap_frequency, at=-1)
+                schedule = SnapshotSchedule(
+                    enabled=snap_enabled, frequency=snap_frequency, at=-1
+                )
             res = get_with_context(
                 array,
                 "patch_protection_groups",
@@ -482,8 +491,17 @@ def update_schedule(module, array, snap_time, repl_time):
             else _convert_to_millisecs(module.params["blackout_end"].upper())
         )
 
-        # Patch replicate_enabled separately
-        if replicate_enabled != current_repl["replicate_enabled"]:
+        repl_schedule_changed = (
+            replicate_frequency != current_repl["replicate_frequency"]
+            or replicate_at != current_repl["replicate_at"]
+        )
+
+        # Patch replicate_enabled on its own only when the frequency/at body
+        # below is not sent, as that body carries enabled too
+        if (
+            replicate_enabled != current_repl["replicate_enabled"]
+            and not repl_schedule_changed
+        ):
             changed = True
             res = get_with_context(
                 array,
@@ -503,20 +521,23 @@ def update_schedule(module, array, snap_time, repl_time):
 
         # Patch frequency and at together
         # Handle clearing at value: when replicate_at is None and current has a value, clear it
-        if (
-            replicate_frequency != current_repl["replicate_frequency"]
-            or replicate_at != current_repl["replicate_at"]
-        ):
+        # The array rejects a body with frequency and at but no enabled
+        # ("Missing or invalid parameter"), so enabled always goes with at
+        if repl_schedule_changed:
             changed = True
             if freq_is_days and replicate_at is not None:
                 # Day frequency with at value set
                 schedule = ReplicationSchedule(
-                    frequency=replicate_frequency, at=replicate_at
+                    enabled=replicate_enabled,
+                    frequency=replicate_frequency,
+                    at=replicate_at,
                 )
             else:
                 # Non-day frequency, or clearing at value (replicate_at is None)
                 # Send at=-1 to clear the value on the array
-                schedule = ReplicationSchedule(frequency=replicate_frequency, at=-1)
+                schedule = ReplicationSchedule(
+                    enabled=replicate_enabled, frequency=replicate_frequency, at=-1
+                )
             res = get_with_context(
                 array,
                 "patch_protection_groups",

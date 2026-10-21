@@ -241,7 +241,6 @@ try:
         ProtectionGroupSnapshotPatch,
         VolumePost,
         Reference,
-        FixedReference,
         DestroyedPatchPost,
     )
 except ImportError:
@@ -597,9 +596,10 @@ def restore_pgsnapvolume(module, array):
     if not module.check_mode:
         if LooseVersion(DEFAULT_API) <= LooseVersion(array.get_rest_version()):
             if module.params["add_to_pgs"]:
-                add_to_pgs = []
-                for add_pg in module.params["add_to_pgs"]:
-                    add_to_pgs.append(FixedReference(name=add_pg))
+                # Reference objects without an id crash inside the SDK
+                # (_process_references reads ref.id, which raises
+                # AttributeError), so pass the protection group names
+                # straight to the add_to_protection_group_names parameter
                 res = post_with_context(
                     array,
                     "post_volumes",
@@ -608,7 +608,7 @@ def restore_pgsnapvolume(module, array):
                     names=[module.params["target"]],
                     volume=VolumePost(source=Reference(name=source_volume)),
                     with_default_protection=module.params["with_default_protection"],
-                    add_to_protection_groups=add_to_pgs,
+                    add_to_protection_group_names=module.params["add_to_pgs"],
                 )
             else:
                 if module.params["overwrite"]:

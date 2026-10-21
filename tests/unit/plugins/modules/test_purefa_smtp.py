@@ -51,6 +51,7 @@ sys.modules["ansible_collections.everpure.flasharray.plugins.module_utils.versio
 from plugins.modules.purefa_smtp import (
     delete_smtp,
     create_smtp,
+    request_dict_with_nulls,
 )
 
 
@@ -126,7 +127,7 @@ class TestDeleteSmtp:
         mock_array.patch_smtp_servers.assert_not_called()
         mock_module.exit_json.assert_called_once_with(changed=False)
 
-    @patch("plugins.modules.purefa_smtp.SmtpServer")
+    @patch("plugins.modules.purefa_smtp.SmtpServerNullable")
     @patch("plugins.modules.purefa_smtp.check_response")
     def test_delete_smtp_sends_empty_sender_domain(
         self, mock_check_response, mock_smtp_server
@@ -143,6 +144,29 @@ class TestDeleteSmtp:
         assert mock_smtp_server.call_args.kwargs["sender_domain"] == ""
         assert mock_smtp_server.call_args.kwargs["user_name"] == ""
         assert mock_smtp_server.call_args.kwargs["password"] == ""
+        mock_module.exit_json.assert_called_once_with(changed=True)
+
+    @patch("plugins.modules.purefa_smtp.SmtpServerNullable")
+    @patch("plugins.modules.purefa_smtp.check_response")
+    def test_delete_smtp_clears_relay_host_with_null(
+        self, mock_check_response, mock_smtp_server
+    ):
+        """The array refuses relay_host: "" ("Not a valid hostname") and only
+        clears the relay host with null, which needs the nullable body model
+        """
+        mock_module = Mock()
+        mock_module.check_mode = False
+        mock_array = Mock()
+        mock_array.get_smtp_servers.return_value.items = [configured_smtp()]
+        mock_array.patch_smtp_servers.return_value = Mock(status_code=200)
+
+        delete_smtp(mock_module, mock_array)
+
+        kwargs = mock_smtp_server.call_args.kwargs
+        assert "relay_host" in kwargs
+        assert kwargs["relay_host"] is None
+        sent = mock_array.patch_smtp_servers.call_args.kwargs["smtp"]
+        assert sent is mock_smtp_server.return_value
         mock_module.exit_json.assert_called_once_with(changed=True)
 
 
@@ -731,3 +755,36 @@ class TestCreateSmtpClearFields:
 
         mock_array.patch_smtp_servers.assert_not_called()
         mock_module.exit_json.assert_called_once_with(changed=False)
+
+
+class TestRequestDictWithNulls:
+    """as_request_dict drops None; fields set to None on purpose come back
+    as null, fields never set stay out of the body
+    """
+
+    def test_set_none_fields_are_kept_as_null(self):
+        model = Mock()
+        model.__fields_set__ = {"relay_host", "sender_domain", "user_name"}
+        body = {"sender_domain": "", "user_name": ""}  # what the SDK produced
+
+        assert request_dict_with_nulls(model, body) == {
+            "sender_domain": "",
+            "user_name": "",
+            "relay_host": None,
+        }
+
+    def test_unset_fields_stay_out_of_the_body(self):
+        model = Mock()
+        model.__fields_set__ = {"sender_domain"}
+
+        assert request_dict_with_nulls(model, {"sender_domain": "x"}) == {
+            "sender_domain": "x"
+        }
+
+    def test_existing_values_are_not_overwritten(self):
+        model = Mock()
+        model.__fields_set__ = {"relay_host"}
+
+        assert request_dict_with_nulls(model, {"relay_host": "r"}) == {
+            "relay_host": "r"
+        }

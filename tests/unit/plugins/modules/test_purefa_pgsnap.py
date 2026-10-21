@@ -1592,7 +1592,11 @@ class TestRestorePgsnapvolume:
 
         mock_array.post_volumes.assert_called_once()
         call_kwargs = mock_array.post_volumes.call_args[1]
-        assert "add_to_protection_groups" in call_kwargs
+        # FixedReference(name=...) objects crash in the SDK's
+        # _process_references (ref.id raises AttributeError); the names go
+        # straight to add_to_protection_group_names instead
+        assert call_kwargs["add_to_protection_group_names"] == ["pg2", "pg3"]
+        assert "add_to_protection_groups" not in call_kwargs
         mock_module.exit_json.assert_called_once_with(changed=True)
 
     @patch("plugins.modules.purefa_pgsnap.get_pgroupvolume")

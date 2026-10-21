@@ -45,7 +45,7 @@ sys.modules[
 ] = MagicMock()
 
 # Import after mocking
-from plugins.modules.purefa_hardware import main
+from plugins.modules.purefa_hardware import main, wait_for_identify_state
 
 
 class TestHardwareValidation:
@@ -167,13 +167,20 @@ class TestHardwareCheckMode:
 class TestHardwarePatch:
     """The LED is patched with HardwarePatch, and a missing component fails"""
 
+    @patch("plugins.modules.purefa_hardware.time")
     @patch("plugins.modules.purefa_hardware.check_response")
     @patch("plugins.modules.purefa_hardware.flasharray")
     @patch("plugins.modules.purefa_hardware.get_array")
     @patch("plugins.modules.purefa_hardware.AnsibleModule")
     def test_patch_uses_hardware_patch_model(
-        self, mock_ansible_module, mock_get_array, mock_flasharray, mock_check
+        self,
+        mock_ansible_module,
+        mock_get_array,
+        mock_flasharray,
+        mock_check,
+        mock_time,
     ):
+        mock_time.monotonic.side_effect = [0, 0, 10]
         """Hardware.identify_enabled is read-only and serialises to an empty
         body, which the array rejects with "No operation was specified"
         """
@@ -217,3 +224,103 @@ class TestHardwarePatch:
         mock_module.fail_json.assert_called_once()
         assert "CH9.FB99 does not exist" in mock_module.fail_json.call_args[1]["msg"]
         mock_array.patch_hardware.assert_not_called()
+
+
+class TestIdentifyStateSettles:
+    """The array can report the old identify_enabled right after the PATCH,
+    so a repeat run patched again; the module now waits for it to settle
+    """
+
+    def _hardware(self, identify_enabled):
+        hw = Mock()
+        hw.identify_enabled = identify_enabled
+        return Mock(status_code=200, items=[hw])
+
+    @patch("plugins.modules.purefa_hardware.time")
+    def test_returns_as_soon_as_the_state_matches(self, mock_time):
+        mock_time.monotonic.side_effect = [0, 0, 1]
+        mock_array = Mock()
+        mock_array.get_hardware.side_effect = [
+            self._hardware(True),  # stale
+            self._hardware(False),  # settled
+        ]
+
+        state = wait_for_identify_state(mock_array, "CH1.FB1", False)
+
+        assert state is False
+        assert mock_array.get_hardware.call_count == 2
+        mock_time.sleep.assert_called_once()
+
+    @patch("plugins.modules.purefa_hardware.time")
+    def test_no_wait_when_already_reported(self, mock_time):
+        mock_time.monotonic.return_value = 0
+        mock_array = Mock()
+        mock_array.get_hardware.return_value = self._hardware(False)
+
+        wait_for_identify_state(mock_array, "CH1.FB1", False)
+
+        assert mock_array.get_hardware.call_count == 1
+        mock_time.sleep.assert_not_called()
+
+    @patch("plugins.modules.purefa_hardware.time")
+    def test_gives_up_after_the_deadline_without_failing(self, mock_time):
+        # deadline = 0 + 5; checks at 1 and 6
+        mock_time.monotonic.side_effect = [0, 1, 6]
+        mock_array = Mock()
+        mock_array.get_hardware.return_value = self._hardware(True)
+
+        state = wait_for_identify_state(mock_array, "CH1.FB1", False)
+
+        assert state is True
+        assert mock_array.get_hardware.call_count == 2
+
+    @patch("plugins.modules.purefa_hardware.time")
+    @patch("plugins.modules.purefa_hardware.check_response")
+    @patch("plugins.modules.purefa_hardware.flasharray")
+    @patch("plugins.modules.purefa_hardware.get_array")
+    @patch("plugins.modules.purefa_hardware.AnsibleModule")
+    def test_main_rereads_after_patch_and_stays_changed_when_lagging(
+        self,
+        mock_ansible_module,
+        mock_get_array,
+        mock_flasharray,
+        mock_check,
+        mock_time,
+    ):
+        mock_time.monotonic.side_effect = [0, 0, 10]
+        mock_module = Mock()
+        mock_module.check_mode = False
+        mock_module.params = {"name": "CH1.FB1", "enabled": False}
+        mock_ansible_module.return_value = mock_module
+        mock_array = Mock()
+        mock_get_array.return_value = mock_array
+        mock_array.get_hardware.return_value = self._hardware(True)
+        mock_array.patch_hardware.return_value = Mock(status_code=200)
+
+        main()
+
+        mock_array.patch_hardware.assert_called_once()
+        # initial read + two settle polls
+        assert mock_array.get_hardware.call_count == 3
+        mock_module.fail_json.assert_not_called()
+        mock_module.exit_json.assert_called_once_with(changed=True)
+
+    @patch("plugins.modules.purefa_hardware.time")
+    @patch("plugins.modules.purefa_hardware.get_array")
+    @patch("plugins.modules.purefa_hardware.AnsibleModule")
+    def test_check_mode_does_not_poll(
+        self, mock_ansible_module, mock_get_array, mock_time
+    ):
+        mock_module = Mock()
+        mock_module.check_mode = True
+        mock_module.params = {"name": "CH1.FB1", "enabled": False}
+        mock_ansible_module.return_value = mock_module
+        mock_array = Mock()
+        mock_get_array.return_value = mock_array
+        mock_array.get_hardware.return_value = self._hardware(True)
+
+        main()
+
+        assert mock_array.get_hardware.call_count == 1
+        mock_time.sleep.assert_not_called()
+        mock_module.exit_json.assert_called_once_with(changed=True)

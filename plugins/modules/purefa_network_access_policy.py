@@ -391,6 +391,33 @@ def create_policy(module, array):
     module.exit_json(changed=changed)
 
 
+def get_rule(module, array):
+    """Return the named rule if it exists in this policy, else None.
+
+    Rule names are globally unique (``<policy>.<index>``) and the array
+    rejects ``names`` combined with ``policy_names`` ("Cannot specify more
+    than one type of the following query parameters"), so look the rule up
+    by name alone and confirm it belongs to this policy afterwards.
+    """
+    res = get_with_context(
+        array,
+        "get_policies_network_access_rules",
+        CONTEXT_VERSION,
+        module,
+        names=[module.params["rule_name"]],
+    )
+    if res.status_code != 200:
+        return None
+    items = list(getattr(res, "items", None) or [])
+    if not items:
+        return None
+    rule = items[0]
+    policy = getattr(rule, "policy", None)
+    if getattr(policy, "name", None) != module.params["name"]:
+        return None
+    return rule
+
+
 def update_policy(module, array):
     """Update an existing network-access policy."""
     changed = changed_enable = changed_rule = False
@@ -459,23 +486,12 @@ def update_policy(module, array):
     if module.params["rule_name"] and (
         rule_attrs_given or module.params["index"] is not None
     ):
-        res = get_with_context(
-            array,
-            "get_policies_network_access_rules",
-            CONTEXT_VERSION,
-            module,
-            policy_names=[module.params["name"]],
-            names=[module.params["rule_name"]],
-        )
-        current_rules = (
-            list(getattr(res, "items", None) or []) if res.status_code == 200 else []
-        )
-        if not current_rules:
+        current_rule = get_rule(module, array)
+        if current_rule is None:
             module.fail_json(
                 msg=f"Rule {module.params['rule_name']} not found in "
                 f"network-access policy {module.params['name']}"
             )
-        current_rule = current_rules[0]
         current_interfaces = sorted(getattr(current_rule, "interfaces", []) or [])
         new_interfaces = (
             sorted(module.params["interfaces"])
@@ -515,7 +531,6 @@ def update_policy(module, array):
                     "patch_policies_network_access_rules",
                     CONTEXT_VERSION,
                     module,
-                    policy_names=[module.params["name"]],
                     names=[module.params["rule_name"]],
                     rules=PolicyRuleNetworkAccessPatch(
                         rules=[PolicyrulenetworkaccesspatchRules(**patch_kwargs)]
@@ -589,7 +604,6 @@ def update_policy(module, array):
                     "patch_policies_network_access_rules",
                     CONTEXT_VERSION,
                     module,
-                    policy_names=[module.params["name"]],
                     names=[getattr(match, "name")],
                     rules=PolicyRuleNetworkAccessPatch(
                         rules=[
@@ -680,20 +694,10 @@ def update_policy(module, array):
 def delete_policy(module, array):
     """Delete a rule or the whole network-access policy."""
     if module.params["rule_name"]:
-        # Scope the lookup to this policy and require a real match: a 200
-        # with no items is "not found" too, and an unscoped lookup by name
-        # alone can match a rule that does not belong to this policy
-        check_res = get_with_context(
-            array,
-            "get_policies_network_access_rules",
-            CONTEXT_VERSION,
-            module,
-            policy_names=[module.params["name"]],
-            names=[module.params["rule_name"]],
-        )
-        if check_res.status_code != 200 or not list(
-            getattr(check_res, "items", None) or []
-        ):
+        # Require a real match in this policy: a 200 with no items is
+        # "not found" too, and a rule found by name must belong to this
+        # policy (get_rule checks the rule's policy.name)
+        if get_rule(module, array) is None:
             module.exit_json(changed=False)
         changed = True
         if not module.check_mode:
@@ -702,7 +706,6 @@ def delete_policy(module, array):
                 "delete_policies_network_access_rules",
                 CONTEXT_VERSION,
                 module,
-                policy_names=[module.params["name"]],
                 names=[module.params["rule_name"]],
             )
             if res.status_code != 200:

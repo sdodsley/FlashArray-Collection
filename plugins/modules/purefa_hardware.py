@@ -63,6 +63,8 @@ try:
 except ImportError:
     HAS_PURESTORAGE = False
 
+import time
+
 from ansible.module_utils.basic import AnsibleModule
 from ansible_collections.everpure.flasharray.plugins.module_utils.purefa import (
     get_array,
@@ -71,6 +73,36 @@ from ansible_collections.everpure.flasharray.plugins.module_utils.purefa import 
 from ansible_collections.everpure.flasharray.plugins.module_utils.api_helpers import (
     check_response,
 )
+
+# How long to wait for the array to report the new LED state after a PATCH
+SETTLE_SECONDS = 5
+SETTLE_POLL_SECONDS = 0.5
+
+
+def read_identify_state(array, name):
+    """Return the component's identify_enabled, or None when unknown"""
+    res = array.get_hardware(names=[name])
+    if res.status_code != 200:
+        return None
+    items = list(res.items)
+    if not items:
+        return None
+    return getattr(items[0], "identify_enabled", None)
+
+
+def wait_for_identify_state(array, name, wanted):
+    """Poll until the array reports the requested LED state or time runs out.
+
+    The array can keep reporting the old identify_enabled for a moment after
+    a successful PATCH, so an immediate re-run patched it again. Returns the
+    last state read; the caller does not fail when it never settled.
+    """
+    deadline = time.monotonic() + SETTLE_SECONDS
+    state = read_identify_state(array, name)
+    while state != wanted and time.monotonic() < deadline:
+        time.sleep(SETTLE_POLL_SECONDS)
+        state = read_identify_state(array, name)
+    return state
 
 
 def main():
@@ -110,6 +142,9 @@ def main():
                 res,
                 module,
                 f"Failed to set identification LED for {module.params['name']}",
+            )
+            wait_for_identify_state(
+                array, module.params["name"], module.params["enabled"]
             )
 
     module.exit_json(changed=changed)

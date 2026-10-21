@@ -111,6 +111,33 @@ try:
     from pypureclient.flasharray import SmtpServer
 except ImportError:
     HAS_PURESTORAGE = False
+    SmtpServer = object  # pylint: disable=invalid-name
+
+
+def request_dict_with_nulls(model, body):
+    """Put the fields explicitly set to None on ``model`` back into ``body``.
+
+    The SDK's ``as_request_dict`` drops every None field, so there is no way
+    to send an explicit null through a stock model. Fields passed to the
+    constructor (``__fields_set__``) but missing from the body were None.
+    """
+    for field in model.__fields_set__:
+        body.setdefault(field, None)
+    return body
+
+
+class SmtpServerNullable(SmtpServer):
+    """SmtpServer whose explicitly null fields are sent as JSON null.
+
+    The array refuses ``relay_host: ""`` ("Not a valid hostname") and only
+    clears the relay host with ``relay_host: null``. The SDK serialises a
+    request body through ``as_request_dict`` and keeps the subclass through
+    its argument validation, so this is the supported way to send the null.
+    """
+
+    def as_request_dict(self):
+        return request_dict_with_nulls(self, super().as_request_dict())
+
 
 from ansible.module_utils.basic import AnsibleModule
 from ansible_collections.everpure.flasharray.plugins.module_utils.purefa import (
@@ -131,8 +158,9 @@ SMTP_FIELDS = (
     "body_prefix",
 )
 
-# The settings written by ``state: absent``, and therefore the state in which
-# there is nothing left to delete.
+# The settings as read back after ``state: absent``, and therefore the state
+# in which there is nothing left to delete. relay_host is cleared with null
+# on the wire (see delete_smtp) and reads back as unset, i.e. "".
 CLEARED_SMTP = {
     "sender_domain": "",
     "relay_host": "",
@@ -163,11 +191,12 @@ def delete_smtp(module, array):
     changed = _get_current_smtp(array) != CLEARED_SMTP
     if changed and not module.check_mode:
         res = array.patch_smtp_servers(
-            smtp=SmtpServer(
+            smtp=SmtpServerNullable(
                 sender_domain=CLEARED_SMTP["sender_domain"],
                 user_name=CLEARED_SMTP["user_name"],
                 password="",
-                relay_host=CLEARED_SMTP["relay_host"],
+                # "" is "Not a valid hostname" to the array; null clears it
+                relay_host=None,
                 encryption_mode=CLEARED_SMTP["encryption_mode"],
                 sender_username=CLEARED_SMTP["sender_username"],
                 subject_prefix=CLEARED_SMTP["subject_prefix"],

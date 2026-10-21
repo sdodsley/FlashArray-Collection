@@ -54,7 +54,12 @@ sys.modules["ansible_collections.everpure.flasharray.plugins.module_utils.versio
     mock_version_module
 )
 
-from plugins.modules.purefa_token import get_session, main
+from plugins.modules.purefa_token import get_session, main, token_exists
+
+
+def _admin(created, name="pureuser"):
+    """One entry of GET admin?api_token=true as the REST 1.x array returns it"""
+    return {"name": name, "api_token": {"created": created, "expires": None}}
 
 
 def _module(**overrides):
@@ -101,7 +106,7 @@ class TestMain:
         mock_module = _module()
         mock_ansible_module.return_value = mock_module
         session = Mock()
-        session.get_api_token.return_value = {"api_token": None}
+        session.list_admins.return_value = [_admin(created=None)]
         session.create_api_token.return_value = {"api_token": "new-token"}
         mock_get_session.return_value = session
 
@@ -116,13 +121,13 @@ class TestMain:
     @patch("plugins.modules.purefa_token.get_array")
     @patch("plugins.modules.purefa_token.get_session")
     @patch("plugins.modules.purefa_token.AnsibleModule")
-    def test_empty_string_token_counts_as_absent(
+    def test_missing_created_counts_as_absent(
         self, mock_ansible_module, mock_get_session, mock_get_array
     ):
         mock_module = _module()
         mock_ansible_module.return_value = mock_module
         session = Mock()
-        session.get_api_token.return_value = {"api_token": ""}
+        session.list_admins.return_value = [_admin(created=None)]
         session.create_api_token.return_value = {"api_token": "new-token"}
         mock_get_session.return_value = session
 
@@ -142,6 +147,7 @@ class TestMain:
         mock_module = _module()
         mock_ansible_module.return_value = mock_module
         session = Mock()
+        session.list_admins.return_value = [_admin(created="2026-10-20T10:00:00Z")]
         session.get_api_token.return_value = {"api_token": "old-token"}
         mock_get_session.return_value = session
 
@@ -162,6 +168,7 @@ class TestMain:
         mock_module = _module(recreate=True)
         mock_ansible_module.return_value = mock_module
         session = Mock()
+        session.list_admins.return_value = [_admin(created="2026-10-20T10:00:00Z")]
         session.get_api_token.return_value = {"api_token": "old-token"}
         session.create_api_token.return_value = {"api_token": "new-token"}
         mock_get_session.return_value = session
@@ -182,7 +189,7 @@ class TestMain:
         mock_module = _module(state="absent")
         mock_ansible_module.return_value = mock_module
         session = Mock()
-        session.get_api_token.return_value = {"api_token": None}
+        session.list_admins.return_value = [_admin(created=None)]
         mock_get_session.return_value = session
 
         main()
@@ -211,6 +218,7 @@ class TestTimeout:
         mock_module = _module(timeout="1d")
         mock_ansible_module.return_value = mock_module
         session = Mock()
+        session.list_admins.return_value = [_admin(created="2026-10-20T10:00:00Z")]
         session.get_api_token.return_value = {"api_token": "old-token"}
         mock_get_session.return_value = session
         mock_convert.return_value = 86400000
@@ -240,6 +248,7 @@ class TestTimeout:
         mock_module = _module(timeout="1d")
         mock_ansible_module.return_value = mock_module
         session = Mock()
+        session.list_admins.return_value = [_admin(created="2026-10-20T10:00:00Z")]
         session.get_api_token.return_value = {"api_token": "old-token"}
         mock_get_session.return_value = session
         array6 = Mock()
@@ -254,3 +263,122 @@ class TestTimeout:
         mock_module.exit_json.assert_called_once_with(
             changed=False, purefa_token="old-token"
         )
+
+
+class TestTokenExists:
+    """Existence comes from GET admin?api_token=true, never from get_api_token,
+    which creates a token for a user who has none
+    """
+
+    def test_created_null_means_no_token(self):
+        array = Mock()
+        array.list_admins.return_value = [_admin(created=None)]
+
+        assert token_exists(array, "pureuser") is False
+        array.list_admins.assert_called_once_with(api_token=True)
+        array.get_api_token.assert_not_called()
+
+    def test_created_set_means_token(self):
+        array = Mock()
+        array.list_admins.return_value = [
+            _admin(created="2026-10-20T10:00:00Z", name="other"),
+            _admin(created="2026-10-20T10:00:00Z"),
+        ]
+
+        assert token_exists(array, "pureuser") is True
+
+    def test_only_the_named_admin_counts(self):
+        array = Mock()
+        array.list_admins.return_value = [
+            _admin(created="2026-10-20T10:00:00Z", name="other"),
+            _admin(created=None),
+        ]
+
+        assert token_exists(array, "pureuser") is False
+
+    def test_admin_missing_from_list_means_no_token(self):
+        array = Mock()
+        array.list_admins.return_value = [
+            _admin(created="2026-10-20T10:00:00Z", name="other")
+        ]
+
+        assert token_exists(array, "pureuser") is False
+
+    def test_flat_created_field_is_accepted(self):
+        array = Mock()
+        array.list_admins.return_value = [
+            {"name": "pureuser", "created": "2026-10-20T10:00:00Z", "expires": None}
+        ]
+
+        assert token_exists(array, "pureuser") is True
+
+    def test_single_dict_response_is_wrapped(self):
+        array = Mock()
+        array.list_admins.return_value = _admin(created="2026-10-20T10:00:00Z")
+
+        assert token_exists(array, "pureuser") is True
+
+    @patch("plugins.modules.purefa_token.get_array")
+    @patch("plugins.modules.purefa_token.get_session")
+    @patch("plugins.modules.purefa_token.AnsibleModule")
+    def test_fresh_user_is_a_change_even_though_get_api_token_would_answer(
+        self, mock_ansible_module, mock_get_session, mock_get_array
+    ):
+        """Hardware: get_api_token returned a token for a user who never had
+        one, so present reported changed=False on a fresh user
+        """
+        mock_module = _module()
+        mock_ansible_module.return_value = mock_module
+        session = Mock()
+        session.list_admins.return_value = [_admin(created=None)]
+        session.get_api_token.return_value = {"api_token": "implicitly-created"}
+        session.create_api_token.return_value = {"api_token": "new-token"}
+        mock_get_session.return_value = session
+
+        main()
+
+        session.get_api_token.assert_not_called()
+        session.create_api_token.assert_called_once_with(admin="pureuser")
+        mock_module.exit_json.assert_called_once_with(
+            changed=True, purefa_token="new-token"
+        )
+
+    @patch("plugins.modules.purefa_token.get_array")
+    @patch("plugins.modules.purefa_token.get_session")
+    @patch("plugins.modules.purefa_token.AnsibleModule")
+    def test_existing_token_is_read_back_without_creating(
+        self, mock_ansible_module, mock_get_session, mock_get_array
+    ):
+        mock_module = _module()
+        mock_ansible_module.return_value = mock_module
+        session = Mock()
+        session.list_admins.return_value = [_admin(created="2026-10-20T10:00:00Z")]
+        session.get_api_token.return_value = {"api_token": "old-token"}
+        mock_get_session.return_value = session
+
+        main()
+
+        session.get_api_token.assert_called_once_with(admin="pureuser")
+        session.create_api_token.assert_not_called()
+        mock_module.exit_json.assert_called_once_with(
+            changed=False, purefa_token="old-token"
+        )
+
+    @patch("plugins.modules.purefa_token.get_array")
+    @patch("plugins.modules.purefa_token.get_session")
+    @patch("plugins.modules.purefa_token.AnsibleModule")
+    def test_absent_with_token_deletes(
+        self, mock_ansible_module, mock_get_session, mock_get_array
+    ):
+        mock_module = _module(state="absent")
+        mock_ansible_module.return_value = mock_module
+        session = Mock()
+        session.list_admins.return_value = [_admin(created="2026-10-20T10:00:00Z")]
+        session.delete_api_token.return_value = {"api_token": None}
+        mock_get_session.return_value = session
+
+        main()
+
+        session.get_api_token.assert_not_called()
+        session.delete_api_token.assert_called_once_with(admin="pureuser")
+        mock_module.exit_json.assert_called_once_with(changed=True, purefa_token=None)

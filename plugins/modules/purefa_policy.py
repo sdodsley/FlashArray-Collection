@@ -1412,6 +1412,20 @@ def nfs_rule_differs(rule, fields):
     return False
 
 
+def nfs_policy_has_rules(module, array):
+    """True when the NFS policy has at least one client rule"""
+    res = get_with_context(
+        array,
+        "get_policies_nfs_client_rules",
+        CONTEXT_VERSION,
+        module,
+        policy_names=[module.params["name"]],
+    )
+    if res.status_code != 200:
+        return False
+    return bool(list(getattr(res, "items", None) or []))
+
+
 def update_policy(module, array, api_version, all_squash):
     """Update an existing policy including add/remove rules"""
     changed = changed_dir = changed_rule = changed_enable = changed_quota = (
@@ -1442,24 +1456,29 @@ def update_policy(module, array, api_version, all_squash):
             )
         else:
             current_user_map = list(res.items)[0].user_mapping_enabled
-        if module.params["nfs_version"] and sorted(
-            module.params["nfs_version"]
-        ) != sorted(getattr(current_policy, "nfs_version", [])):
-            changed_nfs = True
-            if not module.check_mode:
-                res = patch_with_context(
-                    array,
-                    "patch_policies_nfs",
-                    CONTEXT_VERSION,
-                    module,
-                    names=[module.params["name"]],
-                    policy=PolicyNfsPatch(nfs_version=module.params["nfs_version"]),
-                )
-                check_response(
-                    res,
-                    module,
-                    f"Changing NFS version for NFS policy {module.params['name']}",
-                )
+        if module.params["nfs_version"] and nfs_policy_has_rules(module, array):
+            # The policy-level nfs_version is derived from the client rules:
+            # on a policy with no rules the PATCH fails with "No rules found
+            # in the policy to update", and the first rule added carries
+            # nfs_version itself, so only compare and patch once rules exist
+            if sorted(module.params["nfs_version"]) != sorted(
+                getattr(current_policy, "nfs_version", None) or []
+            ):
+                changed_nfs = True
+                if not module.check_mode:
+                    res = patch_with_context(
+                        array,
+                        "patch_policies_nfs",
+                        CONTEXT_VERSION,
+                        module,
+                        names=[module.params["name"]],
+                        policy=PolicyNfsPatch(nfs_version=module.params["nfs_version"]),
+                    )
+                    check_response(
+                        res,
+                        module,
+                        f"Changing NFS version for NFS policy {module.params['name']}",
+                    )
         if (
             module.params["user_mapping"] is not None
             and current_user_map != module.params["user_mapping"]
