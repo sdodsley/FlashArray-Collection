@@ -162,3 +162,42 @@ class TestHardwareCheckMode:
 
         mock_module.exit_json.assert_called_once_with(changed=True)
         mock_array.patch_hardware.assert_not_called()
+
+
+class TestHardwareChange:
+    """Test cases for an LED state change"""
+
+    @patch("plugins.modules.purefa_hardware.check_response")
+    @patch("plugins.modules.purefa_hardware.flasharray")
+    @patch("plugins.modules.purefa_hardware.get_array")
+    @patch("plugins.modules.purefa_hardware.AnsibleModule")
+    def test_change_uses_the_patch_model(
+        self, mock_ansible_module, mock_get_array, mock_flasharray, mock_check
+    ):
+        """Test the request is built with HardwarePatch, not the response model
+
+        Hardware(identify_enabled=...) serialises to an empty PATCH body and the
+        array answers 400 "No operation was specified", so the LED never moved.
+        """
+        mock_module = Mock()
+        mock_module.check_mode = False
+        mock_module.params = {"name": "CT1", "enabled": True}
+        mock_ansible_module.return_value = mock_module
+
+        mock_array = Mock()
+        mock_get_array.return_value = mock_array
+        mock_hardware = Mock()
+        mock_hardware.identify_enabled = False
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.items = [mock_hardware]
+        mock_array.get_hardware.return_value = mock_response
+
+        main()
+
+        mock_flasharray.HardwarePatch.assert_called_once_with(identify_enabled=True)
+        mock_flasharray.Hardware.assert_not_called()
+        mock_array.patch_hardware.assert_called_once_with(
+            names=["CT1"], hardware=mock_flasharray.HardwarePatch.return_value
+        )
+        mock_module.exit_json.assert_called_once_with(changed=True)
