@@ -254,21 +254,72 @@ def _read_server(module, array, name):
     return next(iter(list(res.items)), None)
 
 
-def _attached_interfaces(module, array, server_name):
+def _list_interfaces(module, array):
+    """Every network interface on the array, as the array reports them"""
+    res = get_with_context(array, "get_network_interfaces", SERVER_API_VERSION, module)
+    check_response(res, module, "Failed to list network interfaces")
+    return list(res.items)
+
+
+def _attached_interfaces(module, array, server_name, interfaces=None):
     """Names of the network interfaces currently attached to a file server
 
     A network interface names the servers it is attached to, rather than a
     server naming its interfaces, so this reads the interfaces and picks out
-    the ones pointing back.
+    the ones pointing back. The names are the ones the array stores, which on
+    a newer array may be <server>::<name> rather than the bare name.
     """
-    res = get_with_context(array, "get_network_interfaces", SERVER_API_VERSION, module)
-    check_response(res, module, "Failed to list network interfaces")
+    if interfaces is None:
+        interfaces = _list_interfaces(module, array)
     attached = []
-    for interface in list(res.items):
+    for interface in interfaces:
         for reference in getattr(interface, "attached_servers", None) or []:
             if getattr(reference, "name", None) == server_name:
                 attached.append(interface.name)
     return sorted(attached)
+
+
+def _bare_name(name):
+    """A stored interface name with any <server>:: prefix removed
+
+    Newer Purity releases store a virtual interface that is attached to a
+    file server as <server>::<name>, the way other scoped objects such as
+    pod::volume are named. A VIF created over REST keeps its bare name, so
+    both forms coexist on one array. The single colon is tolerated in case a
+    release uses it.
+    """
+    for separator in ("::", ":"):
+        if separator in name:
+            return name.split(separator, 1)[1]
+    return name
+
+
+def _reported_name(requested, current):
+    """The name this server's attached interface list reports requested as
+
+    A task names an interface the way it was created, bare, while the array
+    may report it as <server>::<name>. Returns None when the requested
+    interface is not among the ones attached to the server.
+    """
+    for name in current:
+        if name == requested or _bare_name(name) == requested:
+            return name
+    return None
+
+
+def _stored_name(requested, interfaces):
+    """The name the array stores a requested interface under
+
+    A bare name the array does not know, but has exactly one interface
+    scoped as <server>::<name> for, means that interface - typically one
+    attached to another file server and about to be moved. Anything else is
+    sent as given and left for the array to judge.
+    """
+    names = [interface.name for interface in interfaces]
+    if requested in names:
+        return requested
+    scoped = [name for name in names if _bare_name(name) == requested]
+    return scoped[0] if len(scoped) == 1 else requested
 
 
 def _attach_interface(module, array, interface, server_name):
@@ -302,9 +353,20 @@ def _reconcile_interfaces(module, array, server_name):
     if wanted is None:
         return False
     wanted = sorted(set(wanted))
-    current = _attached_interfaces(module, array, server_name)
-    to_attach = [i for i in wanted if i not in current]
-    to_detach = [i for i in current if i not in wanted]
+    interfaces = _list_interfaces(module, array)
+    current = _attached_interfaces(module, array, server_name, interfaces)
+    # A requested bare name matches the interface the array reports attached
+    # to this server as <server>::<name>; whatever is patched is patched under
+    # the name the array stores it as
+    matched = set()
+    to_attach = []
+    for requested in wanted:
+        reported = _reported_name(requested, current)
+        if reported is None:
+            to_attach.append(_stored_name(requested, interfaces))
+        else:
+            matched.add(reported)
+    to_detach = [i for i in current if i not in matched]
     if not to_attach and not to_detach:
         return False
     if not module.check_mode:
