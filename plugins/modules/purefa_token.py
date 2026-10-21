@@ -22,6 +22,13 @@ short_description: Create or delete an API token for an existing admin user
 description:
 - Create or delete an API token for an existing admin user.
 - Uses username/password to create/delete the API token.
+- Logging in with a username and password creates the user's API token
+  when none exists yet, so by the time the module inspects the user the
+  token is always present. I(state=present) therefore returns the token
+  and reports no change; it cannot tell a token created by this run from
+  one that already existed.
+- Use I(recreate=true) to force a new token. This always reports a change.
+- I(state=absent) deletes the token and reports a change.
 author:
 - Everpure Ansible Team (@sdodsley) <pure-ansible-team@everpuredata.com>
 options:
@@ -33,7 +40,9 @@ options:
     choices: [ present, absent ]
   recreate:
     description:
-    - Recreates the API token, overwriting the existing API token if present
+    - Recreates the API token, overwriting the existing API token if present.
+    - This is the only way to be sure of a new token and is always reported
+      as a change.
     type: bool
     default: false
   username:
@@ -86,7 +95,7 @@ EXAMPLES = r"""
 RETURN = r"""
 purefa_token:
   description: API token for user
-  returned: changed
+  returned: when I(state=present), whether or not the module reports a change
   type: str
   sample: e649f439-49be-3806-f774-a35cbbc4c2d2
 """
@@ -192,13 +201,26 @@ def token_exists(array, username):
     ``GET admin/<name>/apitoken`` (``array.get_api_token``) creates a token
     for a user who has none, so it cannot tell whether one exists.
     ``GET admin?api_token=true`` (``array.list_admins``) only reports them:
-    ``api_token.created`` is null for a user without a token, and a user
-    missing from the list has none either.
+    ``api_token.created`` is null for a user without a token.
+
+    The purestorage client logs in with ``POST auth/apitoken``, which itself
+    creates the token of the user it logs in as, so for the session user this
+    normally answers True: the module cannot detect a token it caused to be
+    created. When the listing cannot be read or does not mention the user,
+    the token is assumed to exist for the same reason - that assumption can
+    only ever lead to a read or a delete, never to an implicit create.
     """
-    admins = array.list_admins(api_token=True)
+    try:
+        admins = array.list_admins(api_token=True)
+    except Exception:
+        return True
     if isinstance(admins, dict):
         admins = [admins]
-    info = next((admin for admin in admins or [] if admin.get("name") == username), {})
+    info = next(
+        (admin for admin in admins or [] if admin.get("name") == username), None
+    )
+    if info is None:
+        return True
     token_info = info.get("api_token")
     if isinstance(token_info, dict):
         return bool(token_info.get("created"))
@@ -230,8 +252,11 @@ def main():
     recreate = module.params["recreate"]
 
     # Reading the token with get_api_token creates one when the user has
-    # none, which made every run report changed=False. Find out whether a
-    # token exists first and only read it back once it is known to exist.
+    # none, so find out whether a token exists first and only read it back
+    # once it is known to exist. Note that get_session has already logged
+    # in with username/password, which creates the token when the user had
+    # none, so for state=present this normally reads back and reports no
+    # change; recreate is the way to force a new token.
     has_token = token_exists(array, username)
     result = {}
     if state == "present" and not has_token:

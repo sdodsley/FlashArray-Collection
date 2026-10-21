@@ -26,8 +26,11 @@ description:
   compared. The array returns the community string masked, so a change to
   only I(community) cannot be detected and is not applied; delete and
   recreate the manager to change its community string.
-- An existing SNMP v3 manager is always modified, as the passphrases are
-  returned masked and cannot be compared to the play parameters.
+- For an existing SNMP v3 manager I(host), I(notification), I(user),
+  I(auth_protocol) and I(privacy_protocol) are compared. The array returns
+  the passphrases masked, so a change to only I(auth_passphrase) or
+  I(privacy_passphrase) cannot be detected and is not applied; delete and
+  recreate the manager to change a passphrase.
 author:
 - Everpure Ansible Team (@sdodsley) <pure-ansible-team@everpuredata.com>
 options:
@@ -215,22 +218,46 @@ def update_manager(module, array):
                 f"Failed to update SNMP manager {module.params['name']}",
             )
     else:
-        if module.params["auth_protocol"] and module.params["privacy_protocol"]:
+        # The passphrases are returned masked, so only the readable fields
+        # can be compared. A passphrase-only change cannot be detected and
+        # needs the manager deleted and recreated. The SDK model raises
+        # AttributeError for a field the array returned as null, so every
+        # read has a default of None, which is also what an unset parameter is.
+        current_v3 = getattr(mgr, "v3", None)
+        current = {
+            "host": getattr(mgr, "host", None),
+            "notification": getattr(mgr, "notification", None),
+            "user": getattr(current_v3, "user", None),
+            "auth_protocol": getattr(current_v3, "auth_protocol", None),
+            "privacy_protocol": getattr(current_v3, "privacy_protocol", None),
+        }
+        desired = {
+            "host": module.params["host"],
+            "notification": module.params["notification"],
+            "user": module.params["user"],
+            "auth_protocol": module.params["auth_protocol"],
+            "privacy_protocol": module.params["privacy_protocol"],
+        }
+        if current != desired:
             changed = True
             if not module.check_mode:
+                # A protocol is only accepted together with its passphrase
+                v3_settings = {"user": module.params["user"]}
+                if module.params["auth_protocol"]:
+                    v3_settings["auth_protocol"] = module.params["auth_protocol"]
+                    v3_settings["auth_passphrase"] = module.params["auth_passphrase"]
+                if module.params["privacy_protocol"]:
+                    v3_settings["privacy_protocol"] = module.params["privacy_protocol"]
+                    v3_settings["privacy_passphrase"] = module.params[
+                        "privacy_passphrase"
+                    ]
                 res = array.patch_snmp_managers(
                     names=module.params["name"],
                     snmp_manager=SnmpManagerPatch(
                         version=module.params["version"],
-                        v3=SnmpV3Patch(
-                            auth_passphrase=module.params["auth_passphrase"],
-                            auth_protocol=module.params["auth_protocol"],
-                            privacy_passphrase=module.params["privacy_passphrase"],
-                            privacy_protocol=module.params["privacy_protocol"],
-                            user=module.params["user"],
-                        ),
                         notification=module.params["notification"],
                         host=module.params["host"],
+                        v3=SnmpV3Patch(**v3_settings),
                     ),
                 )
                 check_response(
@@ -238,71 +265,6 @@ def update_manager(module, array):
                     module,
                     f"Failed to update SNMP manager {module.params['name']}",
                 )
-        elif module.params["auth_protocol"] and not module.params["privacy_protocol"]:
-            changed = True
-            if not module.check_mode:
-                res = array.patch_snmp_managers(
-                    names=module.params["name"],
-                    snmp_manager=SnmpManagerPatch(
-                        notification=module.params["notification"],
-                        version=module.params["version"],
-                        host=module.params["host"],
-                        v3=SnmpV3Patch(
-                            auth_passphrase=module.params["auth_passphrase"],
-                            auth_protocol=module.params["auth_protocol"],
-                            user=module.params["user"],
-                        ),
-                    ),
-                )
-                check_response(
-                    res,
-                    module,
-                    f"Failed to update SNMP manager {module.params['name']}",
-                )
-        elif not module.params["auth_protocol"] and module.params["privacy_protocol"]:
-            changed = True
-            if not module.check_mode:
-                res = array.patch_snmp_managers(
-                    names=module.params["name"],
-                    snmp_manager=SnmpManagerPatch(
-                        notification=module.params["notification"],
-                        version=module.params["version"],
-                        host=module.params["host"],
-                        v3=SnmpV3Patch(
-                            privacy_passphrase=module.params["privacy_passphrase"],
-                            privacy_protocol=module.params["privacy_protocol"],
-                            user=module.params["user"],
-                        ),
-                    ),
-                )
-                check_response(
-                    res,
-                    module,
-                    f"Failed to update SNMP manager {module.params['name']}",
-                )
-        elif (
-            not module.params["auth_protocol"] and not module.params["privacy_protocol"]
-        ):
-            changed = True
-            if not module.check_mode:
-                res = array.patch_snmp_managers(
-                    names=module.params["name"],
-                    snmp_manager=SnmpManagerPatch(
-                        version=module.params["version"],
-                        notification=module.params["notification"],
-                        host=module.params["host"],
-                        v3=SnmpV3Patch(user=module.params["user"]),
-                    ),
-                )
-                check_response(
-                    res,
-                    module,
-                    f"Failed to update SNMP manager {module.params['name']}",
-                )
-        else:
-            module.fail_json(
-                msg="Invalid parameters selected in update. Please raise issue in Ansible GitHub"
-            )
 
     module.exit_json(changed=changed)
 

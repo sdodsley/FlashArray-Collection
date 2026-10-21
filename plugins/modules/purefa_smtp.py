@@ -126,17 +126,28 @@ def request_dict_with_nulls(model, body):
     return body
 
 
-class SmtpServerNullable(SmtpServer):
-    """SmtpServer whose explicitly null fields are sent as JSON null.
+def call_with_nulls(api_call, model_class, **kwargs):
+    """Call ``api_call(**kwargs)`` with ``model_class`` sending the fields
+    explicitly set to None as JSON null.
 
     The array refuses ``relay_host: ""`` ("Not a valid hostname") and only
-    clears the relay host with ``relay_host: null``. The SDK serialises a
-    request body through ``as_request_dict`` and keeps the subclass through
-    its argument validation, so this is the supported way to send the null.
+    clears the relay host with ``relay_host: null``. Every SDK API method is
+    wrapped in pydantic ``validate_arguments``, which re-validates the body
+    into a plain ``model_class`` copy before the transport serialises it with
+    ``as_request_dict``, so an override on a subclass never reaches the
+    wire. The copy does keep ``__fields_set__``, so the method is swapped on
+    the base class for the duration of the call and restored afterwards.
     """
+    original = model_class.as_request_dict
 
     def as_request_dict(self):
-        return request_dict_with_nulls(self, super().as_request_dict())
+        return request_dict_with_nulls(self, original(self))
+
+    model_class.as_request_dict = as_request_dict
+    try:
+        return api_call(**kwargs)
+    finally:
+        model_class.as_request_dict = original
 
 
 from ansible.module_utils.basic import AnsibleModule
@@ -190,8 +201,10 @@ def delete_smtp(module, array):
     """Delete SMTP settings"""
     changed = _get_current_smtp(array) != CLEARED_SMTP
     if changed and not module.check_mode:
-        res = array.patch_smtp_servers(
-            smtp=SmtpServerNullable(
+        res = call_with_nulls(
+            array.patch_smtp_servers,
+            SmtpServer,
+            smtp=SmtpServer(
                 sender_domain=CLEARED_SMTP["sender_domain"],
                 user_name=CLEARED_SMTP["user_name"],
                 password="",
@@ -201,7 +214,7 @@ def delete_smtp(module, array):
                 sender_username=CLEARED_SMTP["sender_username"],
                 subject_prefix=CLEARED_SMTP["subject_prefix"],
                 body_prefix=CLEARED_SMTP["body_prefix"],
-            )
+            ),
         )
         check_response(res, module, "Delete SMTP settings failed")
     module.exit_json(changed=changed)

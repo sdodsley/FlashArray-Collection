@@ -49,6 +49,8 @@ options:
   replicate_at:
     description:
     - Provide a time in 12-hour AM/PM format, eg. 11AM
+    - Sent to the array as seconds since midnight, which is the unit the
+      array stores and returns for the C(at) value.
     - Only valid if I(replicate_frequency) is an exact multiple of 86400, ie 1 day.
     - Set to an empty string "" to clear an existing at value (sends -1 to the API).
     - Automatically cleared when I(replicate_frequency) changes to a non-day multiple.
@@ -57,21 +59,27 @@ options:
     description:
     - Specifies the time at which to suspend replication.
     - Provide a time in 12-hour AM/PM format, eg. 11AM
+    - Sent to the array as seconds since midnight.
     type: str
   blackout_end:
     description:
     - Specifies the time at which to restart replication.
     - Provide a time in 12-hour AM/PM format, eg. 5PM
+    - Sent to the array as seconds since midnight.
     type: str
   replicate_frequency:
     description:
     - Specifies the replication frequency in seconds.
+    - Converted to milliseconds for the array, which stores frequencies
+      in milliseconds.
     - Range 900 - 34560000 (FA-405, //M10, //X10 and Cloud Block Store).
     - Range 300 - 34560000 (all other arrays).
     type: int
   snap_at:
     description:
     - Provide a time in 12-hour AM/PM format, eg. 11AM
+    - Sent to the array as seconds since midnight, which is the unit the
+      array stores and returns for the C(at) value.
     - Only valid if I(snap_frequency) is an exact multiple of 86400, ie 1 day.
     - Set to an empty string "" to clear an existing at value (sends -1 to the API).
     - Automatically cleared when I(snap_frequency) changes to a non-day multiple.
@@ -79,6 +87,8 @@ options:
   snap_frequency:
     description:
     - Specifies the snapshot frequency in seconds.
+    - Converted to milliseconds for the array, which stores frequencies
+      in milliseconds.
     - Range available 300 - 34560000.
     type: int
   days:
@@ -244,20 +254,25 @@ def get_pgroup(module, array):
     return None
 
 
-def _convert_to_millisecs(hour):
-    """Convert a 12-hour clock value (e.g. 3PM) to milliseconds from
-    midnight, which is the unit the REST 2 API uses for `at` and
-    blackout window values."""
+def _convert_to_seconds(hour):
+    """Convert a 12-hour clock value (e.g. 3PM) to seconds from midnight.
+
+    Despite the SDK model documenting ``at`` in milliseconds, the array
+    stores and returns ``snapshot_schedule.at``, ``replication_schedule.at``
+    and the blackout window in seconds since midnight: ``at: 54000`` (3PM)
+    is accepted and read back, ``at: 54000000`` is silently dropped. Only
+    ``frequency`` is in milliseconds.
+    """
     period = hour[-2:].upper()
     hour_value = int(hour[:-2])
 
     if period == "AM" and hour_value == 12:
         return 0
     if period == "AM":
-        return hour_value * 3600000
+        return hour_value * 3600
     if period == "PM" and hour_value == 12:
-        return 43200000
-    return (hour_value + 12) * 3600000
+        return 43200
+    return (hour_value + 12) * 3600
 
 
 def update_schedule(module, array, snap_time, repl_time):
@@ -334,7 +349,7 @@ def update_schedule(module, array, snap_time, repl_time):
             snap_at = None
         elif module.params.get("snap_at"):
             # New value provided
-            snap_at = _convert_to_millisecs(module.params["snap_at"].upper())
+            snap_at = _convert_to_seconds(module.params["snap_at"].upper())
         else:
             # No change - keep current
             snap_at = current_snap["snap_at"]
@@ -461,7 +476,7 @@ def update_schedule(module, array, snap_time, repl_time):
             replicate_at = None
         elif module.params.get("replicate_at"):
             # New value provided
-            replicate_at = _convert_to_millisecs(module.params["replicate_at"].upper())
+            replicate_at = _convert_to_seconds(module.params["replicate_at"].upper())
         else:
             # No change - keep current
             replicate_at = current_repl["replicate_at"]
@@ -483,12 +498,12 @@ def update_schedule(module, array, snap_time, repl_time):
         blackout_start = (
             current_repl["blackout_start"]
             if module.params.get("blackout_start") is None
-            else _convert_to_millisecs(module.params["blackout_start"].upper())
+            else _convert_to_seconds(module.params["blackout_start"].upper())
         )
         blackout_end = (
             current_repl["blackout_end"]
             if module.params.get("blackout_end") is None
-            else _convert_to_millisecs(module.params["blackout_end"].upper())
+            else _convert_to_seconds(module.params["blackout_end"].upper())
         )
 
         repl_schedule_changed = (

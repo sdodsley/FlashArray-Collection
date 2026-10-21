@@ -52,7 +52,29 @@ from plugins.modules.purefa_smtp import (
     delete_smtp,
     create_smtp,
     request_dict_with_nulls,
+    call_with_nulls,
 )
+
+
+class FakeRequestModel:
+    """Stand-in for a py-pure-client pydantic model as a request body.
+
+    Keeps ``__fields_set__`` like pydantic does and, like the SDK's
+    ``as_request_dict``, drops every None field from the body.
+    """
+
+    def __init__(self, **fields):
+        self._kwargs = fields
+        self.__fields_set__ = set(fields)
+
+    def as_request_dict(self):
+        return {k: v for k, v in self._kwargs.items() if v is not None}
+
+    def validated_copy(self):
+        """What pydantic validate_arguments hands the transport: a fresh
+        instance of the declared class with the same __fields_set__
+        """
+        return type(self)(**self._kwargs)
 
 
 class FakeSmtpServer:
@@ -127,7 +149,7 @@ class TestDeleteSmtp:
         mock_array.patch_smtp_servers.assert_not_called()
         mock_module.exit_json.assert_called_once_with(changed=False)
 
-    @patch("plugins.modules.purefa_smtp.SmtpServerNullable")
+    @patch("plugins.modules.purefa_smtp.SmtpServer")
     @patch("plugins.modules.purefa_smtp.check_response")
     def test_delete_smtp_sends_empty_sender_domain(
         self, mock_check_response, mock_smtp_server
@@ -146,13 +168,13 @@ class TestDeleteSmtp:
         assert mock_smtp_server.call_args.kwargs["password"] == ""
         mock_module.exit_json.assert_called_once_with(changed=True)
 
-    @patch("plugins.modules.purefa_smtp.SmtpServerNullable")
+    @patch("plugins.modules.purefa_smtp.SmtpServer")
     @patch("plugins.modules.purefa_smtp.check_response")
     def test_delete_smtp_clears_relay_host_with_null(
         self, mock_check_response, mock_smtp_server
     ):
         """The array refuses relay_host: "" ("Not a valid hostname") and only
-        clears the relay host with null, which needs the nullable body model
+        clears the relay host with null, so relay_host is set to None
         """
         mock_module = Mock()
         mock_module.check_mode = False
@@ -167,6 +189,41 @@ class TestDeleteSmtp:
         assert kwargs["relay_host"] is None
         sent = mock_array.patch_smtp_servers.call_args.kwargs["smtp"]
         assert sent is mock_smtp_server.return_value
+        mock_module.exit_json.assert_called_once_with(changed=True)
+
+    @patch("plugins.modules.purefa_smtp.SmtpServer", FakeRequestModel)
+    @patch("plugins.modules.purefa_smtp.check_response")
+    def test_delete_smtp_null_survives_validate_arguments_copy(
+        self, mock_check_response
+    ):
+        """Hardware: the SDK's validate_arguments re-validates the body into
+        a plain SmtpServer copy, so a subclass override of as_request_dict
+        never ran and relay_host was dropped ("Not a valid hostname" again).
+        The body the transport serialises from the copy must carry the null.
+        """
+        mock_module = Mock()
+        mock_module.check_mode = False
+        mock_array = Mock()
+        mock_array.get_smtp_servers.return_value.items = [configured_smtp()]
+        sent = {}
+
+        def patch_smtp_servers(smtp):
+            # validate_arguments copies, then the transport serialises
+            sent["body"] = smtp.validated_copy().as_request_dict()
+            return Mock(status_code=200)
+
+        mock_array.patch_smtp_servers.side_effect = patch_smtp_servers
+        original = FakeRequestModel.as_request_dict
+
+        delete_smtp(mock_module, mock_array)
+
+        assert sent["body"]["relay_host"] is None
+        assert sent["body"]["sender_domain"] == ""
+        assert sent["body"]["user_name"] == ""
+        assert sent["body"]["password"] == ""
+        assert "relay_host" in sent["body"]
+        # the base class is back to normal once the call is over
+        assert FakeRequestModel.as_request_dict is original
         mock_module.exit_json.assert_called_once_with(changed=True)
 
 
@@ -788,3 +845,62 @@ class TestRequestDictWithNulls:
         assert request_dict_with_nulls(model, {"relay_host": "r"}) == {
             "relay_host": "r"
         }
+
+
+class TestCallWithNulls:
+    """call_with_nulls swaps as_request_dict on the base class only for the
+    duration of the API call, so a validated copy of the model sends its
+    explicit nulls and nothing else is affected afterwards
+    """
+
+    def test_validated_copy_sends_nulls(self):
+        seen = {}
+
+        def api_call(smtp):
+            seen["body"] = smtp.validated_copy().as_request_dict()
+            return "response"
+
+        original = FakeRequestModel.as_request_dict
+        body = FakeRequestModel(relay_host=None, sender_domain="")
+
+        result = call_with_nulls(api_call, FakeRequestModel, smtp=body)
+
+        assert result == "response"
+        assert seen["body"] == {"sender_domain": "", "relay_host": None}
+        assert FakeRequestModel.as_request_dict is original
+
+    def test_unset_fields_stay_out_of_the_body(self):
+        seen = {}
+
+        def api_call(smtp):
+            seen["body"] = smtp.validated_copy().as_request_dict()
+
+        call_with_nulls(
+            api_call, FakeRequestModel, smtp=FakeRequestModel(sender_domain="x")
+        )
+
+        assert seen["body"] == {"sender_domain": "x"}
+
+    def test_method_restored_when_the_call_raises(self):
+        import pytest
+
+        def api_call(smtp):
+            raise RuntimeError("boom")
+
+        original = FakeRequestModel.as_request_dict
+
+        with pytest.raises(RuntimeError):
+            call_with_nulls(
+                api_call, FakeRequestModel, smtp=FakeRequestModel(relay_host=None)
+            )
+
+        assert FakeRequestModel.as_request_dict is original
+        # and the stock behaviour (None dropped) is back
+        assert FakeRequestModel(relay_host=None).as_request_dict() == {}
+
+    def test_outside_the_call_nulls_are_dropped_again(self):
+        call_with_nulls(lambda smtp: None, FakeRequestModel, smtp=FakeRequestModel())
+
+        assert FakeRequestModel(
+            relay_host=None, sender_domain=""
+        ).as_request_dict() == {"sender_domain": ""}
