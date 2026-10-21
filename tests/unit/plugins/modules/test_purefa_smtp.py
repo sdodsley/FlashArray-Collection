@@ -57,11 +57,12 @@ from plugins.modules.purefa_smtp import (
     _api_error_message,
 )
 
-# What state=absent must put on the wire: every setting cleared with "",
-# the credentials cleared together, and the relay host cleared with null
+# What state=absent must put on the wire (Purity 6.10.6): the relay host is
+# cleared with null in a PATCH of its own, then every other clearable setting
+# with "" and the credentials together. sender_domain is in neither body: the
+# array refuses "" and ignores null, so it is left alone.
+RELAY_BODY = {"relay_host": None}
 CLEARED_BODY = {
-    "sender_domain": "",
-    "relay_host": None,
     "user_name": "",
     "password": "",
     "encryption_mode": "",
@@ -165,8 +166,34 @@ class TestDeleteSmtp:
         mock_array._api_client.call_api.assert_not_called()
         mock_module.exit_json.assert_called_once_with(changed=False)
 
-    def test_delete_smtp_sends_empty_sender_domain(self):
-        """state=absent clears sender_domain rather than writing "None" """
+    def test_delete_smtp_remaining_sender_domain_is_not_a_change(self):
+        """The array cannot clear sender_domain, so a sender_domain left
+        behind by an earlier state=absent must not make the next run a
+        change, or absent would never be idempotent
+        """
+        mock_module = Mock()
+        mock_module.check_mode = False
+        mock_array = array_with_transport()
+        mock_array.get_smtp_servers.return_value.items = [
+            FakeSmtpServer(
+                name="smtp",
+                sender_domain="test.com",
+                relay_host=None,
+                encryption_mode=None,
+                user_name=None,
+                sender_username=None,
+                subject_prefix=None,
+                body_prefix=None,
+            )
+        ]
+
+        delete_smtp(mock_module, mock_array)
+
+        mock_array._api_client.call_api.assert_not_called()
+        mock_module.exit_json.assert_called_once_with(changed=False)
+
+    def test_delete_smtp_leaves_sender_domain_alone(self):
+        """sender_domain is in neither body: "" is refused and null ignored"""
         mock_module = Mock()
         mock_module.check_mode = False
         mock_array = array_with_transport()
@@ -174,18 +201,23 @@ class TestDeleteSmtp:
 
         delete_smtp(mock_module, mock_array)
 
-        body = mock_array._api_client.call_api.call_args.kwargs["body"]
-        assert body["sender_domain"] == ""
-        assert body["user_name"] == ""
-        assert body["password"] == ""
+        bodies = [
+            c.kwargs["body"] for c in mock_array._api_client.call_api.call_args_list
+        ]
+        assert len(bodies) == 2
+        for body in bodies:
+            assert "sender_domain" not in body
+        assert bodies[1]["user_name"] == ""
+        assert bodies[1]["password"] == ""
         mock_module.exit_json.assert_called_once_with(changed=True)
 
-    def test_delete_smtp_dict_body_reaches_the_transport_unchanged(self):
+    def test_delete_smtp_clears_relay_host_alone_then_the_rest(self):
         """Hardware: neither a model subclass nor a swapped as_request_dict
         on the model class got relay_host: null onto the wire ("Not a valid
-        hostname" both times), so the body bypasses the models altogether:
-        a plain dict handed to the client's transport, which keeps None and
-        serialises it as null.
+        hostname" both times), so the bodies bypass the models altogether:
+        plain dicts handed to the client's transport, which keeps None and
+        serialises it as null. The null only clears the relay host when it
+        is sent on its own, so the remaining fields follow in a second PATCH.
         """
         mock_module = Mock()
         mock_module.check_mode = False
@@ -195,25 +227,54 @@ class TestDeleteSmtp:
         delete_smtp(mock_module, mock_array)
 
         mock_array.patch_smtp_servers.assert_not_called()
-        mock_array._api_client.call_api.assert_called_once()
-        args, kwargs = mock_array._api_client.call_api.call_args
-        assert args == ("/api/2.54/smtp-servers", "PATCH")
-        body = kwargs["body"]
-        assert type(body) is dict  # pylint: disable=unidiomatic-typecheck
-        assert body == CLEARED_BODY
-        assert "relay_host" in body and body["relay_host"] is None
+        assert mock_array._api_client.call_api.call_count == 2
+        first, second = mock_array._api_client.call_api.call_args_list
+        for call in (first, second):
+            args, kwargs = call
+            assert args == ("/api/2.54/smtp-servers", "PATCH")
+            body = kwargs["body"]
+            assert type(body) is dict  # pylint: disable=unidiomatic-typecheck
+            assert kwargs["header_params"]["Content-Type"] == "application/json"
+            assert kwargs["header_params"]["Accept"] == "application/json"
+            assert kwargs["header_params"]["X-Request-ID"]
+            # the client's own session header is a default header of its
+            # transport, so nothing auth-related is sent explicitly
+            assert kwargs["auth_settings"] == []
+            assert "Authorization" not in kwargs["header_params"]
+            assert "x-auth-token" not in kwargs["header_params"]
+            assert kwargs["_request_timeout"] == 15
+        relay_body = first.kwargs["body"]
+        assert relay_body == RELAY_BODY
+        assert "relay_host" in relay_body and relay_body["relay_host"] is None
         # what json.dumps, the transport's encoder, puts on the wire
-        assert json.loads(json.dumps(body))["relay_host"] is None
-        assert '"relay_host": null' in json.dumps(body)
-        assert kwargs["header_params"]["Content-Type"] == "application/json"
-        assert kwargs["header_params"]["Accept"] == "application/json"
-        assert kwargs["header_params"]["X-Request-ID"]
-        # the client's own session header is a default header of its
-        # transport, so nothing auth-related is sent explicitly
-        assert kwargs["auth_settings"] == []
-        assert "Authorization" not in kwargs["header_params"]
-        assert "x-auth-token" not in kwargs["header_params"]
-        assert kwargs["_request_timeout"] == 15
+        assert json.loads(json.dumps(relay_body))["relay_host"] is None
+        assert json.dumps(relay_body) == '{"relay_host": null}'
+        assert second.kwargs["body"] == CLEARED_BODY
+        assert "relay_host" not in second.kwargs["body"]
+        mock_module.exit_json.assert_called_once_with(changed=True)
+
+    def test_delete_smtp_without_relay_host_is_a_single_patch(self):
+        """No relay host set: nothing to null, only the "" PATCH is sent"""
+        mock_module = Mock()
+        mock_module.check_mode = False
+        mock_array = array_with_transport()
+        mock_array.get_smtp_servers.return_value.items = [
+            FakeSmtpServer(
+                name="smtp",
+                sender_domain="test.com",
+                relay_host=None,
+                encryption_mode="starttls",
+                user_name="smtp_user",
+                sender_username=None,
+                subject_prefix=None,
+                body_prefix=None,
+            )
+        ]
+
+        delete_smtp(mock_module, mock_array)
+
+        mock_array._api_client.call_api.assert_called_once()
+        assert mock_array._api_client.call_api.call_args.kwargs["body"] == CLEARED_BODY
         mock_module.exit_json.assert_called_once_with(changed=True)
 
     def test_delete_smtp_uses_the_clients_rest_version(self):
@@ -225,11 +286,13 @@ class TestDeleteSmtp:
 
         delete_smtp(mock_module, mock_array)
 
-        args = mock_array._api_client.call_api.call_args.args
-        assert args[0] == "/api/2.36/smtp-servers"
+        for call in mock_array._api_client.call_api.call_args_list:
+            assert call.args[0] == "/api/2.36/smtp-servers"
 
-    def test_delete_smtp_array_error_fails_the_module(self):
-        """An array refusal surfaces through fail_json with the array's text"""
+    def test_delete_smtp_relay_host_error_fails_the_module(self):
+        """An array refusal of the first PATCH surfaces through fail_json
+        with the array's text, and the second PATCH is never sent
+        """
         mock_module = Mock()
         mock_module.check_mode = False
         mock_module.fail_json.side_effect = SystemExit(1)
@@ -245,8 +308,37 @@ class TestDeleteSmtp:
         with pytest.raises(SystemExit):
             delete_smtp(mock_module, mock_array)
 
+        mock_array._api_client.call_api.assert_called_once()
+        assert mock_array._api_client.call_api.call_args.kwargs["body"] == RELAY_BODY
         mock_module.fail_json.assert_called_once_with(
             msg="Delete SMTP settings failed. Error: Not a valid hostname",
+            status_code=400,
+            changed=False,
+        )
+        mock_module.exit_json.assert_not_called()
+
+    def test_delete_smtp_second_patch_error_fails_the_module(self):
+        """A refusal of the second PATCH is reported the same way"""
+        mock_module = Mock()
+        mock_module.check_mode = False
+        mock_module.fail_json.side_effect = SystemExit(1)
+        mock_array = array_with_transport()
+        mock_array.get_smtp_servers.return_value.items = [configured_smtp()]
+        mock_array._api_client.call_api.side_effect = [
+            Mock(status_code=200),
+            FakeApiException(
+                400, '{"errors": [{"message": "Invalid encryption mode"}]}'
+            ),
+        ]
+
+        import pytest
+
+        with pytest.raises(SystemExit):
+            delete_smtp(mock_module, mock_array)
+
+        assert mock_array._api_client.call_api.call_count == 2
+        mock_module.fail_json.assert_called_once_with(
+            msg="Delete SMTP settings failed. Error: Invalid encryption mode",
             status_code=400,
             changed=False,
         )
@@ -432,7 +524,7 @@ class TestDeleteSmtpSuccess:
 
         delete_smtp(mock_module, mock_array)
 
-        mock_array._api_client.call_api.assert_called_once()
+        assert mock_array._api_client.call_api.call_count == 2
         mock_module.fail_json.assert_not_called()
         mock_module.exit_json.assert_called_once_with(changed=True)
 

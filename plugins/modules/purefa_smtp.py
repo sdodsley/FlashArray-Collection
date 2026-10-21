@@ -30,6 +30,9 @@ options:
   state:
     description:
     - Set or delete SMTP configuration
+    - I(state=absent) clears the relay host, user, password, encryption mode,
+      sender and prefixes. The sender domain is kept, because the array
+      refuses to clear it; set a new value with I(state=present) instead.
     default: present
     type: str
     choices: [ absent, present ]
@@ -217,12 +220,27 @@ def patch_smtp_servers_raw(array, body):
 
 
 def delete_smtp(module, array):
-    """Delete SMTP settings"""
-    changed = _get_current_smtp(array) != CLEARED_SMTP
+    """Clear the SMTP settings.
+
+    Hardware rules (Purity 6.10.6): the relay host is cleared only by a null
+    sent on its own (an empty string is "Not a valid hostname"); the sender
+    domain cannot be cleared at all (an empty string is refused and a null is
+    ignored), so it is left as it is; the remaining fields clear with "".
+    """
+    current = _get_current_smtp(array)
+    clearable = {k: v for k, v in CLEARED_SMTP.items() if k != "sender_domain"}
+    changed = {k: current.get(k, "") for k in clearable} != clearable
     if changed and not module.check_mode:
-        body = dict(CLEARED_SMTP, password="")
-        # "" is "Not a valid hostname" to the array; null clears it
-        body["relay_host"] = None
+        if current.get("relay_host"):
+            status_code, error = patch_smtp_servers_raw(array, {"relay_host": None})
+            if error is not None:
+                module.fail_json(
+                    msg="Delete SMTP settings failed. Error: {0}".format(error),
+                    status_code=status_code,
+                    changed=False,
+                )
+        body = {k: "" for k in clearable if k != "relay_host"}
+        body["password"] = ""
         status_code, error = patch_smtp_servers_raw(array, body)
         if error is not None:
             module.fail_json(

@@ -28,6 +28,9 @@ description:
   and reports no change; it cannot tell a token created by this run from
   one that already existed.
 - Use I(recreate=true) to force a new token. This always reports a change.
+- I(timeout) gives the new token a lifetime. The array only accepts a
+  lifetime when the token is created, so a timeout replaces the existing
+  token on every run and always reports a change, exactly like I(recreate).
 - I(state=absent) deletes the token and reports a change.
 author:
 - Everpure Ansible Team (@sdodsley) <pure-ansible-team@everpuredata.com>
@@ -61,6 +64,10 @@ options:
     description:
       - The duration of API token validity.
       - Valid values are weeks (w), days(d), hours(h), minutes(m) and seconds(s).
+      - Only used with I(state=present). The existing token is deleted and a
+        new one created with this lifetime, so this is always a change.
+      - Requires Purity 6.x, where the REST 1.x apitoken endpoint accepts a
+        token lifetime.
     type: str
   disable_warnings:
     description:
@@ -101,25 +108,14 @@ purefa_token:
 """
 
 from ansible.module_utils.basic import AnsibleModule
-from ansible_collections.everpure.flasharray.plugins.module_utils.purefa import (
-    get_array,
-)
 from ansible_collections.everpure.flasharray.plugins.module_utils.common import (
     convert_time_to_millisecs,
 )
-from ansible_collections.everpure.flasharray.plugins.module_utils.api_helpers import (
-    check_response,
-)
-from ansible_collections.everpure.flasharray.plugins.module_utils.version import (
-    LooseVersion,
-)
 from os import environ
 import platform
-from types import SimpleNamespace
 
 VERSION = 1.5
 USER_AGENT_BASE = "Ansible_token"
-TIMEOUT_API_VERSION = "2.2"
 
 HAS_URLLIB3 = True
 try:
@@ -244,29 +240,6 @@ def token_from(result):
     return None
 
 
-def get_token_array(module, api_token):
-    """Open the REST 2 client for the timeout path with ``api_token`` only.
-
-    ``get_array`` reads every credential it finds in the module parameters,
-    and this module's ``username``/``password`` must not take part in the
-    REST 2 login: the array refuses them ("Unable to list user for API
-    token") while a login with the user's own API token works, even for a
-    readonly user. ``get_array`` is therefore given a view of the module
-    that carries only the array address, the token just created or read
-    back, and the warnings switch; ``fail_json`` is the module's own.
-    """
-    view = SimpleNamespace(
-        params={
-            "fa_url": module.params["fa_url"],
-            "api_token": api_token,
-            "disable_warnings": module.params["disable_warnings"],
-        },
-        fail_json=module.fail_json,
-        warn=module.warn,
-    )
-    return get_array(view)
-
-
 def main():
     argument_spec = dict(
         fa_url=dict(required=False),
@@ -289,20 +262,40 @@ def main():
     state = module.params["state"]
     recreate = module.params["recreate"]
 
+    # The lifetime can only be given when the token is created: REST 1.x
+    # ``POST admin/<user>/apitoken`` takes ``{"timeout": <milliseconds>}``
+    # (Purity 6.x) and the purestorage client passes extra keyword
+    # arguments of create_api_token into that request body. A timeout
+    # therefore replaces the token like recreate does. The REST 2 token
+    # endpoints are not used: deleting the session user's token there
+    # invalidated the session itself ("Invalid session").
+    create_kwargs = {}
+    if module.params["timeout"] and state == "present":
+        ttl = convert_time_to_millisecs(module.params["timeout"])
+        if ttl == 0:
+            module.fail_json(
+                msg="Invalid timeout {0}: use a whole number of weeks (w), "
+                "days (d), hours (h), minutes (m) or seconds (s)".format(
+                    module.params["timeout"]
+                )
+            )
+        create_kwargs["timeout"] = ttl
+        recreate = True
+
     # Reading the token with get_api_token creates one when the user has
     # none, so find out whether a token exists first and only read it back
     # once it is known to exist. Note that get_session has already logged
     # in with username/password, which creates the token when the user had
     # none, so for state=present this normally reads back and reports no
-    # change; recreate is the way to force a new token.
+    # change; recreate (or a timeout) is the way to force a new token.
     has_token = token_exists(array, username)
     result = {}
     if state == "present" and not has_token:
-        result = array.create_api_token(admin=username)
+        result = array.create_api_token(admin=username, **create_kwargs)
         changed = True
     elif state == "present" and recreate:
         array.delete_api_token(admin=username)
-        result = array.create_api_token(admin=username)
+        result = array.create_api_token(admin=username, **create_kwargs)
         changed = True
     elif state == "present":
         result = array.get_api_token(admin=username)
@@ -310,34 +303,7 @@ def main():
         result = array.delete_api_token(admin=username)
         changed = True
 
-    api_token = token_from(result)
-
-    if module.params["timeout"] and state == "present":
-        if not api_token:
-            module.fail_json(
-                msg="Failed to read back the API token for {0}, so its "
-                "lifetime cannot be set".format(username)
-            )
-        # Log in to REST 2 with the token just created or read back, and
-        # with nothing else: username/password are refused there.
-        array6 = get_token_array(module, api_token)
-        # The lifetime is a REST 2 feature, so compare against the REST 2
-        # version, not the REST 1 list the purestorage client reports.
-        if LooseVersion(TIMEOUT_API_VERSION) <= LooseVersion(array6.get_rest_version()):
-            ttl = convert_time_to_millisecs(module.params["timeout"])
-            if ttl != 0:
-                changed = True
-                array6.delete_admins_api_tokens(names=[username])
-                res = array6.post_admins_api_tokens(names=[username], timeout=ttl)
-                check_response(res, module, "Failed to set token lifetime")
-                api_token = list(res.items)[0].api_token.token
-        else:
-            module.warn(
-                "timeout ignored: token lifetimes need REST {0} or higher".format(
-                    TIMEOUT_API_VERSION
-                )
-            )
-    module.exit_json(changed=changed, purefa_token=api_token)
+    module.exit_json(changed=changed, purefa_token=token_from(result))
 
 
 if __name__ == "__main__":

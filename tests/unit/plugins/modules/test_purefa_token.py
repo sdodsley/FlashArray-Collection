@@ -56,7 +56,6 @@ sys.modules["ansible_collections.everpure.flasharray.plugins.module_utils.versio
 
 from plugins.modules.purefa_token import (
     get_session,
-    get_token_array,
     main,
     token_exists,
     token_from,
@@ -103,11 +102,10 @@ class TestGetSession:
 class TestMain:
     """Tests for the create/recreate/delete decision and the changed flag"""
 
-    @patch("plugins.modules.purefa_token.get_array")
     @patch("plugins.modules.purefa_token.get_session")
     @patch("plugins.modules.purefa_token.AnsibleModule")
     def test_create_for_admin_without_token_is_a_change(
-        self, mock_ansible_module, mock_get_session, mock_get_array
+        self, mock_ansible_module, mock_get_session
     ):
         mock_module = _module()
         mock_ansible_module.return_value = mock_module
@@ -122,13 +120,11 @@ class TestMain:
         mock_module.exit_json.assert_called_once_with(
             changed=True, purefa_token="new-token"
         )
-        mock_get_array.assert_not_called()
 
-    @patch("plugins.modules.purefa_token.get_array")
     @patch("plugins.modules.purefa_token.get_session")
     @patch("plugins.modules.purefa_token.AnsibleModule")
     def test_missing_created_counts_as_absent(
-        self, mock_ansible_module, mock_get_session, mock_get_array
+        self, mock_ansible_module, mock_get_session
     ):
         mock_module = _module()
         mock_ansible_module.return_value = mock_module
@@ -144,11 +140,10 @@ class TestMain:
             changed=True, purefa_token="new-token"
         )
 
-    @patch("plugins.modules.purefa_token.get_array")
     @patch("plugins.modules.purefa_token.get_session")
     @patch("plugins.modules.purefa_token.AnsibleModule")
     def test_existing_token_without_recreate_is_not_a_change(
-        self, mock_ansible_module, mock_get_session, mock_get_array
+        self, mock_ansible_module, mock_get_session
     ):
         """This is the normal hardware outcome of state=present: the login
         in get_session (POST auth/apitoken) has already created the token
@@ -170,12 +165,9 @@ class TestMain:
             changed=False, purefa_token="old-token"
         )
 
-    @patch("plugins.modules.purefa_token.get_array")
     @patch("plugins.modules.purefa_token.get_session")
     @patch("plugins.modules.purefa_token.AnsibleModule")
-    def test_recreate_is_a_change(
-        self, mock_ansible_module, mock_get_session, mock_get_array
-    ):
+    def test_recreate_is_a_change(self, mock_ansible_module, mock_get_session):
         mock_module = _module(recreate=True)
         mock_ansible_module.return_value = mock_module
         session = Mock()
@@ -191,11 +183,10 @@ class TestMain:
             changed=True, purefa_token="new-token"
         )
 
-    @patch("plugins.modules.purefa_token.get_array")
     @patch("plugins.modules.purefa_token.get_session")
     @patch("plugins.modules.purefa_token.AnsibleModule")
     def test_absent_without_token_is_not_a_change(
-        self, mock_ansible_module, mock_get_session, mock_get_array
+        self, mock_ansible_module, mock_get_session
     ):
         mock_module = _module(state="absent")
         mock_ansible_module.return_value = mock_module
@@ -210,211 +201,109 @@ class TestMain:
 
 
 class TestTimeout:
-    """timeout is a REST 2 feature and must be gated on the REST 2 version"""
+    """The lifetime goes into the REST 1.x create call (POST
+    admin/<user>/apitoken with {"timeout": <ms>}, Purity 6.x) through the
+    purestorage client already in hand; the REST 2 token endpoints are not
+    used because deleting the session user's token there invalidated the
+    session ("Invalid session"). A timeout replaces the token like recreate.
+    """
 
-    @patch("plugins.modules.purefa_token.check_response")
     @patch("plugins.modules.purefa_token.convert_time_to_millisecs")
-    @patch("plugins.modules.purefa_token.get_array")
     @patch("plugins.modules.purefa_token.get_session")
     @patch("plugins.modules.purefa_token.AnsibleModule")
-    def test_timeout_applied_on_current_rest(
-        self,
-        mock_ansible_module,
-        mock_get_session,
-        mock_get_array,
-        mock_convert,
-        mock_check_response,
+    def test_timeout_recreates_the_token_with_a_lifetime(
+        self, mock_ansible_module, mock_get_session, mock_convert
     ):
-        """ "2.2" in [REST 1 versions] was never true, so timeout was ignored"""
         mock_module = _module(timeout="1d")
         mock_ansible_module.return_value = mock_module
         session = Mock()
         session.list_admins.return_value = [_admin(created="2026-10-20T10:00:00Z")]
         session.get_api_token.return_value = {"api_token": "old-token"}
+        session.create_api_token.return_value = {"api_token": "timed-token"}
         mock_get_session.return_value = session
         mock_convert.return_value = 86400000
-        array6 = Mock()
-        array6.get_rest_version.return_value = "2.54"
-        item = Mock()
-        item.api_token.token = "timed-token"
-        array6.post_admins_api_tokens.return_value = Mock(status_code=200, items=[item])
-        mock_get_array.return_value = array6
 
         main()
 
-        array6.delete_admins_api_tokens.assert_called_once_with(names=["pureuser"])
-        array6.post_admins_api_tokens.assert_called_once_with(
-            names=["pureuser"], timeout=86400000
+        mock_convert.assert_called_once_with("1d")
+        session.delete_api_token.assert_called_once_with(admin="pureuser")
+        session.create_api_token.assert_called_once_with(
+            admin="pureuser", timeout=86400000
         )
-        mock_module.exit_json.assert_called_once_with(
-            changed=True, purefa_token="timed-token"
-        )
-
-    @patch("plugins.modules.purefa_token.check_response")
-    @patch("plugins.modules.purefa_token.convert_time_to_millisecs")
-    @patch("plugins.modules.purefa_token.get_array")
-    @patch("plugins.modules.purefa_token.get_session")
-    @patch("plugins.modules.purefa_token.AnsibleModule")
-    def test_rest2_login_uses_the_token_only(
-        self,
-        mock_ansible_module,
-        mock_get_session,
-        mock_get_array,
-        mock_convert,
-        mock_check_response,
-    ):
-        """Hardware: get_array(module) with username/password still in the
-        parameters made the REST 2 login fail ("Unable to list user for API
-        token"); a login with the user's API token works even for a readonly
-        user. get_array therefore sees fa_url, the token read back and
-        disable_warnings, and nothing else; its fail_json is the module's.
-        """
-        mock_module = _module(timeout="1d", disable_warnings=True)
-        mock_ansible_module.return_value = mock_module
-        session = Mock()
-        session.list_admins.return_value = [_admin(created="2026-10-20T10:00:00Z")]
-        session.get_api_token.return_value = {"api_token": "old-token"}
-        mock_get_session.return_value = session
-        mock_convert.return_value = 86400000
-        array6 = Mock()
-        array6.get_rest_version.return_value = "2.54"
-        item = Mock()
-        item.api_token.token = "timed-token"
-        array6.post_admins_api_tokens.return_value = Mock(status_code=200, items=[item])
-        mock_get_array.return_value = array6
-
-        main()
-
-        mock_get_array.assert_called_once()
-        view = mock_get_array.call_args.args[0]
-        assert view is not mock_module
-        assert view.params == {
-            "fa_url": "10.10.10.2",
-            "api_token": "old-token",
-            "disable_warnings": True,
-        }
-        assert "username" not in view.params
-        assert "password" not in view.params
-        assert view.fail_json is mock_module.fail_json
-        # the module's own parameters were not rewritten
-        assert "api_token" not in mock_module.params
-
-    @patch("plugins.modules.purefa_token.check_response")
-    @patch("plugins.modules.purefa_token.convert_time_to_millisecs")
-    @patch("plugins.modules.purefa_token.get_array")
-    @patch("plugins.modules.purefa_token.get_session")
-    @patch("plugins.modules.purefa_token.AnsibleModule")
-    def test_recreate_with_timeout_logs_in_with_the_new_token(
-        self,
-        mock_ansible_module,
-        mock_get_session,
-        mock_get_array,
-        mock_convert,
-        mock_check_response,
-    ):
-        """The REST 2 login uses the token recreate just made, not the one
-        it replaced, and the lifetime-bearing token is the one returned
-        """
-        mock_module = _module(timeout="1d", recreate=True)
-        mock_ansible_module.return_value = mock_module
-        session = Mock()
-        session.list_admins.return_value = [_admin(created="2026-10-20T10:00:00Z")]
-        session.get_api_token.return_value = {"api_token": "old-token"}
-        session.create_api_token.return_value = {"api_token": "new-token"}
-        mock_get_session.return_value = session
-        mock_convert.return_value = 86400000
-        array6 = Mock()
-        array6.get_rest_version.return_value = "2.54"
-        item = Mock()
-        item.api_token.token = "timed-token"
-        array6.post_admins_api_tokens.return_value = Mock(status_code=200, items=[item])
-        mock_get_array.return_value = array6
-
-        main()
-
         session.get_api_token.assert_not_called()
-        assert mock_get_array.call_args.args[0].params["api_token"] == "new-token"
-        array6.delete_admins_api_tokens.assert_called_once_with(names=["pureuser"])
-        array6.post_admins_api_tokens.assert_called_once_with(
-            names=["pureuser"], timeout=86400000
+        mock_module.exit_json.assert_called_once_with(
+            changed=True, purefa_token="timed-token"
+        )
+
+    @patch("plugins.modules.purefa_token.convert_time_to_millisecs")
+    @patch("plugins.modules.purefa_token.get_session")
+    @patch("plugins.modules.purefa_token.AnsibleModule")
+    def test_timeout_for_admin_without_token_creates_once(
+        self, mock_ansible_module, mock_get_session, mock_convert
+    ):
+        """No delete when there is nothing to delete; the lifetime still goes
+        into the one create call
+        """
+        mock_module = _module(timeout="2w")
+        mock_ansible_module.return_value = mock_module
+        session = Mock()
+        session.list_admins.return_value = [_admin(created=None)]
+        session.create_api_token.return_value = {"api_token": "timed-token"}
+        mock_get_session.return_value = session
+        mock_convert.return_value = 1209600000
+
+        main()
+
+        session.delete_api_token.assert_not_called()
+        session.create_api_token.assert_called_once_with(
+            admin="pureuser", timeout=1209600000
         )
         mock_module.exit_json.assert_called_once_with(
             changed=True, purefa_token="timed-token"
         )
 
-    @patch("plugins.modules.purefa_token.get_array")
+    @patch("plugins.modules.purefa_token.convert_time_to_millisecs")
     @patch("plugins.modules.purefa_token.get_session")
     @patch("plugins.modules.purefa_token.AnsibleModule")
-    def test_timeout_without_a_readable_token_fails_before_rest2(
-        self, mock_ansible_module, mock_get_session, mock_get_array
+    def test_invalid_timeout_fails_before_touching_the_token(
+        self, mock_ansible_module, mock_get_session, mock_convert
     ):
-        mock_module = _module(timeout="1d")
+        """convert_time_to_millisecs answers 0 for a bad unit or number; the
+        old code silently ignored that and left the token alone
+        """
+        mock_module = _module(timeout="1x")
         mock_ansible_module.return_value = mock_module
         session = Mock()
-        session.list_admins.return_value = [_admin(created="2026-10-20T10:00:00Z")]
-        session.get_api_token.return_value = {}
         mock_get_session.return_value = session
+        mock_convert.return_value = 0
 
         with pytest.raises(SystemExit):
             main()
 
-        mock_get_array.assert_not_called()
-        assert "pureuser" in mock_module.fail_json.call_args.kwargs["msg"]
+        assert "1x" in mock_module.fail_json.call_args.kwargs["msg"]
+        session.delete_api_token.assert_not_called()
+        session.create_api_token.assert_not_called()
         mock_module.exit_json.assert_not_called()
 
-    @patch("plugins.modules.purefa_token.get_array")
+    @patch("plugins.modules.purefa_token.convert_time_to_millisecs")
     @patch("plugins.modules.purefa_token.get_session")
     @patch("plugins.modules.purefa_token.AnsibleModule")
-    def test_timeout_warns_below_rest_2_2(
-        self, mock_ansible_module, mock_get_session, mock_get_array
+    def test_timeout_is_ignored_for_absent(
+        self, mock_ansible_module, mock_get_session, mock_convert
     ):
-        mock_module = _module(timeout="1d")
+        mock_module = _module(state="absent", timeout="1d")
         mock_ansible_module.return_value = mock_module
         session = Mock()
         session.list_admins.return_value = [_admin(created="2026-10-20T10:00:00Z")]
-        session.get_api_token.return_value = {"api_token": "old-token"}
+        session.delete_api_token.return_value = {"api_token": None}
         mock_get_session.return_value = session
-        array6 = Mock()
-        array6.get_rest_version.return_value = "2.1"
-        mock_get_array.return_value = array6
 
         main()
 
-        array6.delete_admins_api_tokens.assert_not_called()
-        array6.post_admins_api_tokens.assert_not_called()
-        mock_module.warn.assert_called_once()
-        mock_module.exit_json.assert_called_once_with(
-            changed=False, purefa_token="old-token"
-        )
-
-
-class TestGetTokenArray:
-    """get_token_array hands get_array a token-only view of the module"""
-
-    @patch("plugins.modules.purefa_token.get_array")
-    def test_view_carries_url_token_and_warnings_only(self, mock_get_array):
-        mock_module = _module(disable_warnings=True)
-
-        result = get_token_array(mock_module, "the-token")
-
-        assert result is mock_get_array.return_value
-        view = mock_get_array.call_args.args[0]
-        assert view.params == {
-            "fa_url": "10.10.10.2",
-            "api_token": "the-token",
-            "disable_warnings": True,
-        }
-        assert view.fail_json is mock_module.fail_json
-        assert view.warn is mock_module.warn
-
-    @patch("plugins.modules.purefa_token.get_array")
-    def test_env_url_is_left_to_get_array(self, mock_get_array):
-        """fa_url may come from PUREFA_URL; get_array does that lookup"""
-        mock_module = _module(fa_url=None)
-
-        get_token_array(mock_module, "the-token")
-
-        assert mock_get_array.call_args.args[0].params["fa_url"] is None
+        mock_convert.assert_not_called()
+        session.delete_api_token.assert_called_once_with(admin="pureuser")
+        session.create_api_token.assert_not_called()
+        mock_module.exit_json.assert_called_once_with(changed=True, purefa_token=None)
 
 
 class TestTokenFrom:
@@ -505,11 +394,10 @@ class TestTokenExists:
 
         assert token_exists(array, "pureuser") is True
 
-    @patch("plugins.modules.purefa_token.get_array")
     @patch("plugins.modules.purefa_token.get_session")
     @patch("plugins.modules.purefa_token.AnsibleModule")
     def test_admin_listed_without_token_is_created_explicitly(
-        self, mock_ansible_module, mock_get_session, mock_get_array
+        self, mock_ansible_module, mock_get_session
     ):
         """When the listing does report a user without a token, the token is
         created with create_api_token and never read with get_api_token,
@@ -532,11 +420,10 @@ class TestTokenExists:
             changed=True, purefa_token="new-token"
         )
 
-    @patch("plugins.modules.purefa_token.get_array")
     @patch("plugins.modules.purefa_token.get_session")
     @patch("plugins.modules.purefa_token.AnsibleModule")
     def test_existing_token_is_read_back_without_creating(
-        self, mock_ansible_module, mock_get_session, mock_get_array
+        self, mock_ansible_module, mock_get_session
     ):
         mock_module = _module()
         mock_ansible_module.return_value = mock_module
@@ -553,12 +440,9 @@ class TestTokenExists:
             changed=False, purefa_token="old-token"
         )
 
-    @patch("plugins.modules.purefa_token.get_array")
     @patch("plugins.modules.purefa_token.get_session")
     @patch("plugins.modules.purefa_token.AnsibleModule")
-    def test_absent_with_token_deletes(
-        self, mock_ansible_module, mock_get_session, mock_get_array
-    ):
+    def test_absent_with_token_deletes(self, mock_ansible_module, mock_get_session):
         mock_module = _module(state="absent")
         mock_ansible_module.return_value = mock_module
         session = Mock()
@@ -580,11 +464,10 @@ class TestLoginCreatedToken:
     a new token and reports it, and absent deletes and reports it.
     """
 
-    @patch("plugins.modules.purefa_token.get_array")
     @patch("plugins.modules.purefa_token.get_session")
     @patch("plugins.modules.purefa_token.AnsibleModule")
     def test_present_with_unreadable_listing_reads_back_without_change(
-        self, mock_ansible_module, mock_get_session, mock_get_array
+        self, mock_ansible_module, mock_get_session
     ):
         mock_module = _module()
         mock_ansible_module.return_value = mock_module
@@ -601,11 +484,10 @@ class TestLoginCreatedToken:
             changed=False, purefa_token="login-created"
         )
 
-    @patch("plugins.modules.purefa_token.get_array")
     @patch("plugins.modules.purefa_token.get_session")
     @patch("plugins.modules.purefa_token.AnsibleModule")
     def test_recreate_with_unreadable_listing_is_a_change(
-        self, mock_ansible_module, mock_get_session, mock_get_array
+        self, mock_ansible_module, mock_get_session
     ):
         mock_module = _module(recreate=True)
         mock_ansible_module.return_value = mock_module
@@ -622,11 +504,10 @@ class TestLoginCreatedToken:
             changed=True, purefa_token="new-token"
         )
 
-    @patch("plugins.modules.purefa_token.get_array")
     @patch("plugins.modules.purefa_token.get_session")
     @patch("plugins.modules.purefa_token.AnsibleModule")
     def test_absent_with_unreadable_listing_deletes(
-        self, mock_ansible_module, mock_get_session, mock_get_array
+        self, mock_ansible_module, mock_get_session
     ):
         mock_module = _module(state="absent")
         mock_ansible_module.return_value = mock_module
