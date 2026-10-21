@@ -109,9 +109,6 @@ EXAMPLES = r"""
 RETURN = r"""
 """
 
-import json
-import uuid
-
 HAS_PURESTORAGE = True
 try:
     from pypureclient.flasharray import SmtpServer
@@ -137,11 +134,10 @@ SMTP_FIELDS = (
     "body_prefix",
 )
 
-# The settings as read back after ``state: absent``, and therefore the state
-# in which there is nothing left to delete. relay_host is cleared with null
-# on the wire (see delete_smtp) and reads back as unset, i.e. "".
+# The settings ``state: absent`` clears, and therefore the state in which
+# there is nothing left to delete. sender_domain is not among them: the
+# array refuses to clear it (see delete_smtp).
 CLEARED_SMTP = {
-    "sender_domain": "",
     "relay_host": "",
     "user_name": "",
     "encryption_mode": "",
@@ -165,89 +161,21 @@ def _get_current_smtp(array):
     return {field: getattr(current_smtp, field, "") or "" for field in SMTP_FIELDS}
 
 
-def _api_error_message(error):
-    """The array's error text from an exception raised by the SDK transport.
-
-    The transport's ApiException carries the response body as JSON, either
-    ``{"errors": [{"message": ...}]}`` from the array or ``{"message": ...}``
-    from the gateway on 403/429.
-    """
-    try:
-        body = json.loads(getattr(error, "body", None))
-        errors = body.get("errors")
-        return (errors[0] if errors else body).get("message") or str(error)
-    except (TypeError, ValueError, AttributeError, IndexError, KeyError):
-        return str(error)
-
-
-def patch_smtp_servers_raw(array, body):
-    """PATCH /smtp-servers with ``body``, a dict, serialised exactly as given.
-
-    The array refuses ``relay_host: ""`` ("Not a valid hostname") and only
-    clears the relay host with ``relay_host: null``, but no SDK model can put
-    a null on the wire: ``as_request_dict`` drops every None field, and the
-    client re-validates the body into a fresh model before serialising it,
-    so neither a subclass nor a swapped method on the model class survives
-    to the transport. The transport itself serialises a dict as it is
-    (``sanitize_for_serialization`` keeps None values and ``json.dumps``
-    writes them as null), so the body is handed to the client's transport
-    directly, with the session header and user agent the client has already
-    set as default headers.
-
-    Returns ``(status_code, error_message)``; ``error_message`` is None when
-    the array accepted the request.
-    """
-    headers = {
-        "Accept": "application/json",
-        "Content-Type": "application/json",
-        "X-Request-ID": str(uuid.uuid4()),
-    }
-    try:
-        response = array._api_client.call_api(
-            "/api/{0}/smtp-servers".format(array.get_rest_version()),
-            "PATCH",
-            path_params={},
-            query_params=[],
-            header_params=headers,
-            body=body,
-            response_types_map={},
-            auth_settings=[],
-            _request_timeout=getattr(array, "_timeout", None),
-        )
-    except Exception as error:  # pylint: disable=broad-except
-        return getattr(error, "status", None), _api_error_message(error)
-    return response.status_code, None
-
-
 def delete_smtp(module, array):
     """Clear the SMTP settings.
 
-    Hardware rules (Purity 6.10.6): the relay host is cleared only by a null
-    sent on its own (an empty string is "Not a valid hostname"); the sender
-    domain cannot be cleared at all (an empty string is refused and a null is
-    ignored), so it is left as it is; the remaining fields clear with "".
+    Hardware rules (Purity 6.10.6, wire-level probe): every setting clears
+    with "" (``relay_host: null`` is accepted but changes nothing), except
+    the sender domain, which the array refuses to clear ("" is "Not a valid
+    hostname" and null is ignored) and is therefore left as it is. The
+    credentials are only accepted together, so the password goes with the
+    user.
     """
     current = _get_current_smtp(array)
-    clearable = {k: v for k, v in CLEARED_SMTP.items() if k != "sender_domain"}
-    changed = {k: current.get(k, "") for k in clearable} != clearable
+    changed = {k: current.get(k, "") for k in CLEARED_SMTP} != CLEARED_SMTP
     if changed and not module.check_mode:
-        if current.get("relay_host"):
-            status_code, error = patch_smtp_servers_raw(array, {"relay_host": None})
-            if error is not None:
-                module.fail_json(
-                    msg="Delete SMTP settings failed. Error: {0}".format(error),
-                    status_code=status_code,
-                    changed=False,
-                )
-        body = {k: "" for k in clearable if k != "relay_host"}
-        body["password"] = ""
-        status_code, error = patch_smtp_servers_raw(array, body)
-        if error is not None:
-            module.fail_json(
-                msg="Delete SMTP settings failed. Error: {0}".format(error),
-                status_code=status_code,
-                changed=False,
-            )
+        res = array.patch_smtp_servers(smtp=SmtpServer(password="", **CLEARED_SMTP))
+        check_response(res, module, "Delete SMTP settings failed")
     module.exit_json(changed=changed)
 
 

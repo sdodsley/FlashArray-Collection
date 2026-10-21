@@ -48,21 +48,16 @@ sys.modules["ansible_collections.everpure.flasharray.plugins.module_utils.versio
     mock_version_module
 )
 
-import json
+import pytest
 
-from plugins.modules.purefa_smtp import (
-    delete_smtp,
-    create_smtp,
-    patch_smtp_servers_raw,
-    _api_error_message,
-)
+from plugins.modules.purefa_smtp import delete_smtp, create_smtp
 
-# What state=absent must put on the wire (Purity 6.10.6): the relay host is
-# cleared with null in a PATCH of its own, then every other clearable setting
-# with "" and the credentials together. sender_domain is in neither body: the
-# array refuses "" and ignores null, so it is left alone.
-RELAY_BODY = {"relay_host": None}
+# What state=absent must put on the wire (Purity 6.10.6, wire-level probe):
+# one SDK PATCH with every clearable setting "" and the credentials together.
+# sender_domain is not in it: the array refuses "" and ignores null, so it
+# is left alone.
 CLEARED_BODY = {
+    "relay_host": "",
     "user_name": "",
     "password": "",
     "encryption_mode": "",
@@ -70,26 +65,6 @@ CLEARED_BODY = {
     "subject_prefix": "",
     "body_prefix": "",
 }
-
-
-class FakeApiException(Exception):
-    """Stand-in for the SDK transport's ApiException: the status and the
-    decoded response body are attributes, as the client leaves them
-    """
-
-    def __init__(self, status, body):
-        super().__init__("({0})\nHTTP response body: {1}".format(status, body))
-        self.status = status
-        self.body = body
-
-
-def array_with_transport(status_code=200):
-    """A mock client whose transport accepts the request with status_code"""
-    mock_array = Mock()
-    mock_array.get_rest_version.return_value = "2.54"
-    mock_array._timeout = 15
-    mock_array._api_client.call_api.return_value = Mock(status_code=status_code)
-    return mock_array
 
 
 class FakeSmtpServer:
@@ -140,7 +115,6 @@ class TestDeleteSmtp:
 
         mock_module.exit_json.assert_called_once_with(changed=True)
         mock_array.patch_smtp_servers.assert_not_called()
-        mock_array._api_client.call_api.assert_not_called()
 
     def test_delete_smtp_already_cleared(self):
         """Test delete_smtp is idempotent when SMTP is already cleared"""
@@ -163,7 +137,6 @@ class TestDeleteSmtp:
         delete_smtp(mock_module, mock_array)
 
         mock_array.patch_smtp_servers.assert_not_called()
-        mock_array._api_client.call_api.assert_not_called()
         mock_module.exit_json.assert_called_once_with(changed=False)
 
     def test_delete_smtp_remaining_sender_domain_is_not_a_change(self):
@@ -173,7 +146,7 @@ class TestDeleteSmtp:
         """
         mock_module = Mock()
         mock_module.check_mode = False
-        mock_array = array_with_transport()
+        mock_array = Mock()
         mock_array.get_smtp_servers.return_value.items = [
             FakeSmtpServer(
                 name="smtp",
@@ -189,81 +162,58 @@ class TestDeleteSmtp:
 
         delete_smtp(mock_module, mock_array)
 
-        mock_array._api_client.call_api.assert_not_called()
+        mock_array.patch_smtp_servers.assert_not_called()
         mock_module.exit_json.assert_called_once_with(changed=False)
 
-    def test_delete_smtp_leaves_sender_domain_alone(self):
-        """sender_domain is in neither body: "" is refused and null ignored"""
-        mock_module = Mock()
-        mock_module.check_mode = False
-        mock_array = array_with_transport()
-        mock_array.get_smtp_servers.return_value.items = [configured_smtp()]
-
-        delete_smtp(mock_module, mock_array)
-
-        bodies = [
-            c.kwargs["body"] for c in mock_array._api_client.call_api.call_args_list
-        ]
-        assert len(bodies) == 2
-        for body in bodies:
-            assert "sender_domain" not in body
-        assert bodies[1]["user_name"] == ""
-        assert bodies[1]["password"] == ""
-        mock_module.exit_json.assert_called_once_with(changed=True)
-
-    def test_delete_smtp_clears_relay_host_alone_then_the_rest(self):
-        """Hardware: neither a model subclass nor a swapped as_request_dict
-        on the model class got relay_host: null onto the wire ("Not a valid
-        hostname" both times), so the bodies bypass the models altogether:
-        plain dicts handed to the client's transport, which keeps None and
-        serialises it as null. The null only clears the relay host when it
-        is sent on its own, so the remaining fields follow in a second PATCH.
+    @patch("plugins.modules.purefa_smtp.SmtpServer")
+    @patch("plugins.modules.purefa_smtp.check_response")
+    def test_delete_smtp_is_one_patch_clearing_everything_but_sender_domain(
+        self, mock_check_response, mock_smtp_server
+    ):
+        """Wire-level probe (Purity 6.10.6): relay_host: "" clears the relay
+        host (null returns 200 and changes nothing); the earlier "Not a
+        valid hostname" came from sender_domain: "" in the same body. So one
+        ordinary SDK PATCH clears everything that can be cleared, with the
+        password alongside the user, and sender_domain is not sent at all.
         """
         mock_module = Mock()
         mock_module.check_mode = False
-        mock_array = array_with_transport()
+        mock_array = Mock()
         mock_array.get_smtp_servers.return_value.items = [configured_smtp()]
+        mock_array.patch_smtp_servers.return_value = Mock(status_code=200)
 
         delete_smtp(mock_module, mock_array)
 
-        mock_array.patch_smtp_servers.assert_not_called()
-        assert mock_array._api_client.call_api.call_count == 2
-        first, second = mock_array._api_client.call_api.call_args_list
-        for call in (first, second):
-            args, kwargs = call
-            assert args == ("/api/2.54/smtp-servers", "PATCH")
-            body = kwargs["body"]
-            assert type(body) is dict  # pylint: disable=unidiomatic-typecheck
-            assert kwargs["header_params"]["Content-Type"] == "application/json"
-            assert kwargs["header_params"]["Accept"] == "application/json"
-            assert kwargs["header_params"]["X-Request-ID"]
-            # the client's own session header is a default header of its
-            # transport, so nothing auth-related is sent explicitly
-            assert kwargs["auth_settings"] == []
-            assert "Authorization" not in kwargs["header_params"]
-            assert "x-auth-token" not in kwargs["header_params"]
-            assert kwargs["_request_timeout"] == 15
-        relay_body = first.kwargs["body"]
-        assert relay_body == RELAY_BODY
-        assert "relay_host" in relay_body and relay_body["relay_host"] is None
-        # what json.dumps, the transport's encoder, puts on the wire
-        assert json.loads(json.dumps(relay_body))["relay_host"] is None
-        assert json.dumps(relay_body) == '{"relay_host": null}'
-        assert second.kwargs["body"] == CLEARED_BODY
-        assert "relay_host" not in second.kwargs["body"]
+        mock_smtp_server.assert_called_once_with(**CLEARED_BODY)
+        assert "sender_domain" not in mock_smtp_server.call_args.kwargs
+        assert mock_smtp_server.call_args.kwargs["relay_host"] == ""
+        mock_array.patch_smtp_servers.assert_called_once_with(
+            smtp=mock_smtp_server.return_value
+        )
+        mock_check_response.assert_called_once_with(
+            mock_array.patch_smtp_servers.return_value,
+            mock_module,
+            "Delete SMTP settings failed",
+        )
         mock_module.exit_json.assert_called_once_with(changed=True)
 
-    def test_delete_smtp_without_relay_host_is_a_single_patch(self):
-        """No relay host set: nothing to null, only the "" PATCH is sent"""
+    @patch("plugins.modules.purefa_smtp.SmtpServer")
+    @patch("plugins.modules.purefa_smtp.check_response")
+    def test_delete_smtp_single_remaining_setting_still_clears_all(
+        self, mock_check_response, mock_smtp_server
+    ):
+        """One leftover setting is enough for a change, and the body is the
+        same full clear every time
+        """
         mock_module = Mock()
         mock_module.check_mode = False
-        mock_array = array_with_transport()
+        mock_array = Mock()
         mock_array.get_smtp_servers.return_value.items = [
             FakeSmtpServer(
                 name="smtp",
                 sender_domain="test.com",
                 relay_host=None,
-                encryption_mode="starttls",
+                encryption_mode=None,
                 user_name="smtp_user",
                 sender_username=None,
                 subject_prefix=None,
@@ -273,74 +223,33 @@ class TestDeleteSmtp:
 
         delete_smtp(mock_module, mock_array)
 
-        mock_array._api_client.call_api.assert_called_once()
-        assert mock_array._api_client.call_api.call_args.kwargs["body"] == CLEARED_BODY
+        mock_smtp_server.assert_called_once_with(**CLEARED_BODY)
+        mock_array.patch_smtp_servers.assert_called_once()
         mock_module.exit_json.assert_called_once_with(changed=True)
 
-    def test_delete_smtp_uses_the_clients_rest_version(self):
-        mock_module = Mock()
-        mock_module.check_mode = False
-        mock_array = array_with_transport()
-        mock_array.get_rest_version.return_value = "2.36"
-        mock_array.get_smtp_servers.return_value.items = [configured_smtp()]
-
-        delete_smtp(mock_module, mock_array)
-
-        for call in mock_array._api_client.call_api.call_args_list:
-            assert call.args[0] == "/api/2.36/smtp-servers"
-
-    def test_delete_smtp_relay_host_error_fails_the_module(self):
-        """An array refusal of the first PATCH surfaces through fail_json
-        with the array's text, and the second PATCH is never sent
-        """
+    @patch("plugins.modules.purefa_smtp.check_response")
+    def test_delete_smtp_array_error_fails_the_module(self, mock_check_response):
+        """An array refusal is reported through check_response -> fail_json"""
         mock_module = Mock()
         mock_module.check_mode = False
         mock_module.fail_json.side_effect = SystemExit(1)
-        mock_array = array_with_transport()
+        mock_array = Mock()
         mock_array.get_smtp_servers.return_value.items = [configured_smtp()]
-        mock_array._api_client.call_api.side_effect = FakeApiException(
-            400,
-            '{"errors": [{"message": "Not a valid hostname", "context": null}]}',
+        mock_array.patch_smtp_servers.return_value = Mock(
+            status_code=400, errors=[Mock(message="Not a valid hostname")]
         )
-
-        import pytest
+        mock_check_response.side_effect = lambda res, module, msg: module.fail_json(
+            msg="{0}. Error: {1}".format(msg, res.errors[0].message),
+            status_code=res.status_code,
+        )
 
         with pytest.raises(SystemExit):
             delete_smtp(mock_module, mock_array)
 
-        mock_array._api_client.call_api.assert_called_once()
-        assert mock_array._api_client.call_api.call_args.kwargs["body"] == RELAY_BODY
+        mock_array.patch_smtp_servers.assert_called_once()
         mock_module.fail_json.assert_called_once_with(
             msg="Delete SMTP settings failed. Error: Not a valid hostname",
             status_code=400,
-            changed=False,
-        )
-        mock_module.exit_json.assert_not_called()
-
-    def test_delete_smtp_second_patch_error_fails_the_module(self):
-        """A refusal of the second PATCH is reported the same way"""
-        mock_module = Mock()
-        mock_module.check_mode = False
-        mock_module.fail_json.side_effect = SystemExit(1)
-        mock_array = array_with_transport()
-        mock_array.get_smtp_servers.return_value.items = [configured_smtp()]
-        mock_array._api_client.call_api.side_effect = [
-            Mock(status_code=200),
-            FakeApiException(
-                400, '{"errors": [{"message": "Invalid encryption mode"}]}'
-            ),
-        ]
-
-        import pytest
-
-        with pytest.raises(SystemExit):
-            delete_smtp(mock_module, mock_array)
-
-        assert mock_array._api_client.call_api.call_count == 2
-        mock_module.fail_json.assert_called_once_with(
-            msg="Delete SMTP settings failed. Error: Invalid encryption mode",
-            status_code=400,
-            changed=False,
         )
         mock_module.exit_json.assert_not_called()
 
@@ -515,16 +424,18 @@ class TestCreateSmtp:
 class TestDeleteSmtpSuccess:
     """Additional tests for delete_smtp function"""
 
-    def test_delete_smtp_success(self):
+    @patch("plugins.modules.purefa_smtp.check_response")
+    def test_delete_smtp_success(self, mock_check_response):
         """Test delete_smtp successfully deletes"""
         mock_module = Mock()
         mock_module.check_mode = False
-        mock_array = array_with_transport()
+        mock_array = Mock()
         mock_array.get_smtp_servers.return_value.items = [configured_smtp()]
+        mock_array.patch_smtp_servers.return_value = Mock(status_code=200)
 
         delete_smtp(mock_module, mock_array)
 
-        assert mock_array._api_client.call_api.call_count == 2
+        mock_array.patch_smtp_servers.assert_called_once()
         mock_module.fail_json.assert_not_called()
         mock_module.exit_json.assert_called_once_with(changed=True)
 
@@ -929,81 +840,3 @@ class TestCreateSmtpClearFields:
 
         mock_array.patch_smtp_servers.assert_not_called()
         mock_module.exit_json.assert_called_once_with(changed=False)
-
-
-class TestPatchSmtpServersRaw:
-    """patch_smtp_servers_raw hands a dict body to the client's transport
-    and reports the outcome as (status_code, error_message)
-    """
-
-    def test_success_returns_status_and_no_error(self):
-        mock_array = array_with_transport(status_code=200)
-
-        assert patch_smtp_servers_raw(mock_array, {"relay_host": None}) == (
-            200,
-            None,
-        )
-
-    def test_body_is_passed_as_the_same_object(self):
-        mock_array = array_with_transport()
-        body = {"relay_host": None, "sender_domain": ""}
-
-        patch_smtp_servers_raw(mock_array, body)
-
-        assert mock_array._api_client.call_api.call_args.kwargs["body"] is body
-        assert body == {"relay_host": None, "sender_domain": ""}
-
-    def test_array_error_returns_status_and_message(self):
-        mock_array = array_with_transport()
-        mock_array._api_client.call_api.side_effect = FakeApiException(
-            400, '{"errors": [{"message": "Not a valid hostname"}]}'
-        )
-
-        assert patch_smtp_servers_raw(mock_array, {}) == (
-            400,
-            "Not a valid hostname",
-        )
-
-    def test_error_without_status_or_body(self):
-        mock_array = array_with_transport()
-        mock_array._api_client.call_api.side_effect = RuntimeError("socket closed")
-
-        assert patch_smtp_servers_raw(mock_array, {}) == (None, "socket closed")
-
-    def test_each_call_has_its_own_request_id(self):
-        mock_array = array_with_transport()
-
-        patch_smtp_servers_raw(mock_array, {})
-        patch_smtp_servers_raw(mock_array, {})
-
-        ids = [
-            c.kwargs["header_params"]["X-Request-ID"]
-            for c in mock_array._api_client.call_api.call_args_list
-        ]
-        assert len(set(ids)) == 2
-
-
-class TestApiErrorMessage:
-    """The array's error text is pulled out of the transport exception"""
-
-    def test_array_errors_list(self):
-        error = FakeApiException(
-            400, '{"errors": [{"message": "Not a valid hostname", "context": null}]}'
-        )
-        assert _api_error_message(error) == "Not a valid hostname"
-
-    def test_gateway_message(self):
-        error = FakeApiException(403, '{"message": "Forbidden"}')
-        assert _api_error_message(error) == "Forbidden"
-
-    def test_non_json_body_falls_back_to_the_exception_text(self):
-        error = FakeApiException(502, "<html>Bad Gateway</html>")
-        assert _api_error_message(error) == str(error)
-
-    def test_empty_errors_list_without_message(self):
-        error = FakeApiException(400, '{"errors": []}')
-        assert _api_error_message(error) == str(error)
-
-    def test_exception_without_body(self):
-        error = RuntimeError("boom")
-        assert _api_error_message(error) == "boom"

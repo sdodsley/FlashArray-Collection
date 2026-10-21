@@ -38,6 +38,9 @@ options:
   state:
     description:
     - Create or delete API token
+    - The module logs in with the user's own username and password, and that
+      login creates the user's API token when none exists, so I(absent) finds
+      a token to delete on every run and always reports a change.
     type: str
     default: present
     choices: [ present, absent ]
