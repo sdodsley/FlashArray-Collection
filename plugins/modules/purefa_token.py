@@ -22,18 +22,33 @@ short_description: Create or delete an API token for an existing admin user
 description:
 - Create or delete an API token for an existing admin user.
 - Uses username/password to create/delete the API token.
+- Logging in with a username and password creates the user's API token
+  when none exists yet, so by the time the module inspects the user the
+  token is always present. I(state=present) therefore returns the token
+  and reports no change; it cannot tell a token created by this run from
+  one that already existed.
+- Use I(recreate=true) to force a new token. This always reports a change.
+- I(timeout) gives the new token a lifetime. The array only accepts a
+  lifetime when the token is created, so a timeout replaces the existing
+  token on every run and always reports a change, exactly like I(recreate).
+- I(state=absent) deletes the token and reports a change.
 author:
 - Everpure Ansible Team (@sdodsley) <pure-ansible-team@everpuredata.com>
 options:
   state:
     description:
     - Create or delete API token
+    - The module logs in with the user's own username and password, and that
+      login creates the user's API token when none exists, so I(absent) finds
+      a token to delete on every run and always reports a change.
     type: str
     default: present
     choices: [ present, absent ]
   recreate:
     description:
-    - Recreates the API token, overwriting the existing API token if present
+    - Recreates the API token, overwriting the existing API token if present.
+    - This is the only way to be sure of a new token and is always reported
+      as a change.
     type: bool
     default: false
   username:
@@ -52,6 +67,10 @@ options:
     description:
       - The duration of API token validity.
       - Valid values are weeks (w), days(d), hours(h), minutes(m) and seconds(s).
+      - Only used with I(state=present). The existing token is deleted and a
+        new one created with this lifetime, so this is always a change.
+      - Requires Purity 6.x, where the REST 1.x apitoken endpoint accepts a
+        token lifetime.
     type: str
   disable_warnings:
     description:
@@ -86,27 +105,20 @@ EXAMPLES = r"""
 RETURN = r"""
 purefa_token:
   description: API token for user
-  returned: changed
+  returned: when I(state=present), whether or not the module reports a change
   type: str
   sample: e649f439-49be-3806-f774-a35cbbc4c2d2
 """
 
 from ansible.module_utils.basic import AnsibleModule
-from ansible_collections.everpure.flasharray.plugins.module_utils.purefa import (
-    get_array,
-)
 from ansible_collections.everpure.flasharray.plugins.module_utils.common import (
     convert_time_to_millisecs,
-)
-from ansible_collections.everpure.flasharray.plugins.module_utils.api_helpers import (
-    check_response,
 )
 from os import environ
 import platform
 
 VERSION = 1.5
 USER_AGENT_BASE = "Ansible_token"
-TIMEOUT_API_VERSION = "2.2"
 
 HAS_URLLIB3 = True
 try:
@@ -155,14 +167,17 @@ def get_session(module):
             system = purestorage.FlashArray(
                 array_name, username=username, password=password, user_agent=user_agent
             )
-        elif environ.get("PUREFA_URL"):
-            if environ.get("PUREFA_USERNAME") and environ.get("PUREFA_PASSWORD"):
-                url = environ.get("PUREFA_URL")
-                username = environ.get("PUREFA_USERNAME")
-                password = environ.get("PUREFA_PASSWORD")
-                system = purestorage.FlashArray(
-                    url, username=username, password=password, user_agent=user_agent
-                )
+        elif (
+            environ.get("PUREFA_URL")
+            and environ.get("PUREFA_USERNAME")
+            and environ.get("PUREFA_PASSWORD")
+        ):
+            url = environ.get("PUREFA_URL")
+            username = environ.get("PUREFA_USERNAME")
+            password = environ.get("PUREFA_PASSWORD")
+            system = purestorage.FlashArray(
+                url, username=username, password=password, user_agent=user_agent
+            )
         else:
             module.fail_json(
                 msg="You must set PUREFA_URL and PUREFA_USERNAME, PUREFA_PASSWORD "
@@ -178,6 +193,54 @@ def get_session(module):
     else:
         module.fail_json(msg="purestorage SDK is not installed.")
     return system
+
+
+def token_exists(array, username):
+    """Return True when the admin already has an API token.
+
+    ``GET admin/<name>/apitoken`` (``array.get_api_token``) creates a token
+    for a user who has none, so it cannot tell whether one exists.
+    ``GET admin?api_token=true`` (``array.list_admins``) only reports them:
+    ``api_token.created`` is null for a user without a token.
+
+    The purestorage client logs in with ``POST auth/apitoken``, which itself
+    creates the token of the user it logs in as, so for the session user this
+    normally answers True: the module cannot detect a token it caused to be
+    created. When the listing cannot be read or does not mention the user,
+    the token is assumed to exist for the same reason - that assumption can
+    only ever lead to a read or a delete, never to an implicit create.
+    """
+    try:
+        admins = array.list_admins(api_token=True)
+    except Exception:
+        return True
+    if isinstance(admins, dict):
+        admins = [admins]
+    info = next(
+        (admin for admin in admins or [] if admin.get("name") == username), None
+    )
+    if info is None:
+        return True
+    token_info = info.get("api_token")
+    if isinstance(token_info, dict):
+        return bool(token_info.get("created"))
+    if "created" in info:
+        return bool(info.get("created"))
+    return bool(token_info)
+
+
+def token_from(result):
+    """The api_token in a purestorage (REST 1) token response.
+
+    ``get_api_token``, ``create_api_token`` and ``delete_api_token`` answer
+    with a dict carrying ``api_token``; a one-item list is unwrapped so the
+    shape of the answer cannot hide the token that was just created.
+    """
+    if isinstance(result, list):
+        result = result[0] if result else None
+    if isinstance(result, dict):
+        return result.get("api_token")
+    return None
 
 
 def main():
@@ -202,36 +265,48 @@ def main():
     state = module.params["state"]
     recreate = module.params["recreate"]
 
-    result = array.get_api_token(admin=username)
-    api_version = array._list_available_rest_versions()
-    if state == "present" and result["api_token"] is None:
-        result = array.create_api_token(admin=username)
+    # The lifetime can only be given when the token is created: REST 1.x
+    # ``POST admin/<user>/apitoken`` takes ``{"timeout": <milliseconds>}``
+    # (Purity 6.x) and the purestorage client passes extra keyword
+    # arguments of create_api_token into that request body. A timeout
+    # therefore replaces the token like recreate does. The REST 2 token
+    # endpoints are not used: deleting the session user's token there
+    # invalidated the session itself ("Invalid session").
+    create_kwargs = {}
+    if module.params["timeout"] and state == "present":
+        ttl = convert_time_to_millisecs(module.params["timeout"])
+        if ttl == 0:
+            module.fail_json(
+                msg="Invalid timeout {0}: use a whole number of weeks (w), "
+                "days (d), hours (h), minutes (m) or seconds (s)".format(
+                    module.params["timeout"]
+                )
+            )
+        create_kwargs["timeout"] = ttl
+        recreate = True
+
+    # Reading the token with get_api_token creates one when the user has
+    # none, so find out whether a token exists first and only read it back
+    # once it is known to exist. Note that get_session has already logged
+    # in with username/password, which creates the token when the user had
+    # none, so for state=present this normally reads back and reports no
+    # change; recreate (or a timeout) is the way to force a new token.
+    has_token = token_exists(array, username)
+    result = {}
+    if state == "present" and not has_token:
+        result = array.create_api_token(admin=username, **create_kwargs)
         changed = True
     elif state == "present" and recreate:
-        result = array.delete_api_token(admin=username)
-        result = array.create_api_token(admin=username)
+        array.delete_api_token(admin=username)
+        result = array.create_api_token(admin=username, **create_kwargs)
         changed = True
-    elif state == "absent" and result["api_token"]:
+    elif state == "present":
+        result = array.get_api_token(admin=username)
+    elif state == "absent" and has_token:
         result = array.delete_api_token(admin=username)
         changed = True
 
-    api_token = result["api_token"]
-
-    if (
-        TIMEOUT_API_VERSION in api_version
-        and module.params["timeout"]
-        and state == "present"
-    ):
-        module.params["api_token"] = api_token
-        array6 = get_array(module)
-        ttl = convert_time_to_millisecs(module.params["timeout"])
-        if ttl != 0:
-            changed = True
-            array6.delete_admins_api_tokens(names=[username])
-            res = array6.post_admins_api_tokens(names=[username], timeout=ttl)
-            check_response(res, module, "Failed to set token lifetime")
-            api_token = list(res.items)[0].api_token.token
-    module.exit_json(changed=changed, purefa_token=api_token)
+    module.exit_json(changed=changed, purefa_token=token_from(result))
 
 
 if __name__ == "__main__":

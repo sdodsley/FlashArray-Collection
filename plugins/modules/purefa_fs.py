@@ -340,12 +340,13 @@ def move_fs(module, array):
                 msg="Failed to move filesystem. Pod {0} does not exist".format(pod_name)
             )
         if "::" in module.params["name"]:
+            # Check the source pod the filesystem is leaving
             res = get_with_context(
                 array,
                 "get_pods",
                 CONTEXT_VERSION,
                 module,
-                names=[module.params["move"]],
+                names=[pod_name],
             )
             if res.status_code == 200:
                 pod = list(res.items)[0]
@@ -359,7 +360,7 @@ def move_fs(module, array):
                 module.fail_json(
                     msg="Filesystem cannot be moved out of a stretched pod"
                 )
-            if pod.linked_target_count != 0:
+            if pod.link_target_count != 0:
                 module.fail_json(
                     msg="Filesystem cannot be moved out of a linked source pod"
                 )

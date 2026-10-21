@@ -110,6 +110,22 @@ class TestGetFilterString:
         assert result.startswith("time>=")
         # The timestamp should be calculated with timezone offset
 
+    def test_get_filter_string_malformed_start_fails(self):
+        """A malformed start fails the module instead of a strptime traceback"""
+        import pytest
+
+        mock_module = Mock()
+        mock_module.params = {"start": "not-a-date"}
+        mock_module.fail_json.side_effect = SystemExit(1)
+
+        with pytest.raises(SystemExit):
+            _get_filter_string(mock_module, "+00:00")
+
+        mock_module.fail_json.assert_called_once()
+        msg = mock_module.fail_json.call_args[1]["msg"]
+        assert "start value not-a-date is not a valid date/time" in msg
+        assert "YYYY-MM-DD hh:mm:ss" in msg
+
 
 # Import main for testing
 from plugins.modules.purefa_audits import main

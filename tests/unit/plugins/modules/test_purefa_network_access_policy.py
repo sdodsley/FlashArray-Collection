@@ -80,7 +80,12 @@ def _base_params(**overrides):
 
 
 def _rule_obj(
-    name="restricted.1", effect="allow", client="*", interfaces=None, index=1
+    name="restricted.1",
+    effect="allow",
+    client="*",
+    interfaces=None,
+    index=1,
+    policy="restricted",
 ):
     """Build a mock rule object with the attributes update_policy inspects."""
     rule = Mock()
@@ -89,6 +94,8 @@ def _rule_obj(
     rule.client = client
     rule.interfaces = interfaces if interfaces is not None else ["management-ssh"]
     rule.index = index
+    rule.policy = Mock()
+    rule.policy.name = policy
     return rule
 
 
@@ -862,3 +869,142 @@ class TestMain:
 
         mock_module.fail_json.assert_called_once()
         assert "provided together" in mock_module.fail_json.call_args.kwargs["msg"]
+
+
+class TestDeleteRuleScoped:
+    """A rule delete is looked up by name alone and must belong to the policy"""
+
+    @patch(f"{MODULE_PATH}.delete_with_context")
+    @patch(f"{MODULE_PATH}.get_with_context")
+    def test_lookup_uses_names_only(self, mock_get, mock_delete):
+        """The array rejects names combined with policy_names ("Cannot
+        specify more than one type of the following query parameters"), so
+        the lookup and the delete send names alone
+        """
+        mock_module = Mock()
+        mock_module.check_mode = False
+        mock_module.params = _base_params(rule_name="restricted.1")
+        mock_get.return_value = Mock(status_code=200, items=[_rule_obj()])
+        mock_delete.return_value = Mock(status_code=200)
+
+        delete_policy(mock_module, Mock())
+
+        lookup = mock_get.call_args.kwargs
+        assert "policy_names" not in lookup
+        assert lookup["names"] == ["restricted.1"]
+        assert "policy_names" not in mock_delete.call_args.kwargs
+        assert mock_delete.call_args.kwargs["names"] == ["restricted.1"]
+        mock_module.exit_json.assert_called_once_with(changed=True)
+
+    @patch(f"{MODULE_PATH}.delete_with_context")
+    @patch(f"{MODULE_PATH}.get_with_context")
+    def test_rule_in_other_policy_is_not_found(self, mock_get, mock_delete):
+        mock_module = Mock()
+        mock_module.check_mode = False
+        mock_module.params = _base_params(rule_name="other.1")
+        mock_module.exit_json.side_effect = Exception("exit_json called")
+        mock_get.return_value = Mock(
+            status_code=200, items=[_rule_obj(name="other.1", policy="other")]
+        )
+
+        try:
+            delete_policy(mock_module, Mock())
+        except Exception:
+            pass
+
+        mock_module.exit_json.assert_called_once_with(changed=False)
+        mock_delete.assert_not_called()
+
+    @patch(f"{MODULE_PATH}.delete_with_context")
+    @patch(f"{MODULE_PATH}.get_with_context")
+    def test_empty_200_means_already_deleted(self, mock_get, mock_delete):
+        """A 200 with no items was treated as the rule still existing, so the
+        second run of the same delete reported changed again
+        """
+        mock_module = Mock()
+        mock_module.check_mode = False
+        mock_module.params = _base_params(rule_name="restricted.1")
+        mock_module.exit_json.side_effect = Exception("exit_json called")
+        mock_get.return_value = Mock(status_code=200, items=[])
+
+        try:
+            delete_policy(mock_module, Mock())
+        except Exception:
+            pass
+
+        mock_module.exit_json.assert_called_once_with(changed=False)
+        mock_delete.assert_not_called()
+
+    @patch(f"{MODULE_PATH}.get_with_context")
+    def test_named_rule_update_lookup_uses_names_only(self, mock_get):
+        mock_module = Mock()
+        mock_module.check_mode = False
+        mock_module.params = _base_params(rule_name="restricted.1", effect="deny")
+        mock_module.fail_json.side_effect = Exception("fail_json called")
+        policy_obj = Mock()
+        policy_obj.enabled = True
+        mock_get.side_effect = [
+            Mock(status_code=200, items=[policy_obj]),  # policy fetch
+            Mock(status_code=200, items=[]),  # rule fetch: empty 200
+        ]
+
+        try:
+            update_policy(mock_module, Mock())
+        except Exception:
+            pass
+
+        rule_lookup = mock_get.call_args_list[1].kwargs
+        assert "policy_names" not in rule_lookup
+        assert rule_lookup["names"] == ["restricted.1"]
+        mock_module.fail_json.assert_called_once()
+        assert "not found" in mock_module.fail_json.call_args.kwargs["msg"]
+
+    @patch(f"{MODULE_PATH}.patch_with_context")
+    @patch(f"{MODULE_PATH}.get_with_context")
+    def test_named_rule_update_rejects_rule_of_other_policy(self, mock_get, mock_patch):
+        mock_module = Mock()
+        mock_module.check_mode = False
+        mock_module.params = _base_params(rule_name="other.1", effect="deny")
+        mock_module.fail_json.side_effect = Exception("fail_json called")
+        policy_obj = Mock()
+        policy_obj.enabled = True
+        mock_get.side_effect = [
+            Mock(status_code=200, items=[policy_obj]),  # policy fetch
+            Mock(
+                status_code=200, items=[_rule_obj(name="other.1", policy="other")]
+            ),  # rule fetch: belongs to another policy
+        ]
+
+        try:
+            update_policy(mock_module, Mock())
+        except Exception:
+            pass
+
+        mock_module.fail_json.assert_called_once()
+        assert "not found" in mock_module.fail_json.call_args.kwargs["msg"]
+        mock_patch.assert_not_called()
+
+    @patch(f"{MODULE_PATH}.check_response")
+    @patch(f"{MODULE_PATH}.PolicyrulenetworkaccesspatchRules")
+    @patch(f"{MODULE_PATH}.PolicyRuleNetworkAccessPatch")
+    @patch(f"{MODULE_PATH}.patch_with_context")
+    @patch(f"{MODULE_PATH}.get_with_context")
+    def test_named_rule_patch_uses_names_only(
+        self, mock_get, mock_patch, mock_patch_model, mock_rules_model, mock_check
+    ):
+        mock_module = Mock()
+        mock_module.check_mode = False
+        mock_module.params = _base_params(rule_name="restricted.1", effect="deny")
+        policy_obj = Mock()
+        policy_obj.enabled = True
+        mock_get.side_effect = [
+            Mock(status_code=200, items=[policy_obj]),
+            Mock(status_code=200, items=[_rule_obj(effect="allow")]),
+        ]
+        mock_patch.return_value = Mock(status_code=200)
+
+        update_policy(mock_module, Mock())
+
+        assert "policy_names" not in mock_patch.call_args.kwargs
+        assert mock_patch.call_args.kwargs["names"] == ["restricted.1"]
+        mock_module.exit_json.assert_called_once_with(changed=True)

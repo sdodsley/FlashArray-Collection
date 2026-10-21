@@ -1592,7 +1592,11 @@ class TestRestorePgsnapvolume:
 
         mock_array.post_volumes.assert_called_once()
         call_kwargs = mock_array.post_volumes.call_args[1]
-        assert "add_to_protection_groups" in call_kwargs
+        # FixedReference(name=...) objects crash in the SDK's
+        # _process_references (ref.id raises AttributeError); the names go
+        # straight to add_to_protection_group_names instead
+        assert call_kwargs["add_to_protection_group_names"] == ["pg2", "pg3"]
+        assert "add_to_protection_groups" not in call_kwargs
         mock_module.exit_json.assert_called_once_with(changed=True)
 
     @patch("plugins.modules.purefa_pgsnap.get_pgroupvolume")
@@ -2672,3 +2676,69 @@ class TestMainRestoreAll:
         # Verify target was not changed to "all"
         assert mock_module.params["target"] is None
         mock_restore_all.assert_called_once()
+
+
+class TestQaFixes:
+    """Regression tests for defects found by the hardware QA suite"""
+
+    @patch("plugins.modules.purefa_pgsnap.check_response")
+    @patch("plugins.modules.purefa_pgsnap.LooseVersion", side_effect=LooseVersion)
+    def test_create_pgsnapshot_check_mode_reports_suffix(
+        self, mock_lv, mock_check_response
+    ):
+        """In check mode nothing is created, so the requested suffix is returned"""
+        from plugins.modules.purefa_pgsnap import create_pgsnapshot
+
+        mock_module = Mock()
+        mock_module.check_mode = True
+        mock_module.params = {
+            "name": "test-pg",
+            "suffix": "snap1",
+            "now": False,
+            "apply_retention": False,
+            "throttle": False,
+            "context": "",
+        }
+        mock_array = Mock()
+        mock_array.get_rest_version.return_value = "2.38"
+
+        create_pgsnapshot(mock_module, mock_array)
+
+        mock_array.post_protection_group_snapshots.assert_not_called()
+        mock_module.exit_json.assert_called_once_with(changed=True, suffix="snap1")
+
+    @patch("plugins.modules.purefa_pgsnap.check_response")
+    @patch("plugins.modules.purefa_pgsnap.get_pgroupvolume")
+    @patch("plugins.modules.purefa_pgsnap.get_pgsnapshot")
+    @patch("plugins.modules.purefa_pgsnap.LooseVersion", side_effect=LooseVersion)
+    def test_restore_single_volume_passes_default_protection(
+        self, mock_lv, mock_get_pgsnapshot, mock_get_pgroupvolume, mock_check_response
+    ):
+        """Single-volume copy without add_to_pgs honours with_default_protection
+        on REST >= 2.38"""
+        from plugins.modules.purefa_pgsnap import restore_pgsnapvolume
+
+        mock_module = Mock()
+        mock_module.check_mode = False
+        mock_module.params = {
+            "name": "pg1",
+            "suffix": "snap1",
+            "context": "",
+            "restore": "vol1",
+            "target": "restored_vol",
+            "overwrite": False,
+            "add_to_pgs": None,
+            "with_default_protection": False,
+        }
+        mock_array = Mock()
+        mock_array.get_rest_version.return_value = "2.38"
+        mock_get_pgsnapshot.return_value = Mock()
+        mock_get_pgroupvolume.return_value = "vol1"
+        mock_array.post_volumes.return_value = Mock(status_code=200)
+
+        restore_pgsnapvolume(mock_module, mock_array)
+
+        mock_array.post_volumes.assert_called_once()
+        call_kwargs = mock_array.post_volumes.call_args[1]
+        assert call_kwargs["with_default_protection"] is False
+        assert call_kwargs["names"] == ["restored_vol"]

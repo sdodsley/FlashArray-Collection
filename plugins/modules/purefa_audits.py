@@ -92,16 +92,27 @@ TZ_VERSION = "2.26"
 CONTEXT_VERSION = "2.38"
 
 
+def _to_timestamp(module, name, timezone):
+    """Convert the date/time in parameter ``name`` to epoch milliseconds"""
+    value = module.params[name] + " " + timezone
+    try:
+        return int(
+            1000
+            * datetime.datetime.timestamp(
+                datetime.datetime.strptime(value, "%Y-%m-%d %H:%M:%S %z")
+            )
+        )
+    except ValueError:
+        module.fail_json(
+            msg="{0} value {1} is not a valid date/time. "
+            'Expected format is "YYYY-MM-DD hh:mm:ss"'.format(name, module.params[name])
+        )
+
+
 def _get_filter_string(module, timezone):
     filter_string = ""
     if module.params["start"] and module.params["start"] != "0":
-        start = module.params["start"] + " " + timezone
-        start_timestamp = int(
-            1000
-            * datetime.datetime.timestamp(
-                datetime.datetime.strptime(start, "%Y-%m-%d %H:%M:%S %z")
-            )
-        )
+        start_timestamp = _to_timestamp(module, "start", timezone)
     else:
         start_timestamp = 0
     filter_string = "time>=" + str(start_timestamp)
@@ -156,13 +167,16 @@ def main():
         time = datetime.datetime.fromtimestamp(
             audit.time / 1000, tz=pytz.timezone(timezone)
         ).strftime("%Y-%m-%d %H:%M:%S %Z")
+        # Audit records only carry the fields that apply to the event, and the
+        # SDK models raise AttributeError for an absent field, so read each
+        # one with a default.
         audit_log[name] = {
             "time": time,
-            "arguments": audit.arguments,
-            "user": audit.user,
-            "command": audit.command,
-            "subcommand": audit.subcommand,
-            "origin": audit.origin.name,
+            "arguments": getattr(audit, "arguments", None),
+            "user": getattr(audit, "user", None),
+            "command": getattr(audit, "command", None),
+            "subcommand": getattr(audit, "subcommand", None),
+            "origin": getattr(getattr(audit, "origin", None), "name", None),
         }
     module.exit_json(changed=False, purefa_audits=audit_log)
 

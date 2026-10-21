@@ -2993,3 +2993,67 @@ class TestUpdateHostWithAllOptions:
 
         mock_update_chap.assert_called_once()
         mock_module.exit_json.assert_called_once_with(changed=True)
+
+
+class TestQaFixes:
+    """Regression tests for defects found by the hardware QA suite"""
+
+    @patch("plugins.modules.purefa_host.check_response")
+    @patch("plugins.modules.purefa_host.get_with_context")
+    def test_update_chap_clear_when_host_user_empty_string(
+        self, mock_get_with_context, mock_check_response
+    ):
+        """Clearing CHAP when the array reports host_user as "" is a no-op"""
+        from plugins.modules.purefa_host import _update_chap_security
+
+        mock_chap = Mock()
+        mock_chap.host_user = ""
+        mock_host = Mock()
+        mock_host.chap = mock_chap
+        mock_get_with_context.return_value = Mock(status_code=200, items=[mock_host])
+
+        mock_module = Mock()
+        mock_module.params = {
+            "name": "host1",
+            "host_user": "test_user",
+            "host_password": "clear",
+            "target_user": None,
+            "context": "",
+        }
+        mock_module.check_mode = False
+        mock_array = Mock()
+
+        result = _update_chap_security(mock_module, mock_array)
+
+        assert result is False
+        # only the GET of the host, no PATCH
+        assert mock_get_with_context.call_count == 1
+
+    @patch("plugins.modules.purefa_host.check_response")
+    @patch("plugins.modules.purefa_host.get_with_context")
+    def test_update_chap_clear_when_target_user_absent(
+        self, mock_get_with_context, mock_check_response
+    ):
+        """Clearing CHAP when target_user is not present is a no-op"""
+        from plugins.modules.purefa_host import _update_chap_security
+
+        mock_chap = Mock(spec=[])  # no attributes at all
+        mock_host = Mock()
+        mock_host.chap = mock_chap
+        mock_get_with_context.return_value = Mock(status_code=200, items=[mock_host])
+
+        mock_module = Mock()
+        mock_module.params = {
+            "name": "host1",
+            "host_user": None,
+            "target_user": "test_user",
+            "target_password": "clear",
+            "context": "",
+        }
+        mock_module.check_mode = False
+        mock_array = Mock()
+
+        result = _update_chap_security(mock_module, mock_array)
+
+        assert result is False
+        assert mock_get_with_context.call_count == 1

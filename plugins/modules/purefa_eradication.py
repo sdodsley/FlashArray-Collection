@@ -37,6 +37,9 @@ options:
   disabled_delay:
     description:
     - Configures the eradication delay
+    - The array refuses to decrease this value ("Cannot decrease the eradication
+      timer when eradication is disabled"), so it can only ever be raised through
+      the API.
       for destroyed objects that I(are) protected by SafeMode (objects for which
       eradication is disabled)
     - Allowed values are integers from 1 to 30.

@@ -167,3 +167,53 @@ class TestMain:
         main()
 
         mock_module.exit_json.assert_called_with(changed=False)
+
+
+class TestTimeoutRange:
+    """The valid range is 5-180 minutes, with 0 meaning disabled"""
+
+    @staticmethod
+    def _run(timeout):
+        mock_module = Mock()
+        mock_module.params = {"timeout": timeout, "state": "present", "context": ""}
+        mock_module.fail_json.side_effect = SystemExit("fail_json called")
+        mock_array = Mock()
+        mock_array.get_rest_version.return_value = "2.38"
+        mock_current = Mock()
+        mock_current.idle_timeout = timeout * 60000
+        with patch(
+            "plugins.modules.purefa_timeout.AnsibleModule", return_value=mock_module
+        ), patch(
+            "plugins.modules.purefa_timeout.get_array", return_value=mock_array
+        ), patch(
+            "plugins.modules.purefa_timeout.get_with_context",
+            return_value=Mock(items=[mock_current]),
+        ):
+            try:
+                main()
+            except SystemExit:
+                pass
+        return mock_module
+
+    def test_below_range_is_rejected(self):
+        """A timeout under 5 minutes used to slip through the range check"""
+        mock_module = self._run(3)
+        mock_module.fail_json.assert_called_once()
+        assert "between 5 and 180" in mock_module.fail_json.call_args[1]["msg"]
+
+    def test_above_range_is_rejected(self):
+        mock_module = self._run(181)
+        mock_module.fail_json.assert_called_once()
+
+    def test_lower_bound_is_accepted(self):
+        mock_module = self._run(5)
+        mock_module.fail_json.assert_not_called()
+        mock_module.exit_json.assert_called_with(changed=False)
+
+    def test_upper_bound_is_accepted(self):
+        mock_module = self._run(180)
+        mock_module.fail_json.assert_not_called()
+
+    def test_zero_disables_and_is_accepted(self):
+        mock_module = self._run(0)
+        mock_module.fail_json.assert_not_called()

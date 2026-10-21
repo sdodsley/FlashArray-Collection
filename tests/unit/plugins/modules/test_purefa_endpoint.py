@@ -110,7 +110,7 @@ class TestEradicateEndpoint:
         """Test eradicate_endpoint in check mode"""
         mock_module = Mock()
         mock_module.check_mode = True
-        mock_module.params = {"name": "deleted-endpoint"}
+        mock_module.params = {"name": "deleted-endpoint", "eradicate": True}
         mock_array = Mock()
 
         eradicate_endpoint(mock_module, mock_array)
@@ -330,3 +330,193 @@ class TestCreateEndpoint:
         create_endpoint(mock_module, mock_array)
 
         mock_module.exit_json.assert_called_once()
+
+
+class TestQaFixes:
+    """Regression tests for defects found by the hardware QA suite"""
+
+    def _main_module(self, **overrides):
+        params = {
+            "name": "test-endpoint",
+            "rename": None,
+            "host": None,
+            "hgroup": None,
+            "eradicate": False,
+            "state": "present",
+            "context": "",
+            "container_version": 1,
+        }
+        params.update(overrides)
+        mock_module = Mock()
+        mock_module.check_mode = False
+        mock_module.params = params
+        mock_module.exit_json.side_effect = SystemExit("exit_json called")
+        mock_module.fail_json.side_effect = SystemExit("fail_json called")
+        return mock_module
+
+    @patch("plugins.modules.purefa_endpoint._volfact", return_value={})
+    @patch("plugins.modules.purefa_endpoint.delete_with_context")
+    @patch("plugins.modules.purefa_endpoint.patch_with_context")
+    @patch("plugins.modules.purefa_endpoint.get_volume")
+    @patch("plugins.modules.purefa_endpoint.get_array")
+    @patch("plugins.modules.purefa_endpoint.AnsibleModule")
+    @patch("plugins.modules.purefa_endpoint.HAS_PURESTORAGE", True)
+    def test_absent_missing_endpoint_is_noop(
+        self,
+        mock_ansible_module,
+        mock_get_array,
+        mock_get_volume,
+        mock_patch,
+        mock_delete,
+        mock_volfact,
+    ):
+        """state=absent on a missing endpoint does not PATCH"""
+        from plugins.modules.purefa_endpoint import main
+
+        mock_module = self._main_module(state="absent")
+        mock_ansible_module.return_value = mock_module
+        mock_get_array.return_value = Mock()
+        mock_get_volume.return_value = None
+
+        try:
+            main()
+        except SystemExit:
+            pass
+
+        mock_patch.assert_not_called()
+        mock_delete.assert_not_called()
+        mock_module.exit_json.assert_called_once_with(changed=False, volume=[])
+
+    @patch("plugins.modules.purefa_endpoint._volfact", return_value={})
+    @patch("plugins.modules.purefa_endpoint.check_response")
+    @patch("plugins.modules.purefa_endpoint.delete_with_context")
+    @patch("plugins.modules.purefa_endpoint.patch_with_context")
+    @patch("plugins.modules.purefa_endpoint.get_volume")
+    @patch("plugins.modules.purefa_endpoint.get_array")
+    @patch("plugins.modules.purefa_endpoint.AnsibleModule")
+    @patch("plugins.modules.purefa_endpoint.HAS_PURESTORAGE", True)
+    def test_absent_destroyed_endpoint_reaches_eradicate(
+        self,
+        mock_ansible_module,
+        mock_get_array,
+        mock_get_volume,
+        mock_patch,
+        mock_delete,
+        mock_check_response,
+        mock_volfact,
+    ):
+        """A destroyed endpoint with eradicate=true is eradicated, not re-PATCHed"""
+        from plugins.modules.purefa_endpoint import main
+
+        mock_module = self._main_module(state="absent", eradicate=True)
+        mock_ansible_module.return_value = mock_module
+        mock_get_array.return_value = Mock()
+        mock_get_volume.return_value = Mock(subtype="protocol_endpoint", destroyed=True)
+        mock_delete.return_value = Mock(status_code=200)
+
+        try:
+            main()
+        except SystemExit:
+            pass
+
+        mock_patch.assert_not_called()
+        mock_delete.assert_called_once()
+        mock_module.exit_json.assert_called_once_with(changed=True, volume=[])
+
+    @patch("plugins.modules.purefa_endpoint._volfact", return_value={})
+    @patch("plugins.modules.purefa_endpoint.delete_with_context")
+    @patch("plugins.modules.purefa_endpoint.patch_with_context")
+    @patch("plugins.modules.purefa_endpoint.get_volume")
+    @patch("plugins.modules.purefa_endpoint.get_array")
+    @patch("plugins.modules.purefa_endpoint.AnsibleModule")
+    @patch("plugins.modules.purefa_endpoint.HAS_PURESTORAGE", True)
+    def test_absent_destroyed_endpoint_without_eradicate_is_noop(
+        self,
+        mock_ansible_module,
+        mock_get_array,
+        mock_get_volume,
+        mock_patch,
+        mock_delete,
+        mock_volfact,
+    ):
+        """A destroyed endpoint with state=absent and no eradicate is a no-op"""
+        from plugins.modules.purefa_endpoint import main
+
+        mock_module = self._main_module(state="absent")
+        mock_ansible_module.return_value = mock_module
+        mock_get_array.return_value = Mock()
+        mock_get_volume.return_value = Mock(subtype="protocol_endpoint", destroyed=True)
+
+        try:
+            main()
+        except SystemExit:
+            pass
+
+        mock_patch.assert_not_called()
+        mock_delete.assert_not_called()
+        mock_module.exit_json.assert_called_once_with(changed=False, volume=[])
+
+    @patch("plugins.modules.purefa_endpoint._volfact", return_value={})
+    @patch("plugins.modules.purefa_endpoint.create_endpoint")
+    @patch("plugins.modules.purefa_endpoint.get_volume")
+    @patch("plugins.modules.purefa_endpoint.get_array")
+    @patch("plugins.modules.purefa_endpoint.AnsibleModule")
+    @patch("plugins.modules.purefa_endpoint.HAS_PURESTORAGE", True)
+    def test_repeat_rename_does_not_recreate_source(
+        self,
+        mock_ansible_module,
+        mock_get_array,
+        mock_get_volume,
+        mock_create_endpoint,
+        mock_volfact,
+    ):
+        """Source gone + target present: no-op, and the source is not re-created"""
+        from plugins.modules.purefa_endpoint import main
+
+        mock_module = self._main_module(rename="new-endpoint")
+        mock_ansible_module.return_value = mock_module
+        mock_get_array.return_value = Mock()
+
+        def _get_volume(module, name, array):
+            if name == "new-endpoint":
+                return Mock(subtype="protocol_endpoint", destroyed=False)
+            return None
+
+        mock_get_volume.side_effect = _get_volume
+
+        try:
+            main()
+        except SystemExit:
+            pass
+
+        mock_create_endpoint.assert_not_called()
+        mock_module.fail_json.assert_not_called()
+        mock_module.exit_json.assert_called_once_with(changed=False, volume={})
+
+    @patch("plugins.modules.purefa_endpoint.get_with_context")
+    def test_create_endpoint_missing_vgroup_fails(self, mock_get_with_context):
+        """A vgroup-qualified name whose vgroup is missing fails"""
+        from plugins.modules.purefa_endpoint import create_endpoint
+
+        mock_module = Mock()
+        mock_module.check_mode = True
+        mock_module.params = {
+            "name": "vg/new-endpoint",
+            "context": "",
+            "container_version": 1,
+            "host": None,
+            "hgroup": None,
+        }
+        mock_module.fail_json.side_effect = SystemExit("fail_json called")
+        mock_array = Mock()
+        mock_get_with_context.return_value = Mock(status_code=400)
+
+        try:
+            create_endpoint(mock_module, mock_array)
+        except SystemExit:
+            pass
+
+        mock_module.fail_json.assert_called_once()
+        assert (
+            "Volume Group does not exist" in mock_module.fail_json.call_args[1]["msg"]
+        )

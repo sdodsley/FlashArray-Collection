@@ -85,19 +85,22 @@ options:
       See associated descriptions
     - Only supported from Purity//FA v6.0.0 and higher
     type: str
+    default: ""
   priority_operator:
     description:
     - DMM Priority Adjustment operator
+    - Only applied when specified; an existing adjustment is left
+      untouched by QoS-only or bare I(state=present) calls.
+    - Must be specified together with I(priority_value).
     type: str
     choices: [ +, '-' ]
-    default: +
     version_added: '1.13.0'
   priority_value:
     description:
     - DMM Priority Adjustment value
+    - Only applied when specified, together with I(priority_operator).
     type: int
     choices: [ 0, 10 ]
-    default: 0
     version_added: '1.13.0'
   rename:
     description:
@@ -394,7 +397,11 @@ def make_vgroup(module, array):
             check_response(
                 res, module, f"Vgroup {module.params['name']} creation failed"
             )
-    if LooseVersion(PRIORITY_API_VERSION) <= LooseVersion(api_version):
+    if (
+        LooseVersion(PRIORITY_API_VERSION) <= LooseVersion(api_version)
+        and module.params["priority_operator"] is not None
+        and module.params["priority_value"] is not None
+    ):
         volume_group = VolumeGroupPatch(
             priority_adjustment=PriorityAdjustment(
                 priority_adjustment_operator=module.params["priority_operator"],
@@ -469,7 +476,11 @@ def make_multi_vgroups(module, array):
             module,
             f"Multi-Vgroup {module.params['name']}#{module.params['suffix']} creation failed",
         )
-        if LooseVersion(PRIORITY_API_VERSION) <= LooseVersion(api_version):
+        if (
+            LooseVersion(PRIORITY_API_VERSION) <= LooseVersion(api_version)
+            and module.params["priority_operator"] is not None
+            and module.params["priority_value"] is not None
+        ):
             volume_group = VolumeGroupPatch(
                 priority_adjustment=PriorityAdjustment(
                     priority_adjustment_operator=module.params["priority_operator"],
@@ -664,16 +675,22 @@ def main():
             count=dict(type="int"),
             start=dict(type="int", default=0),
             digits=dict(type="int", default=1),
-            suffix=dict(type="str"),
-            priority_operator=dict(type="str", choices=["+", "-"], default="+"),
-            priority_value=dict(type="int", choices=[0, 10], default=0),
+            suffix=dict(type="str", default=""),
+            priority_operator=dict(type="str", choices=["+", "-"]),
+            priority_value=dict(type="int", choices=[0, 10]),
             eradicate=dict(type="bool", default=False),
             rename=dict(type="str"),
             context=dict(type="str", default=""),
         )
     )
 
-    module = AnsibleModule(argument_spec, supports_check_mode=True)
+    required_together = [["priority_operator", "priority_value"]]
+
+    module = AnsibleModule(
+        argument_spec,
+        required_together=required_together,
+        supports_check_mode=True,
+    )
 
     if not HAS_PURESTORAGE:
         module.fail_json(
@@ -712,6 +729,21 @@ def main():
             delete_vgroup(module, array)
         elif xvgroup and state == "absent" and module.params["eradicate"]:
             eradicate_vgroup(module, array)
+        elif (
+            not vgroup
+            and not xvgroup
+            and state == "present"
+            and module.params["rename"]
+        ):
+            if rename_exists(module, array):
+                # Source is gone and the rename target exists: the rename
+                # has already been done, so this is a no-op.
+                module.exit_json(changed=False)
+            module.fail_json(
+                msg="Volume group {0} does not exist - rename failed".format(
+                    module.params["name"]
+                )
+            )
         elif not vgroup and not xvgroup and state == "present":
             make_vgroup(module, array)
         elif state == "present" and vgroup and module.params["rename"] and not xvgroup:

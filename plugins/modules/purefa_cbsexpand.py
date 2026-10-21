@@ -27,7 +27,7 @@ options:
   state:
     description:
     - Action to be performed on the CBS array.
-    - I{list) will provide the options that I(capacity), in bytes, can be set to.
+    - I(show) will provide the options that I(capacity), in bytes, can be set to.
     default: show
     choices: [ show, expand ]
     type: str
@@ -90,7 +90,8 @@ def list_capacity(module, array):
     available = []
     for step in steps:
         available.append(step.supported_capacity)
-    module.exit_json(changed=True, available=available)
+    # Listing the expansion points does not modify the array
+    module.exit_json(changed=False, available=available)
 
 
 def update_capacity(module, array):
@@ -102,7 +103,7 @@ def update_capacity(module, array):
     if module.params["capacity"] not in available:
         module.fail_json(
             msg="Selected capacity is not available. "
-            "Run this module with `list` to get available capacity points."
+            "Run this module with `state: show` to get available capacity points."
         )
     expanded = array.patch_arrays_cloud_capacity(
         capacity=flasharray.CloudCapacityStatus(
@@ -128,9 +129,7 @@ def main():
 
     array = get_array(module)
     if not HAS_PURESTORAGE:
-        module.fail_json(
-            msg="py-pure-client sdk is required to support 'count' parameter"
-        )
+        module.fail_json(msg="py-pure-client sdk is required for this module")
     if not _is_cbs(array):
         module.fail_json(msg="Module only valid on Cloud Block Store array")
     api_version = array.get_rest_version()

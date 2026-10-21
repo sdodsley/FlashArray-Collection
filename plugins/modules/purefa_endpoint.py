@@ -48,10 +48,14 @@ options:
   host:
     description:
     - name of host to attach endpoint to
+    - Only applied when the endpoint is created. Use M(everpure.flasharray.purefa_host)
+      to change the connections of an existing endpoint.
     type: str
   hgroup:
     description:
     - name of hostgroup to attach endpoint to
+    - Only applied when the endpoint is created. Use M(everpure.flasharray.purefa_hg)
+      to change the connections of an existing endpoint.
     type: str
   context:
     description:
@@ -189,7 +193,7 @@ def create_endpoint(module, array):
         module,
         names=[module.params["name"].split("/")[0]],
     )
-    vg_exists = bool(res.status_code != 200)
+    vg_exists = bool(res.status_code == 200)
     if "/" in module.params["name"] and not vg_exists:
         module.fail_json(
             msg="Failed to create endpoint {0}. Volume Group does not exist.".format(
@@ -249,7 +253,7 @@ def create_endpoint(module, array):
     )
 
 
-def rename_endpoint(module, array):
+def rename_endpoint(module, array, source_exists=True):
     """Rename endpoint within a container, ie vgroup or local array"""
     changed = False
     target_name = module.params["rename"]
@@ -259,7 +263,17 @@ def rename_endpoint(module, array):
         vgroup_name = module.params["name"].split("/")[0]
         target_name = vgroup_name + "/" + module.params["rename"]
     if get_volume(module, target_name, array):
-        module.fail_json(msg="Target {0} already exists.".format(target_name))
+        if source_exists:
+            module.fail_json(msg="Target {0} already exists.".format(target_name))
+        # Source is gone and the target exists: the rename has already
+        # been done, so this is a no-op.
+        module.exit_json(changed=False, volume=_volfact(module, array, target_name))
+    if not source_exists:
+        module.fail_json(
+            msg="Endpoint {0} does not exist - rename failed".format(
+                module.params["name"]
+            )
+        )
     changed = True
     if not module.check_mode:
         res = patch_with_context(
@@ -334,9 +348,10 @@ def recover_endpoint(module, array):
 
 def eradicate_endpoint(module, array):
     """Eradicate Deleted Endpoint"""
-    changed = True
-    if not module.check_mode:
-        if module.params["eradicate"]:
+    changed = False
+    if module.params["eradicate"]:
+        changed = True
+        if not module.check_mode:
             res = delete_with_context(
                 array,
                 "delete_volumes",
@@ -383,18 +398,30 @@ def main():
             )
         )
 
-    if state == "present" and not volume:
+    if state == "present" and module.params["rename"]:
+        if volume and volume.destroyed:
+            module.fail_json(
+                msg="Endpoint {0} is destroyed - recover it before renaming".format(
+                    module.params["name"]
+                )
+            )
+        # A missing source with an existing target is a completed rename
+        rename_endpoint(module, array, source_exists=bool(volume))
+    elif state == "present" and not volume:
         create_endpoint(module, array)
-    elif state == "present" and module.params["rename"]:
-        rename_endpoint(module, array)
-    elif state == "present" and volume and volume.destroyed:
+    elif state == "present" and volume.destroyed:
         recover_endpoint(module, array)
+    elif state == "absent" and not volume:
+        module.exit_json(changed=False, volume=[])
+    elif state == "absent" and volume.destroyed:
+        # Already destroyed: only eradicate (if asked) - never PATCH again
+        eradicate_endpoint(module, array)
     elif state == "absent":
         delete_endpoint(module, array)
-    elif state == "absent" and volume and volume.destroyed:
-        eradicate_endpoint(module, array)
     else:
-        module.exit_json(changed=False)
+        module.exit_json(
+            changed=False, volume=_volfact(module, array, module.params["name"])
+        )
 
     module.exit_json(changed=False)
 

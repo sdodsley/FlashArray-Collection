@@ -42,6 +42,8 @@ from plugins.modules.purefa_info import (
     _is_cbs,
     _pgroup_snaps_dict,
     _pgroup_snapshots_by_name,
+    _directory_exports_by_name,
+    _saml2sso_dict,
     generate_default_dict,
     generate_perf_dict,
     generate_admin_dict,
@@ -1971,6 +1973,11 @@ class TestGenerateConfigDict:
         assert "console_lock" in result
         assert result["console_lock"] == "enabled"
         assert "smtp" in result
+        # The watcher list was only published under the misleading smtp key
+        assert result["alert_watchers"] == [
+            {"name": "admin@example.com", "enabled": True}
+        ]
+        assert result["alert_watchers"] == result["smtp"]
         assert "snmp" in result
 
 
@@ -3118,3 +3125,547 @@ class TestPgroupsDictSnaps:
         snap = result["pg1"]["snaps"]["pg1.1"]
         assert snap["created"] == 1717443224368
         assert snap["time_remaining"] == 86400000
+
+
+class TestMainDefaultSection:
+    """The default section is kept whenever minimum or all was asked for"""
+
+    @staticmethod
+    def _run(subset):
+        mock_module = Mock()
+        mock_module.params = {"gather_subset": subset}
+        mock_array = Mock()
+        mock_array.get_rest_version.return_value = "2.38"
+        with patch(
+            "plugins.modules.purefa_info.AnsibleModule", return_value=mock_module
+        ), patch(
+            "plugins.modules.purefa_info.get_array", return_value=mock_array
+        ), patch(
+            "plugins.modules.purefa_info.LooseVersion", side_effect=float
+        ), patch(
+            "plugins.modules.purefa_info.generate_default_dict",
+            return_value={"array_model": "FA-X70R3"},
+        ), patch(
+            "plugins.modules.purefa_info.generate_apps_dict", return_value={}
+        ):
+            main()
+        return mock_module.exit_json.call_args[1]["purefa_info"]
+
+    def test_minimum_and_apps_keeps_default(self):
+        """[minimum, apps] used to lose the default section it asked for"""
+        info = self._run(["minimum", "apps"])
+        assert "default" in info
+        assert "apps" in info
+
+    def test_apps_alone_drops_default(self):
+        info = self._run(["apps"])
+        assert "default" not in info
+        assert "apps" in info
+
+
+class TestPerformanceAttributesAreOptional:
+    """Performance models on Purity 6.10 lack the usec_per_mirrored_write_op
+    family, which raised AttributeError when read directly
+    """
+
+    @staticmethod
+    def _perf(name):
+        # Only a few of the fields the module reports are present
+        perf = Mock(
+            spec=["name", "reads_per_sec", "writes_per_sec", "usec_per_read_op"]
+        )
+        perf.name = name
+        perf.reads_per_sec = 10
+        perf.writes_per_sec = 20
+        perf.usec_per_read_op = 300
+        return perf
+
+    def test_hgroups_performance_tolerates_missing_fields(self):
+        mock_array = Mock()
+        mock_array.get_rest_version.return_value = "2.38"
+        mock_hgroup = Mock()
+        mock_hgroup.name = "hg1"
+        mock_hgroup.space = Mock()
+        mock_array.get_host_groups.return_value = Mock(items=[mock_hgroup])
+        mock_array.get_host_groups_tags.return_value = Mock(items=[])
+        mock_array.get_host_groups_performance.return_value = Mock(
+            items=[self._perf("hg1")]
+        )
+        mock_array.get_connections.return_value = Mock(items=[])
+        mock_array.get_host_groups_hosts.return_value = Mock(items=[])
+        mock_array.get_host_groups_protection_groups.return_value = Mock(items=[])
+
+        result = generate_hgroups_dict(mock_array, performance=True)
+
+        performance = result["hg1"]["performance"]
+        assert performance["reads_per_sec"] == 10
+        assert performance["usec_per_read_op"] == 300
+        assert performance["usec_per_mirrored_write_op"] is None
+        assert performance["san_usec_per_mirrored_write_op"] is None
+
+    def test_array_performance_tolerates_missing_fields(self):
+        mock_array = Mock()
+        mock_array.get_arrays_performance.return_value = Mock(
+            items=[self._perf("array")]
+        )
+
+        result = generate_perf_dict(mock_array)
+
+        assert result["reads_per_sec"] == 10
+        assert result["usec_per_mirrored_write_op"] is None
+        assert result["queue_depth"] == 0
+
+
+class TestPerformanceKeysReadMatchingAttributes:
+    """Each performance key reads the attribute of the same name
+
+    The qos_rate_limit_usec_per_read_op / _write_op keys used to read the
+    _mirrored_write_op / _read_op attributes, and local_queue_usec_per_op
+    read bytes_per_write (copy-paste errors).
+    """
+
+    @staticmethod
+    def _perf(name):
+        perf = Mock()
+        perf.name = name
+        perf.qos_rate_limit_usec_per_mirrored_write_op = 1
+        perf.qos_rate_limit_usec_per_read_op = 2
+        perf.qos_rate_limit_usec_per_write_op = 3
+        perf.local_queue_usec_per_op = 4
+        perf.bytes_per_write = 5
+        return perf
+
+    def test_array_performance_keys(self):
+        mock_array = Mock()
+        mock_array.get_arrays_performance.return_value = Mock(
+            items=[self._perf("array")]
+        )
+
+        result = generate_perf_dict(mock_array)
+
+        assert result["qos_rate_limit_usec_per_mirrored_write_op"] == 1
+        assert result["qos_rate_limit_usec_per_read_op"] == 2
+        assert result["qos_rate_limit_usec_per_write_op"] == 3
+        assert result["local_queue_usec_per_op"] == 4
+        assert result["bytes_per_write"] == 5
+
+    def test_hgroups_performance_keys(self):
+        mock_array = Mock()
+        mock_array.get_rest_version.return_value = "2.38"
+        mock_hgroup = Mock()
+        mock_hgroup.name = "hg1"
+        mock_hgroup.space = Mock()
+        mock_array.get_host_groups.return_value = Mock(items=[mock_hgroup])
+        mock_array.get_host_groups_tags.return_value = Mock(items=[])
+        mock_array.get_host_groups_performance.return_value = Mock(
+            items=[self._perf("hg1")]
+        )
+        mock_array.get_connections.return_value = Mock(items=[])
+        mock_array.get_host_groups_hosts.return_value = Mock(items=[])
+        mock_array.get_host_groups_protection_groups.return_value = Mock(items=[])
+
+        result = generate_hgroups_dict(mock_array, performance=True)
+
+        performance = result["hg1"]["performance"]
+        assert performance["qos_rate_limit_usec_per_mirrored_write_op"] == 1
+        assert performance["qos_rate_limit_usec_per_read_op"] == 2
+        assert performance["qos_rate_limit_usec_per_write_op"] == 3
+
+
+class TestGenerateRlDictRecoveryPoint:
+    def test_recovery_point_is_reported(self):
+        """hasattr was tested on the list of links, so this was always None"""
+        mock_array = Mock()
+        mock_link = Mock()
+        mock_link.local_pod = Mock()
+        mock_link.local_pod.name = "pod1"
+        mock_link.remote_pod = Mock()
+        mock_link.remote_pod.name = "pod1"
+        mock_link.remotes = [Mock()]
+        mock_link.status = "replicating"
+        mock_link.direction = "outbound"
+        mock_link.recovery_point = 1609459200000
+        mock_link.lag = 1000
+        mock_array.get_pod_replica_links.return_value = Mock(items=[mock_link])
+
+        result = generate_rl_dict(mock_array)
+
+        assert result["pod1"]["recovery_point"] is not None
+        assert result["pod1"]["recovery_point"].startswith("202")
+
+    def test_link_without_recovery_point_reports_none(self):
+        mock_array = Mock()
+        mock_link = Mock(
+            spec=["local_pod", "remote_pod", "remotes", "status", "direction"]
+        )
+        mock_link.local_pod = Mock()
+        mock_link.local_pod.name = "pod1"
+        mock_link.remote_pod = Mock()
+        mock_link.remote_pod.name = "pod1"
+        mock_link.remotes = [Mock()]
+        mock_link.status = "replicating"
+        mock_link.direction = "outbound"
+        mock_array.get_pod_replica_links.return_value = Mock(items=[mock_link])
+
+        result = generate_rl_dict(mock_array)
+
+        assert result["pod1"]["recovery_point"] is None
+
+
+class TestGenerateDefaultDictBanner:
+    @patch("plugins.modules.purefa_info.LooseVersion")
+    def test_banner_is_reported(self, mock_loose_version):
+        """purefa_banner's text can be read back"""
+        mock_loose_version.side_effect = float
+        mock_array = Mock()
+        mock_array.get_rest_version.return_value = "2.0"
+        for method in (
+            "get_virtual_machines",
+            "get_virtual_machine_snapshots",
+            "get_policies_snapshot",
+            "get_policies_nfs",
+            "get_policies_smb",
+            "get_file_systems",
+            "get_directories",
+            "get_directory_exports",
+            "get_directory_snapshots",
+            "get_volume_groups",
+            "get_array_connections",
+            "get_pods",
+            "get_hosts",
+            "get_volume_snapshots",
+            "get_volumes",
+            "get_protection_groups",
+            "get_host_groups",
+            "get_admins",
+            "get_maintenance_windows",
+        ):
+            getattr(mock_array, method).return_value = Mock(items=[])
+        mock_array.get_array_connections_connection_key.return_value = Mock(
+            items=[Mock(connection_key="ABC123")]
+        )
+        mock_array.get_controllers.return_value = Mock(items=[Mock(model="FA-X70R3")])
+        array_data = Mock(version="6.10.6", banner="Authorised users only")
+        array_data.name = "test-array"
+        mock_array.get_arrays.return_value = Mock(items=[array_data])
+        mock_array.get_support.return_value = Mock(
+            items=[Mock(remote_assist_status="enabled")]
+        )
+        mock_array.get_fleets.return_value = Mock(status_code=404, items=[])
+
+        result = generate_default_dict(mock_array)
+
+        assert result["banner"] == "Authorised users only"
+
+
+class TestGeneratePoliciesDictManagementAccess:
+    def test_management_access_rules_and_strategy_reported(self):
+        """management-access policies got rules: [] and no strategy"""
+        mock_policy = Mock()
+        mock_policy.name = "realm_admins"
+        mock_policy.policy_type = "management-access"
+        mock_policy.enabled = True
+        mock_array = Mock()
+        mock_array.get_rest_version.return_value = "2.56"
+        mock_array.get_policies.return_value = Mock(items=[mock_policy])
+        mock_array.get_directories_policies.return_value = Mock(items=[])
+        rule = Mock()
+        rule.role = Mock()
+        rule.role.name = "storage"
+        rule.scope = Mock()
+        rule.scope.name = "myrealm"
+        rule.scope.resource_type = "realms"
+        ma_policy = Mock()
+        ma_policy.aggregation_strategy = "least-common-permissions"
+        ma_policy.rules = [rule]
+        mock_array.get_policies_management_access.return_value = Mock(
+            status_code=200, items=[ma_policy]
+        )
+
+        result = generate_policies_dict(
+            mock_array,
+            quota_available=False,
+            autodir_available=False,
+            nfs_user_mapping=False,
+        )
+
+        mock_array.get_policies_management_access.assert_called_once_with(
+            names=["realm_admins"]
+        )
+        assert result["realm_admins"]["aggregation_strategy"] == (
+            "least-common-permissions"
+        )
+        assert result["realm_admins"]["rules"] == [
+            {"role": "storage", "scope": "myrealm", "resource_type": "realms"}
+        ]
+
+    def test_management_access_lookup_failure_leaves_empty_rules(self):
+        mock_policy = Mock()
+        mock_policy.name = "realm_admins"
+        mock_policy.policy_type = "management-access"
+        mock_policy.enabled = True
+        mock_array = Mock()
+        mock_array.get_rest_version.return_value = "2.56"
+        mock_array.get_policies.return_value = Mock(items=[mock_policy])
+        mock_array.get_directories_policies.return_value = Mock(items=[])
+        mock_array.get_policies_management_access.return_value = Mock(
+            status_code=400, items=[]
+        )
+
+        result = generate_policies_dict(
+            mock_array,
+            quota_available=False,
+            autodir_available=False,
+            nfs_user_mapping=False,
+        )
+
+        assert result["realm_admins"]["rules"] == []
+        assert "aggregation_strategy" not in result["realm_admins"]
+
+
+class TestDirectoryExports:
+    """Exports are read once, unfiltered, and grouped by directory
+
+    Seen on hardware: get_directory_exports(directory_names=[...]) returned
+    nothing for every directory on an array serving live NFS exports.
+    """
+
+    @staticmethod
+    def _export(name, directory, server=None):
+        export = Mock()
+        export.export_name = name
+        export.enabled = True
+        export.directory = Mock()
+        export.directory.name = directory
+        export.policy = Mock()
+        export.policy.name = "nfs-policy"
+        export.policy.resource_type = "policies/nfs"
+        export.server = Mock()
+        export.server.name = server
+        return export
+
+    def test_exports_grouped_by_directory(self):
+        mock_array = Mock()
+        mock_array.get_directory_exports.return_value = Mock(
+            status_code=200,
+            items=[
+                self._export("share1", "fs1:dir1", "server1"),
+                self._export("share2", "fs1:dir1", "server2"),
+                self._export("other", "fs1:dir2"),
+            ],
+        )
+
+        result = _directory_exports_by_name(mock_array)
+
+        mock_array.get_directory_exports.assert_called_once_with()
+        assert [e["export_name"] for e in result["fs1:dir1"]] == ["share1", "share2"]
+        assert result["fs1:dir1"][0] == {
+            "enabled": True,
+            "export_name": "share1",
+            "policy": {"name": "nfs-policy", "type": "policies/nfs"},
+            "server": "server1",
+        }
+        assert result["fs1:dir2"][0]["server"] is None
+
+    def test_error_response_yields_no_exports(self):
+        mock_array = Mock()
+        mock_array.get_directory_exports.return_value = Mock(status_code=400)
+
+        assert _directory_exports_by_name(mock_array) == {}
+
+    @patch("plugins.modules.purefa_info.LooseVersion", side_effect=LooseVersion)
+    def test_filesystems_dict_reports_exports(self, mock_lv):
+        mock_array = Mock()
+        mock_array.get_rest_version.return_value = "2.54"
+        mock_fs = Mock()
+        mock_fs.name = "fs1"
+        mock_fs.destroyed = False
+        mock_array.get_file_systems.return_value = Mock(items=[mock_fs])
+        mock_dir = Mock()
+        mock_dir.name = "fs1:dir1"
+        mock_dir.directory_name = "dir1"
+        mock_dir.path = "/dir1"
+        mock_dir.destroyed = False
+        mock_dir.limited_by = None
+        mock_array.get_directories.return_value = Mock(items=[mock_dir])
+        mock_array.get_directories_policies.return_value = Mock(items=[])
+        mock_array.get_directory_exports.return_value = Mock(
+            status_code=200, items=[self._export("share1", "fs1:dir1", "server1")]
+        )
+
+        result = generate_filesystems_dict(mock_array, performance=False)
+
+        exports = result["fs1"]["directories"]["dir1"]["exports"]
+        assert [e["export_name"] for e in exports] == ["share1"]
+        # No per-directory filtered read any more
+        mock_array.get_directory_exports.assert_called_once_with()
+
+
+class TestSaml2SsoDict:
+    """config.saml2sso reports every IdP keyed by name, not only the first"""
+
+    @staticmethod
+    def _idp(name, enabled, url):
+        idp = Mock()
+        idp.name = name
+        idp.enabled = enabled
+        idp.array_url = "https://array.example.com"
+        idp.idp = Mock()
+        idp.idp.url = url
+        idp.idp.encrypt_assertion_enabled = False
+        idp.idp.sign_request_enabled = True
+        idp.idp.metadata_url = url + "/metadata"
+        idp.sp = Mock()
+        idp.sp.decryption_credential = None
+        idp.sp.signing_credential = Mock()
+        idp.sp.signing_credential.name = "sign-cred"
+        return idp
+
+    def test_all_idps_reported(self):
+        result = _saml2sso_dict(
+            [
+                self._idp("okta", True, "https://okta.example.com"),
+                self._idp("azure", False, "https://login.example.com"),
+            ]
+        )
+
+        assert sorted(result) == ["azure", "okta"]
+        assert result["okta"]["enabled"] is True
+        assert result["okta"]["idp"]["url"] == "https://okta.example.com"
+        assert result["okta"]["idp"]["sign_enabled"] is True
+        assert result["okta"]["sp"] == {"decrypt_cred": None, "sign_cred": "sign-cred"}
+        assert result["azure"]["enabled"] is False
+
+    def test_no_idps(self):
+        assert _saml2sso_dict([]) == {}
+
+
+class TestPolicyFieldsAdded:
+    """Password and smb policies report the fields they used to omit"""
+
+    @staticmethod
+    def _base_array(mock_policy):
+        mock_array = Mock()
+        mock_array.get_rest_version.return_value = "2.54"
+        mock_array.get_policies.return_value = Mock(items=[mock_policy])
+        mock_array.get_directories_policies.return_value = Mock(items=[])
+        return mock_array
+
+    def test_password_policy_ages_and_attempts(self):
+        mock_policy = Mock()
+        mock_policy.name = "pwd"
+        mock_policy.policy_type = "password"
+        mock_policy.enabled = True
+        mock_array = self._base_array(mock_policy)
+        pwd = Mock()
+        pwd.enabled = True
+        pwd.enforce_dictionary_check = True
+        pwd.enforce_username_check = False
+        pwd.lockout_duration = 60000
+        pwd.password_history = 5
+        pwd.min_character_groups = 3
+        pwd.min_characters_per_group = 1
+        pwd.min_password_length = 12
+        pwd.max_login_attempts = 5
+        pwd.min_password_age = 86400000
+        pwd.max_password_age = 7776000000
+        mock_array.get_policies_password.return_value = Mock(items=[pwd])
+
+        result = generate_policies_dict(
+            mock_array,
+            quota_available=False,
+            autodir_available=False,
+            nfs_user_mapping=False,
+        )
+
+        assert result["pwd"]["max_login_attempts"] == 5
+        assert result["pwd"]["min_password_age"] == 86400000
+        assert result["pwd"]["max_password_age"] == 7776000000
+        assert result["pwd"]["min_password_length"] == 12
+
+    def test_password_policy_fields_default_when_absent(self):
+        mock_policy = Mock()
+        mock_policy.name = "pwd"
+        mock_policy.policy_type = "password"
+        mock_policy.enabled = True
+        mock_array = self._base_array(mock_policy)
+        pwd = Mock(
+            spec=[
+                "enabled",
+                "enforce_dictionary_check",
+                "enforce_username_check",
+                "min_character_groups",
+                "min_characters_per_group",
+                "min_password_length",
+            ]
+        )
+        pwd.enabled = True
+        pwd.enforce_dictionary_check = True
+        pwd.enforce_username_check = False
+        pwd.min_character_groups = 3
+        pwd.min_characters_per_group = 1
+        pwd.min_password_length = 12
+        mock_array.get_policies_password.return_value = Mock(items=[pwd])
+
+        result = generate_policies_dict(
+            mock_array,
+            quota_available=False,
+            autodir_available=False,
+            nfs_user_mapping=False,
+        )
+
+        assert result["pwd"]["max_login_attempts"] is None
+        assert result["pwd"]["min_password_age"] is None
+        assert result["pwd"]["max_password_age"] is None
+
+    def test_smb_policy_enumeration_and_availability(self):
+        mock_policy = Mock()
+        mock_policy.name = "smb1"
+        mock_policy.policy_type = "smb"
+        mock_policy.enabled = True
+        mock_array = self._base_array(mock_policy)
+        smb = Mock()
+        smb.access_based_enumeration_enabled = True
+        smb.continuous_availability_enabled = False
+        mock_array.get_policies_smb.return_value = Mock(status_code=200, items=[smb])
+        rule = Mock()
+        rule.client = "*"
+        rule.smb_encryption_required = True
+        rule.anonymous_access_allowed = False
+        mock_array.get_policies_smb_client_rules.return_value = Mock(items=[rule])
+
+        result = generate_policies_dict(
+            mock_array,
+            quota_available=False,
+            autodir_available=False,
+            nfs_user_mapping=False,
+        )
+
+        assert result["smb1"]["access_based_enumeration_enabled"] is True
+        assert result["smb1"]["continuous_availability_enabled"] is False
+        assert result["smb1"]["rules"] == [
+            {
+                "client": "*",
+                "smb_encryption_required": True,
+                "anonymous_access_allowed": False,
+            }
+        ]
+
+    def test_smb_policy_error_response_keeps_rules(self):
+        mock_policy = Mock()
+        mock_policy.name = "smb1"
+        mock_policy.policy_type = "smb"
+        mock_policy.enabled = True
+        mock_array = self._base_array(mock_policy)
+        mock_array.get_policies_smb.return_value = Mock(status_code=400)
+        mock_array.get_policies_smb_client_rules.return_value = Mock(items=[])
+
+        result = generate_policies_dict(
+            mock_array,
+            quota_available=False,
+            autodir_available=False,
+            nfs_user_mapping=False,
+        )
+
+        assert "access_based_enumeration_enabled" not in result["smb1"]
+        assert result["smb1"]["rules"] == []

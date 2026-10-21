@@ -237,7 +237,7 @@ def create_account(module, array, api_version):
             password=module.params["password"],
         )
     if not module.check_mode:
-        if MIN_TLS_API_VERSION in api_version:
+        if LooseVersion(MIN_TLS_API_VERSION) <= LooseVersion(api_version):
             res = array.post_active_directory(
                 names=[module.params["name"]],
                 join_existing_account=module.params["join_existing"],

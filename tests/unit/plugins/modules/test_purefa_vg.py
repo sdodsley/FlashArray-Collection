@@ -1141,3 +1141,193 @@ class TestDeleteVgroup:
 
         mock_array.patch_volume_groups.assert_called()
         mock_module.exit_json.assert_called_once_with(changed=True)
+
+
+class TestQaFixes:
+    """Regression tests for defects found by the hardware QA suite"""
+
+    def _main_module(self, **overrides):
+        params = {
+            "name": "old-vg",
+            "state": "present",
+            "bw_qos": None,
+            "iops_qos": None,
+            "count": None,
+            "start": 0,
+            "digits": 1,
+            "suffix": "",
+            "priority_operator": None,
+            "priority_value": None,
+            "eradicate": False,
+            "rename": None,
+            "context": "",
+        }
+        params.update(overrides)
+        mock_module = Mock()
+        mock_module.check_mode = False
+        mock_module.params = params
+        mock_module.exit_json.side_effect = SystemExit("exit_json called")
+        mock_module.fail_json.side_effect = SystemExit("fail_json called")
+        return mock_module
+
+    @patch("plugins.modules.purefa_vg.make_vgroup")
+    @patch("plugins.modules.purefa_vg.rename_exists")
+    @patch("plugins.modules.purefa_vg.get_pending_vgroup")
+    @patch("plugins.modules.purefa_vg.get_vgroup")
+    @patch("plugins.modules.purefa_vg.get_array")
+    @patch("plugins.modules.purefa_vg.AnsibleModule")
+    @patch("plugins.modules.purefa_vg.LooseVersion", side_effect=LooseVersion)
+    @patch("plugins.modules.purefa_vg.HAS_PURESTORAGE", True)
+    def test_main_repeat_rename_is_noop(
+        self,
+        mock_lv,
+        mock_ansible_module,
+        mock_get_array,
+        mock_get_vgroup,
+        mock_get_pending,
+        mock_rename_exists,
+        mock_make_vgroup,
+    ):
+        """Repeating a completed rename neither re-creates the old name
+        nor reports a change"""
+        from plugins.modules.purefa_vg import main
+
+        mock_module = self._main_module(rename="new-vg")
+        mock_ansible_module.return_value = mock_module
+        mock_array = Mock()
+        mock_array.get_rest_version.return_value = "2.38"
+        mock_array.get_fleets.return_value = Mock(status_code=400, items=[])
+        mock_get_array.return_value = mock_array
+        mock_get_vgroup.return_value = None  # source already renamed away
+        mock_get_pending.return_value = None
+        mock_rename_exists.return_value = True
+
+        try:
+            main()
+        except SystemExit:
+            pass
+
+        mock_make_vgroup.assert_not_called()
+        mock_module.fail_json.assert_not_called()
+        mock_module.exit_json.assert_called_once_with(changed=False)
+
+    @patch("plugins.modules.purefa_vg.make_vgroup")
+    @patch("plugins.modules.purefa_vg.rename_exists")
+    @patch("plugins.modules.purefa_vg.get_pending_vgroup")
+    @patch("plugins.modules.purefa_vg.get_vgroup")
+    @patch("plugins.modules.purefa_vg.get_array")
+    @patch("plugins.modules.purefa_vg.AnsibleModule")
+    @patch("plugins.modules.purefa_vg.LooseVersion", side_effect=LooseVersion)
+    @patch("plugins.modules.purefa_vg.HAS_PURESTORAGE", True)
+    def test_main_rename_missing_source_fails(
+        self,
+        mock_lv,
+        mock_ansible_module,
+        mock_get_array,
+        mock_get_vgroup,
+        mock_get_pending,
+        mock_rename_exists,
+        mock_make_vgroup,
+    ):
+        """Rename with neither source nor target present fails instead of
+        creating the source"""
+        from plugins.modules.purefa_vg import main
+
+        mock_module = self._main_module(rename="new-vg")
+        mock_ansible_module.return_value = mock_module
+        mock_array = Mock()
+        mock_array.get_rest_version.return_value = "2.38"
+        mock_array.get_fleets.return_value = Mock(status_code=400, items=[])
+        mock_get_array.return_value = mock_array
+        mock_get_vgroup.return_value = None
+        mock_get_pending.return_value = None
+        mock_rename_exists.return_value = False
+
+        try:
+            main()
+        except SystemExit:
+            pass
+
+        mock_make_vgroup.assert_not_called()
+        mock_module.fail_json.assert_called_once()
+        assert "rename failed" in mock_module.fail_json.call_args[1]["msg"]
+
+    @patch("plugins.modules.purefa_vg.check_response")
+    @patch("plugins.modules.purefa_vg.LooseVersion", side_effect=LooseVersion)
+    def test_update_vgroup_qos_only_keeps_priority(self, mock_lv, mock_check_response):
+        """A QoS-only update does not touch an existing -10 priority"""
+        mock_module = Mock()
+        mock_module.check_mode = False
+        mock_module.params = {
+            "name": "test-vg",
+            "context": "",
+            "bw_qos": "100M",
+            "iops_qos": None,
+            "priority_operator": None,
+            "priority_value": None,
+        }
+        mock_vg = Mock()
+        mock_vg.priority_adjustment = Mock(
+            priority_adjustment_operator="-", priority_adjustment_value=10
+        )
+        mock_vg.qos = Mock(bandwidth_limit=549755813888, iops_limit=100000000)
+        mock_array = Mock()
+        mock_array.get_rest_version.return_value = "2.38"
+        mock_array.get_volume_groups.return_value = Mock(
+            status_code=200, items=[mock_vg]
+        )
+        mock_array.patch_volume_groups.return_value = Mock(status_code=200)
+
+        with patch("plugins.modules.purefa_vg.human_to_bytes", return_value=104857600):
+            update_vgroup(mock_module, mock_array)
+
+        # exactly one patch, and it is the QoS one, not a priority reset
+        mock_array.patch_volume_groups.assert_called_once()
+        mock_module.exit_json.assert_called_once_with(changed=True)
+
+    @patch("plugins.modules.purefa_vg.check_response")
+    @patch("plugins.modules.purefa_vg.LooseVersion", side_effect=LooseVersion)
+    def test_make_vgroup_without_priority_skips_patch(
+        self, mock_lv, mock_check_response
+    ):
+        """Creating a volume group without priority parameters does not
+        patch a priority adjustment"""
+        mock_module = Mock()
+        mock_module.check_mode = False
+        mock_module.params = {
+            "name": "test-vg",
+            "context": "",
+            "bw_qos": None,
+            "iops_qos": None,
+            "priority_operator": None,
+            "priority_value": None,
+        }
+        mock_array = Mock()
+        mock_array.get_rest_version.return_value = "2.38"
+        mock_array.post_volume_groups.return_value = Mock(status_code=200)
+
+        make_vgroup(mock_module, mock_array)
+
+        mock_array.post_volume_groups.assert_called_once()
+        mock_array.patch_volume_groups.assert_not_called()
+        mock_module.exit_json.assert_called_once_with(changed=True)
+
+    @patch("plugins.modules.purefa_vg.LooseVersion", side_effect=LooseVersion)
+    def test_get_multi_vgroups_without_suffix(self, mock_lv):
+        """count without suffix builds names without a None suffix"""
+        mock_module = Mock()
+        mock_module.params = {
+            "name": "vg",
+            "count": 2,
+            "start": 0,
+            "digits": 2,
+            "suffix": "",
+            "context": "",
+        }
+        mock_array = Mock()
+        mock_array.get_rest_version.return_value = "2.38"
+        mock_array.get_volume_groups.return_value = Mock(status_code=200)
+
+        get_multi_vgroups(mock_module, mock_array)
+
+        assert mock_array.get_volume_groups.call_args[1]["names"] == ["vg00", "vg01"]

@@ -284,6 +284,42 @@ class TestCreateAccount:
 
         mock_ad_post_class.assert_called_once()
         mock_module.exit_json.assert_called_once_with(changed=True)
+        assert (
+            "join_existing_account"
+            not in mock_array.post_active_directory.call_args.kwargs
+        )
+
+    @patch("plugins.modules.purefa_ad.ActiveDirectoryPost")
+    @patch("plugins.modules.purefa_ad.check_response")
+    def test_create_account_sends_join_existing_on_current_rest(
+        self, mock_check_response, mock_ad_post_class
+    ):
+        """ "2.15" in "2.54" is a substring test that never matched, so
+        join_existing_account was silently dropped on current Purity"""
+        mock_module = Mock()
+        mock_module.params = {
+            "name": "new-ad",
+            "computer": "array1",
+            "directory_servers": ["dc1.example.com"],
+            "kerberos_servers": ["kdc1.example.com"],
+            "domain": "example.com",
+            "username": "admin",
+            "password": "secret",
+            "join_ou": "OU=Arrays",
+            "tls": "required",
+            "join_existing": True,
+        }
+        mock_module.check_mode = False
+        mock_array = Mock()
+        mock_array.post_active_directory.return_value = Mock(status_code=200)
+
+        from plugins.modules.purefa_ad import create_account
+
+        create_account(mock_module, mock_array, "2.54")
+
+        kwargs = mock_array.post_active_directory.call_args.kwargs
+        assert kwargs["join_existing_account"] is True
+        mock_module.exit_json.assert_called_once_with(changed=True)
 
 
 class TestMain:

@@ -215,10 +215,13 @@ def get_target(module, array):
 def create_offload(module, array):
     """Create offload target"""
     changed = True
-    api_version = array.get_rest_version()
     if not module.check_mode:
+        api_version = array.get_rest_version()
+        profile_supported = LooseVersion(PROFILE_API_VERSION) <= LooseVersion(
+            api_version
+        )
         if module.params["protocol"] == "gcp":
-            if PROFILE_API_VERSION in api_version and module.params["profile"]:
+            if profile_supported and module.params["profile"]:
                 bucket = OffloadGoogleCloud(
                     access_key_id=module.params["access_key"],
                     bucket=module.params["bucket"],
@@ -233,22 +236,22 @@ def create_offload(module, array):
                 )
             offload = OffloadPost(google_cloud=bucket)
         if module.params["protocol"] == "azure":
-            if PROFILE_API_VERSION in api_version and module.params["profile"]:
+            if profile_supported and module.params["profile"]:
                 bucket = OffloadAzure(
                     container_name=module.params["container"],
                     secret_access_key=module.params["secret"],
-                    account_name=module.params[".bucket"],
+                    account_name=module.params["account"],
                     profile=module.params["profile"],
                 )
             else:
                 bucket = OffloadAzure(
                     container_name=module.params["container"],
                     secret_access_key=module.params["secret"],
-                    account_name=module.params["bucket"],
+                    account_name=module.params["account"],
                 )
             offload = OffloadPost(azure=bucket)
         if module.params["protocol"] == "s3":
-            if PROFILE_API_VERSION in api_version and module.params["profile"]:
+            if profile_supported and module.params["profile"]:
                 if module.params["auth_region"]:
                     bucket = OffloadS3(
                         access_key_id=module.params["access_key"],
@@ -275,7 +278,7 @@ def create_offload(module, array):
                 )
             offload = OffloadPost(s3=bucket)
         if module.params["protocol"] == "nfs":
-            if PROFILE_API_VERSION in api_version and module.params["profile"]:
+            if profile_supported and module.params["profile"]:
                 bucket = OffloadNfs(
                     mount_point=module.params["share"],
                     address=module.params["address"],

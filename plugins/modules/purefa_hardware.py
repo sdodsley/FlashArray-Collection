@@ -33,6 +33,7 @@ options:
     description:
     - State of the component identification LED
     type: bool
+    required: true
 extends_documentation_fragment:
 - everpure.flasharray.everpure.fa
 """
@@ -62,6 +63,8 @@ try:
 except ImportError:
     HAS_PURESTORAGE = False
 
+import time
+
 from ansible.module_utils.basic import AnsibleModule
 from ansible_collections.everpure.flasharray.plugins.module_utils.purefa import (
     get_array,
@@ -71,12 +74,42 @@ from ansible_collections.everpure.flasharray.plugins.module_utils.api_helpers im
     check_response,
 )
 
+# How long to wait for the array to report the new LED state after a PATCH
+SETTLE_SECONDS = 5
+SETTLE_POLL_SECONDS = 0.5
+
+
+def read_identify_state(array, name):
+    """Return the component's identify_enabled, or None when unknown"""
+    res = array.get_hardware(names=[name])
+    if res.status_code != 200:
+        return None
+    items = list(res.items)
+    if not items:
+        return None
+    return getattr(items[0], "identify_enabled", None)
+
+
+def wait_for_identify_state(array, name, wanted):
+    """Poll until the array reports the requested LED state or time runs out.
+
+    The array can keep reporting the old identify_enabled for a moment after
+    a successful PATCH, so an immediate re-run patched it again. Returns the
+    last state read; the caller does not fail when it never settled.
+    """
+    deadline = time.monotonic() + SETTLE_SECONDS
+    state = read_identify_state(array, name)
+    while state != wanted and time.monotonic() < deadline:
+        time.sleep(SETTLE_POLL_SECONDS)
+        state = read_identify_state(array, name)
+    return state
+
 
 def main():
     argument_spec = purefa_argument_spec()
     argument_spec.update(
         dict(
-            enabled=dict(type="bool"),
+            enabled=dict(type="bool", required=True),
             name=dict(type="str", required=True),
         )
     )
@@ -88,25 +121,31 @@ def main():
     array = get_array(module)
     changed = False
     res = array.get_hardware(names=[module.params["name"]])
-    if res.status_code == 200:
-        id_state = getattr(list(res.items)[0], "identify_enabled", None)
-        if id_state is not None and id_state != module.params["enabled"]:
-            changed = True
-            if not module.check_mode:
-                # HardwarePatch is the request model. Hardware is the response
-                # model and serialises to an empty body, which the array
-                # rejects with "No operation was specified".
-                res = array.patch_hardware(
-                    names=[module.params["name"]],
-                    hardware=flasharray.HardwarePatch(
-                        identify_enabled=module.params["enabled"]
-                    ),
-                )
-                check_response(
-                    res,
-                    module,
-                    f"Failed to set identification LED for {module.params['name']}",
-                )
+    if res.status_code != 200:
+        module.fail_json(
+            msg=f"Hardware component {module.params['name']} does not exist"
+        )
+    id_state = getattr(list(res.items)[0], "identify_enabled", None)
+    if id_state is not None and id_state != module.params["enabled"]:
+        changed = True
+        if not module.check_mode:
+            # identify_enabled is read-only on the Hardware model, so a
+            # Hardware body serialises to {} and the array answers
+            # "No operation was specified"; HardwarePatch carries the field
+            res = array.patch_hardware(
+                names=[module.params["name"]],
+                hardware=flasharray.HardwarePatch(
+                    identify_enabled=module.params["enabled"]
+                ),
+            )
+            check_response(
+                res,
+                module,
+                f"Failed to set identification LED for {module.params['name']}",
+            )
+            wait_for_identify_state(
+                array, module.params["name"], module.params["enabled"]
+            )
 
     module.exit_json(changed=changed)
 

@@ -408,7 +408,8 @@ def main():
     )
     if res.status_code == 200:
         role = list(res.items)[0]
-    if getattr(role, "group", None) is not None:
+    # A cleared role reads back with group "" rather than no group at all
+    if getattr(role, "group", None):
         role_configured = True
 
     if state == "absent" and role_configured:

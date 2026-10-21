@@ -89,6 +89,16 @@ class TestCreateTimeWindow:
         result = _create_time_window("5x")
         assert result is None
 
+    def test_create_time_window_non_numeric_multiple(self):
+        """A non-numeric multiple returns None instead of raising ValueError"""
+        assert _create_time_window("xw") is None
+        assert _create_time_window("w") is None
+
+    def test_create_time_window_non_positive_multiple(self):
+        """A zero or negative multiple is not a valid window"""
+        assert _create_time_window("0d") is None
+        assert _create_time_window("-1w") is None
+
 
 class TestMain:
     """Tests for main function"""
@@ -155,8 +165,42 @@ class TestMain:
             main()
 
         mock_module.fail_json.assert_called_once_with(
-            msg="historical window value is not an allowsd time period"
+            msg="historical window value is not an allowed time period"
         )
+
+    @patch("plugins.modules.purefa_messages.get_with_context")
+    @patch("plugins.modules.purefa_messages.get_array")
+    @patch("plugins.modules.purefa_messages.AnsibleModule")
+    def test_main_malformed_history_multiple_fails(
+        self,
+        mock_ansible_module,
+        mock_get_array,
+        mock_get_with_context,
+    ):
+        """A history such as "xw" fails cleanly instead of a ValueError"""
+        mock_module = Mock()
+        mock_module.params = {
+            "state": "open",
+            "history": "xw",
+            "flagged": False,
+            "severity": "info",
+            "context": "",
+        }
+        mock_module.fail_json.side_effect = SystemExit(1)
+        mock_ansible_module.return_value = mock_module
+
+        mock_array = Mock()
+        mock_array.get_rest_version.return_value = "2.10"
+        mock_get_array.return_value = mock_array
+
+        with pytest.raises(SystemExit):
+            main()
+
+        mock_module.fail_json.assert_called_once_with(
+            msg="history must be a positive integer followed by one of "
+            "h, d, w or y, for example 4w"
+        )
+        mock_get_with_context.assert_not_called()
 
     @patch("plugins.modules.purefa_messages.time")
     @patch("plugins.modules.purefa_messages.get_with_context")

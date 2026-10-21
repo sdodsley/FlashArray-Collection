@@ -429,3 +429,92 @@ class TestSyslogSettingsChange:
         main()
 
         mock_module.exit_json.assert_called_once_with(changed=False)
+
+
+def _settings_without_cert():
+    """Current settings as the SDK model exposes them with no CA certificate"""
+    mock_current = Mock(spec=["tls_audit_enabled", "logging_severity"])
+    mock_current.tls_audit_enabled = True
+    mock_current.logging_severity = "info"
+    return mock_current
+
+
+class TestSyslogSettingsAddCertificate:
+    """Test cases for adding a CA certificate where none exists"""
+
+    @patch("plugins.modules.purefa_syslog_settings.flasharray")
+    @patch("plugins.modules.purefa_syslog_settings.LooseVersion")
+    @patch("plugins.modules.purefa_syslog_settings.check_response")
+    @patch("plugins.modules.purefa_syslog_settings.get_with_context")
+    @patch("plugins.modules.purefa_syslog_settings.get_array")
+    @patch("plugins.modules.purefa_syslog_settings.AnsibleModule")
+    def test_add_certificate_from_scratch(
+        self,
+        mock_ansible_module,
+        mock_get_array,
+        mock_get_with_context,
+        mock_check_response,
+        mock_lv,
+        mock_flasharray,
+    ):
+        """A certificate can be added when the array has none"""
+        mock_module = Mock()
+        mock_module.check_mode = False
+        mock_module.params = {
+            "severity": "info",
+            "tls_audit": True,
+            "ca_certificate": "new cert content",
+            "context": "",
+        }
+        mock_ansible_module.return_value = mock_module
+
+        mock_array = Mock()
+        mock_array.get_rest_version.return_value = "2.10"
+        mock_get_array.return_value = mock_array
+        mock_lv.side_effect = lambda x: float(x.replace(".", "")) / 100
+
+        mock_response = Mock()
+        mock_response.items = [_settings_without_cert()]
+        mock_get_with_context.return_value = mock_response
+
+        main()
+
+        mock_module.exit_json.assert_called_once_with(changed=True)
+        settings_kwargs = mock_flasharray.SyslogServerSettings.call_args[1]
+        assert settings_kwargs["ca_certificate"] == "new cert content"
+        assert settings_kwargs["tls_audit_enabled"] is True
+        assert settings_kwargs["logging_severity"] == "info"
+        # get_syslog_servers_settings and patch_syslog_servers_settings
+        assert mock_get_with_context.call_count == 2
+
+    @patch("plugins.modules.purefa_syslog_settings.LooseVersion")
+    @patch("plugins.modules.purefa_syslog_settings.get_with_context")
+    @patch("plugins.modules.purefa_syslog_settings.get_array")
+    @patch("plugins.modules.purefa_syslog_settings.AnsibleModule")
+    def test_delete_certificate_when_none_exists(
+        self, mock_ansible_module, mock_get_array, mock_get_with_context, mock_lv
+    ):
+        """DELETE with no certificate present is not a change"""
+        mock_module = Mock()
+        mock_module.check_mode = False
+        mock_module.params = {
+            "severity": "info",
+            "tls_audit": True,
+            "ca_certificate": "DELETE",
+            "context": "",
+        }
+        mock_ansible_module.return_value = mock_module
+
+        mock_array = Mock()
+        mock_array.get_rest_version.return_value = "2.10"
+        mock_get_array.return_value = mock_array
+        mock_lv.side_effect = lambda x: float(x.replace(".", "")) / 100
+
+        mock_response = Mock()
+        mock_response.items = [_settings_without_cert()]
+        mock_get_with_context.return_value = mock_response
+
+        main()
+
+        mock_module.exit_json.assert_called_once_with(changed=False)
+        assert mock_get_with_context.call_count == 1

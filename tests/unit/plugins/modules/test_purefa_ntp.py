@@ -49,7 +49,124 @@ from plugins.modules.purefa_ntp import (
     test_ntp as ntp_test_func,
     create_ntp,
     update_ntp_key,
+    main,
 )
+
+
+def _physical_array(ntp_servers):
+    """A non-CBS array whose current NTP servers are ``ntp_servers``"""
+    mock_array = Mock()
+    mock_array.get_rest_version.return_value = "2.38"
+    mock_array.get_controllers.return_value = Mock(items=[Mock(model="FA-X70")])
+    mock_array_obj = Mock()
+    mock_array_obj.ntp_servers = ntp_servers
+    return mock_array, Mock(items=[mock_array_obj])
+
+
+class TestMain:
+    """Test cases for main function"""
+
+    @patch("plugins.modules.purefa_ntp.test_ntp")
+    @patch("plugins.modules.purefa_ntp.get_array")
+    @patch("plugins.modules.purefa_ntp.AnsibleModule")
+    def test_main_state_test_without_context(
+        self, mock_ansible_module, mock_get_array, mock_test_ntp
+    ):
+        """state=test runs the test when no context is given"""
+        mock_module = Mock()
+        mock_module.params = {
+            "state": "test",
+            "context": "",
+            "ntp_servers": None,
+            "ntp_key": None,
+        }
+        mock_ansible_module.return_value = mock_module
+        mock_array, _unused = _physical_array([])
+        mock_get_array.return_value = mock_array
+
+        main()
+
+        mock_module.fail_json.assert_not_called()
+        mock_test_ntp.assert_called_once_with(mock_module, mock_array)
+
+    @patch("plugins.modules.purefa_ntp.test_ntp")
+    @patch("plugins.modules.purefa_ntp.get_array")
+    @patch("plugins.modules.purefa_ntp.AnsibleModule")
+    def test_main_state_test_with_context_fails(
+        self, mock_ansible_module, mock_get_array, mock_test_ntp
+    ):
+        """state=test is refused for a fleet context"""
+        import pytest
+
+        mock_module = Mock()
+        mock_module.params = {
+            "state": "test",
+            "context": "array2",
+            "ntp_servers": None,
+            "ntp_key": None,
+        }
+        mock_module.fail_json.side_effect = SystemExit(1)
+        mock_ansible_module.return_value = mock_module
+        mock_array, _unused = _physical_array([])
+        mock_get_array.return_value = mock_array
+
+        with pytest.raises(SystemExit):
+            main()
+
+        mock_module.fail_json.assert_called_once_with(
+            msg="NTP testing is not supported with context"
+        )
+        mock_test_ntp.assert_not_called()
+
+    @patch("plugins.modules.purefa_ntp.create_ntp")
+    @patch("plugins.modules.purefa_ntp.get_with_context")
+    @patch("plugins.modules.purefa_ntp.get_array")
+    @patch("plugins.modules.purefa_ntp.AnsibleModule")
+    def test_main_present_without_servers_applies_default(
+        self, mock_ansible_module, mock_get_array, mock_get_with_context, mock_create
+    ):
+        """state=present with no list sets the documented default server"""
+        mock_module = Mock()
+        mock_module.params = {
+            "state": "present",
+            "context": "",
+            "ntp_servers": None,
+            "ntp_key": None,
+        }
+        mock_ansible_module.return_value = mock_module
+        mock_array, arrays_response = _physical_array([])
+        mock_get_array.return_value = mock_array
+        mock_get_with_context.return_value = arrays_response
+
+        main()
+
+        assert mock_module.params["ntp_servers"] == ["0.pool.ntp.org"]
+        mock_create.assert_called_once_with(mock_module, mock_array)
+
+    @patch("plugins.modules.purefa_ntp.create_ntp")
+    @patch("plugins.modules.purefa_ntp.get_with_context")
+    @patch("plugins.modules.purefa_ntp.get_array")
+    @patch("plugins.modules.purefa_ntp.AnsibleModule")
+    def test_main_present_default_already_set(
+        self, mock_ansible_module, mock_get_array, mock_get_with_context, mock_create
+    ):
+        """state=present with no list is idempotent once the default is set"""
+        mock_module = Mock()
+        mock_module.params = {
+            "state": "present",
+            "context": "",
+            "ntp_servers": None,
+            "ntp_key": None,
+        }
+        mock_ansible_module.return_value = mock_module
+        mock_array, arrays_response = _physical_array(["0.pool.ntp.org"])
+        mock_get_array.return_value = mock_array
+        mock_get_with_context.return_value = arrays_response
+
+        main()
+
+        mock_create.assert_not_called()
+        mock_module.exit_json.assert_called_once_with(changed=False)
 
 
 class TestRemove:
@@ -161,10 +278,60 @@ class TestNtpTest:
 
         mock_module.exit_json.assert_called_once()
         call_args = mock_module.exit_json.call_args[1]
-        assert call_args["changed"] is True
+        # Running a test is read-only
+        assert call_args["changed"] is False
         assert len(call_args["test_response"]) == 1
         assert call_args["test_response"][0]["enabled"] == "true"
         assert call_args["test_response"][0]["success"] == "true"
+
+    def test_ntp_test_sparse_result(self):
+        """A TestResult without resource or optional fields must not crash"""
+        mock_module = Mock()
+        mock_module.params = {"context": ""}
+        mock_array = Mock()
+
+        mock_result = Mock(spec=["enabled", "success", "component_name"])
+        mock_result.enabled = True
+        mock_result.success = False
+        mock_result.component_name = "ct0"
+        mock_array.get_arrays_ntp_test.return_value = Mock(
+            status_code=200, items=[mock_result]
+        )
+
+        ntp_test_func(mock_module, mock_array)
+
+        result = mock_module.exit_json.call_args[1]["test_response"][0]
+        assert result["enabled"] == "true"
+        assert result["success"] == "false"
+        assert result["component_name"] == "ct0"
+        assert result["resource_name"] is None
+        assert result["destination"] is None
+        assert result["component_address"] is None
+        assert result["test_type"] is None
+        assert result["result_details"] == ""
+
+    @patch("plugins.modules.purefa_ntp.check_response")
+    def test_ntp_test_error_response(self, mock_check_response):
+        """An error response is handed to check_response before .items is read"""
+        import pytest
+
+        mock_module = Mock()
+        mock_module.params = {"context": ""}
+        mock_module.fail_json.side_effect = SystemExit(1)
+        mock_array = Mock()
+        error_response = Mock(spec=["status_code", "errors"])
+        error_response.status_code = 400
+        error_response.errors = [Mock(message="boom")]
+        mock_array.get_arrays_ntp_test.return_value = error_response
+        mock_check_response.side_effect = lambda res, module, op: module.fail_json(
+            msg=op
+        )
+
+        with pytest.raises(SystemExit):
+            ntp_test_func(mock_module, mock_array)
+
+        assert mock_check_response.call_args[0][0] is error_response
+        mock_module.exit_json.assert_not_called()
 
 
 class TestCreateNtp:

@@ -633,27 +633,42 @@ def update_interface(module, array):
                         f"Failed to update subinterfaces for {interface.name}",
                     )
             else:
-                try:
-                    if valid_ipv4(new_state["address"]):
-                        empty_gateway = "0.0.0.0"
-                    else:
-                        empty_gateway = "::"
-                except Exception:
-                    empty_gateway = "::"
-                res = array.patch_network_interfaces(
-                    names=[interface.name],
-                    network=NetworkInterfacePatch(
-                        eth=NetworkinterfacepatchEth(
-                            address=new_state["address"],
-                            mtu=new_state["mtu"],
-                            netmask=new_state["netmask"],
-                            gateway=empty_gateway,
-                        )
-                    ),
-                )
-                check_response(
-                    res, module, f"Failed to update IP settings for {interface.name}"
-                )
+                # The interface has no gateway. Only send the IP settings that
+                # are changing: sending the full set here put None into the
+                # address, MTU and netmask and a cleared gateway of "::" into
+                # a patch that may only have been changing the MTU.
+                comparable_new = _comparable_state(new_state)
+                comparable_current = _comparable_state(current_state)
+                eth_settings = {}
+                if (
+                    comparable_new["address"] != comparable_current["address"]
+                    or comparable_new["netmask"] != comparable_current["netmask"]
+                ):
+                    eth_settings["address"] = new_state["address"]
+                    eth_settings["netmask"] = new_state["netmask"]
+                    # A new address goes with an explicitly cleared gateway of
+                    # the matching IP version
+                    try:
+                        if valid_ipv4(new_state["address"]):
+                            eth_settings["gateway"] = "0.0.0.0"
+                        else:
+                            eth_settings["gateway"] = "::"
+                    except Exception:
+                        eth_settings["gateway"] = "::"
+                if new_state["mtu"] != current_state["mtu"]:
+                    eth_settings["mtu"] = new_state["mtu"]
+                if eth_settings:
+                    res = array.patch_network_interfaces(
+                        names=[interface.name],
+                        network=NetworkInterfacePatch(
+                            eth=NetworkinterfacepatchEth(**eth_settings)
+                        ),
+                    )
+                    check_response(
+                        res,
+                        module,
+                        f"Failed to update IP settings for {interface.name}",
+                    )
                 if (
                     current_state["subinterfaces"] != new_state["subinterfaces"]
                     and new_state["subinterfaces"] != []
@@ -933,12 +948,28 @@ def main():
             module.fail_json(
                 msg="interface type not compatible with provided subinterfaces | subordinates"
             )
+        # The array rejects a virtual interface name containing a hyphen with
+        # a bare "Invalid network interface name", so say what is wrong first
+        if (
+            creating_new_if
+            and module.params["state"] == "present"
+            and "-" in module.params["name"]
+        ):
+            module.fail_json(
+                msg="Invalid network interface name {0}: {1} interface names "
+                "may not contain hyphens".format(
+                    module.params["name"], module.params["interface"]
+                )
+            )
         interface = bool(
             array.get_network_interfaces(names=[module.params["name"]]).status_code
             == 200
         )
         if not creating_new_if:
             if not interface:
+                if module.params["state"] == "absent":
+                    # Deleting an interface that is already gone is a no-op
+                    module.exit_json(changed=False)
                 module.fail_json(msg="Invalid network interface specified.")
             elif module.params["state"] == "present":
                 update_interface(module, array)

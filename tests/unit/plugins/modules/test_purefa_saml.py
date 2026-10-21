@@ -112,10 +112,60 @@ class TestSamlTest:
 
         mock_module.exit_json.assert_called_once()
         call_args = mock_module.exit_json.call_args[1]
-        assert call_args["changed"] is True
+        # Running a test is read-only
+        assert call_args["changed"] is False
         assert len(call_args["test_response"]) == 1
         assert call_args["test_response"][0]["enabled"] == "true"
         assert call_args["test_response"][0]["success"] == "true"
+
+    def test_saml_test_sparse_result(self):
+        """A TestResult without resource or optional fields must not crash"""
+        mock_module = Mock()
+        mock_module.params = {"name": "saml1"}
+        mock_array = Mock()
+
+        mock_result = Mock(spec=["enabled", "success", "component_name"])
+        mock_result.enabled = True
+        mock_result.success = False
+        mock_result.component_name = "ct0"
+        mock_array.get_sso_saml2_idps_test.return_value = Mock(
+            status_code=200, items=[mock_result]
+        )
+
+        saml_test_func(mock_module, mock_array)
+
+        result = mock_module.exit_json.call_args[1]["test_response"][0]
+        assert result["enabled"] == "true"
+        assert result["success"] == "false"
+        assert result["component_name"] == "ct0"
+        assert result["resource_name"] is None
+        assert result["destination"] is None
+        assert result["component_address"] is None
+        assert result["test_type"] is None
+        assert result["result_details"] == ""
+
+    @patch("plugins.modules.purefa_saml.check_response")
+    def test_saml_test_error_response(self, mock_check_response):
+        """An error response is handed to check_response before .items is read"""
+        import pytest
+
+        mock_module = Mock()
+        mock_module.params = {"name": "saml1"}
+        mock_module.fail_json.side_effect = SystemExit(1)
+        mock_array = Mock()
+        error_response = Mock(spec=["status_code", "errors"])
+        error_response.status_code = 400
+        error_response.errors = [Mock(message="boom")]
+        mock_array.get_sso_saml2_idps_test.return_value = error_response
+        mock_check_response.side_effect = lambda res, module, op: module.fail_json(
+            msg=op
+        )
+
+        with pytest.raises(SystemExit):
+            saml_test_func(mock_module, mock_array)
+
+        assert mock_check_response.call_args[0][0] is error_response
+        mock_module.exit_json.assert_not_called()
 
 
 class TestCreateSaml:
@@ -167,6 +217,64 @@ class TestCreateSaml:
 
         mock_array.post_sso_saml2_idps.assert_called_once()
         mock_module.exit_json.assert_called_once_with(changed=True)
+
+    @patch("plugins.modules.purefa_saml.Saml2SsoSp")
+    @patch("plugins.modules.purefa_saml.ReferenceNoId")
+    @patch("plugins.modules.purefa_saml.check_response")
+    def test_create_saml_without_credentials_omits_references(
+        self, mock_check_response, mock_reference, mock_sp
+    ):
+        """No ReferenceNoId(name=None) is sent for an unset credential"""
+        mock_module = Mock()
+        mock_module.check_mode = False
+        mock_module.params = {
+            "name": "saml1",
+            "array_url": "https://array.example.com",
+            "url": "https://idp.example.com",
+            "metadata_url": "https://idp.example.com/metadata",
+            "sign_request": False,
+            "encrypt_asserts": False,
+            "x509_cert": None,
+            "decryption_credential": None,
+            "signing_credential": None,
+            "enabled": False,
+        }
+        mock_array = Mock()
+        mock_array.post_sso_saml2_idps.return_value = Mock(status_code=200)
+
+        create_saml(mock_module, mock_array)
+
+        mock_reference.assert_not_called()
+        mock_sp.assert_called_once_with()
+        mock_array.post_sso_saml2_idps.assert_called_once()
+
+    @patch("plugins.modules.purefa_saml.Saml2SsoSp")
+    @patch("plugins.modules.purefa_saml.ReferenceNoId")
+    @patch("plugins.modules.purefa_saml.check_response")
+    def test_create_saml_with_one_credential(
+        self, mock_check_response, mock_reference, mock_sp
+    ):
+        mock_module = Mock()
+        mock_module.check_mode = False
+        mock_module.params = {
+            "name": "saml1",
+            "array_url": "https://array.example.com",
+            "url": "https://idp.example.com",
+            "metadata_url": None,
+            "sign_request": True,
+            "encrypt_asserts": False,
+            "x509_cert": None,
+            "decryption_credential": None,
+            "signing_credential": "sign-cred",
+            "enabled": False,
+        }
+        mock_array = Mock()
+        mock_array.post_sso_saml2_idps.return_value = Mock(status_code=200)
+
+        create_saml(mock_module, mock_array)
+
+        mock_reference.assert_called_once_with(name="sign-cred")
+        assert list(mock_sp.call_args.kwargs) == ["signing_credential"]
 
 
 class TestUpdateSaml:

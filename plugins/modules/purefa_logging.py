@@ -84,9 +84,10 @@ def main():
     array = get_array(module)
     api_version = array.get_rest_version()
     audits = []
+    # Listing logs never modifies the array, so this module always reports
+    # changed=False.
     changed = False
     if LooseVersion(AUDIT_API_VERSION) <= LooseVersion(api_version):
-        changed = True
         if not module.check_mode:
             if module.params["log_type"] == "audit":
                 all_audits = list(

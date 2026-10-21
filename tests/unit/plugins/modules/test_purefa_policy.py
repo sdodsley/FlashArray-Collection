@@ -4586,3 +4586,551 @@ class TestMainRenameIdempotency:
 
         assert mock_create_policy.call_args[0][:2] == (mock_module, mock_array)
         mock_check_renamed_policy.assert_not_called()
+
+
+def _nfs_module(**overrides):
+    mock_module = Mock()
+    mock_module.params = {
+        "name": "nfs_policy",
+        "policy": "nfs",
+        "enabled": True,
+        "client": "10.0.0.0/8",
+        "nfs_permission": "rw",
+        "nfs_access": "root-squash",
+        "nfs_version": ["nfsv4"],
+        "security": ["krb5"],
+        "anongid": "65534",
+        "anonuid": "65534",
+        "directory": None,
+        "user_mapping": True,
+        "context": "",
+    }
+    mock_module.params.update(overrides)
+    mock_module.check_mode = False
+    return mock_module
+
+
+def _nfs_policy():
+    mock_policy = Mock()
+    mock_policy.enabled = True
+    mock_policy.user_mapping_enabled = True
+    mock_policy.nfs_version = ["nfsv4"]
+    return mock_policy
+
+
+def _nfs_rule(**overrides):
+    rule = Mock()
+    rule.name = "nfs_policy.1"
+    rule.client = "10.0.0.0/8"
+    rule.permission = "rw"
+    rule.access = "root-squash"
+    rule.anonuid = "65534"
+    rule.anongid = "65534"
+    rule.nfs_version = ["nfsv4"]
+    rule.security = ["krb5"]
+    for key, value in overrides.items():
+        setattr(rule, key, value)
+    return rule
+
+
+def _by_method(responses):
+    """Side effect for get_with_context keyed on the SDK method name"""
+
+    def side_effect(*args, **kwargs):
+        return responses[args[1]]
+
+    return side_effect
+
+
+class TestRenameAutodirPolicy:
+    @patch("plugins.modules.purefa_policy.LooseVersion", side_effect=LooseVersion)
+    @patch("plugins.modules.purefa_policy.PolicyPatch")
+    def test_rename_autodir_policy_uses_autodir_endpoint(
+        self, mock_policy_patch, mock_lv
+    ):
+        """autodir renames must not go through the quota endpoint"""
+        mock_module = Mock()
+        mock_module.params = {
+            "name": "old_policy",
+            "rename": "new_policy",
+            "policy": "autodir",
+            "context": "",
+        }
+        mock_module.check_mode = False
+        mock_array = Mock()
+        mock_array.get_rest_version.return_value = "2.38"
+        mock_array.get_policies.return_value = Mock(status_code=400)
+        mock_array.patch_policies_autodir.return_value = Mock(status_code=200)
+
+        rename_policy(mock_module, mock_array)
+
+        mock_array.patch_policies_autodir.assert_called_once()
+        mock_array.patch_policies_quota.assert_not_called()
+        mock_module.fail_json.assert_not_called()
+        mock_module.exit_json.assert_called_once_with(changed=True)
+
+    @patch("plugins.modules.purefa_policy.LooseVersion", side_effect=LooseVersion)
+    def test_check_renamed_policy_without_destroyed_field(self, mock_lv):
+        """Generic Policy objects have no destroyed attribute"""
+        from types import SimpleNamespace
+        from plugins.modules.purefa_policy import check_renamed_policy
+
+        mock_module = Mock()
+        mock_module.params = {
+            "name": "old_policy",
+            "rename": "new_policy",
+            "policy": "autodir",
+            "context": "",
+        }
+        mock_array = Mock()
+        mock_array.get_rest_version.return_value = "2.38"
+        mock_array.get_policies.return_value = Mock(
+            status_code=200, items=[SimpleNamespace(name="new_policy")]
+        )
+
+        check_renamed_policy(mock_module, mock_array)
+
+        mock_module.fail_json.assert_not_called()
+        mock_module.exit_json.assert_called_once_with(changed=False)
+
+
+class TestNfsClientRuleUpdates:
+    """First rule keeps nfs_version/security; existing rules are patched"""
+
+    @patch("plugins.modules.purefa_policy.check_response")
+    @patch("plugins.modules.purefa_policy.PolicyrulenfsclientpostRules")
+    @patch("plugins.modules.purefa_policy.post_with_context")
+    @patch("plugins.modules.purefa_policy.get_with_context")
+    @patch("plugins.modules.purefa_policy.LooseVersion", side_effect=LooseVersion)
+    def test_first_nfs_rule_keeps_version_and_security(
+        self, mock_lv, mock_get, mock_post, mock_rules, mock_check
+    ):
+        mock_module = _nfs_module()
+        mock_array = Mock()
+        mock_array.get_rest_version.return_value = "2.38"
+        mock_get.side_effect = _by_method(
+            {
+                "get_policies_nfs": Mock(status_code=200, items=[_nfs_policy()]),
+                "get_policies_nfs_client_rules": Mock(status_code=200, items=[]),
+            }
+        )
+        mock_post.return_value = Mock(status_code=200)
+
+        update_policy(mock_module, mock_array, "2.38", True)
+
+        mock_rules.assert_called_once_with(
+            client="10.0.0.0/8",
+            permission="rw",
+            access="root-squash",
+            anongid="65534",
+            anonuid="65534",
+            nfs_version=["nfsv4"],
+            security=["krb5"],
+        )
+        mock_post.assert_called_once()
+        mock_module.exit_json.assert_called_once_with(changed=True)
+
+    @patch("plugins.modules.purefa_policy.check_response")
+    @patch("plugins.modules.purefa_policy.PolicyrulenfsclientpatchRules")
+    @patch("plugins.modules.purefa_policy.patch_with_context")
+    @patch("plugins.modules.purefa_policy.post_with_context")
+    @patch("plugins.modules.purefa_policy.get_with_context")
+    @patch("plugins.modules.purefa_policy.LooseVersion", side_effect=LooseVersion)
+    def test_existing_nfs_rule_is_patched_when_permission_differs(
+        self, mock_lv, mock_get, mock_post, mock_patch, mock_patch_rules, mock_check
+    ):
+        mock_module = _nfs_module()
+        mock_array = Mock()
+        mock_array.get_rest_version.return_value = "2.38"
+        mock_get.side_effect = _by_method(
+            {
+                "get_policies_nfs": Mock(status_code=200, items=[_nfs_policy()]),
+                "get_policies_nfs_client_rules": Mock(
+                    status_code=200, items=[_nfs_rule(permission="ro")]
+                ),
+            }
+        )
+        mock_patch.return_value = Mock(status_code=200)
+
+        update_policy(mock_module, mock_array, "2.38", True)
+
+        mock_post.assert_not_called()
+        mock_patch.assert_called_once()
+        assert mock_patch.call_args[0][1] == "patch_policies_nfs_client_rules"
+        assert mock_patch.call_args[1]["names"] == ["nfs_policy.1"]
+        assert mock_patch.call_args[1]["policy_names"] == ["nfs_policy"]
+        mock_patch_rules.assert_called_once_with(
+            permission="rw",
+            access="root-squash",
+            anongid="65534",
+            anonuid="65534",
+            nfs_version=["nfsv4"],
+            security=["krb5"],
+        )
+        mock_module.exit_json.assert_called_once_with(changed=True)
+
+    @patch("plugins.modules.purefa_policy.patch_with_context")
+    @patch("plugins.modules.purefa_policy.post_with_context")
+    @patch("plugins.modules.purefa_policy.get_with_context")
+    @patch("plugins.modules.purefa_policy.LooseVersion", side_effect=LooseVersion)
+    def test_existing_matching_nfs_rule_is_noop(
+        self, mock_lv, mock_get, mock_post, mock_patch
+    ):
+        mock_module = _nfs_module()
+        mock_array = Mock()
+        mock_array.get_rest_version.return_value = "2.38"
+        mock_get.side_effect = _by_method(
+            {
+                "get_policies_nfs": Mock(status_code=200, items=[_nfs_policy()]),
+                "get_policies_nfs_client_rules": Mock(
+                    status_code=200, items=[_nfs_rule()]
+                ),
+            }
+        )
+
+        update_policy(mock_module, mock_array, "2.38", True)
+
+        mock_post.assert_not_called()
+        mock_patch.assert_not_called()
+        mock_module.exit_json.assert_called_once_with(changed=False)
+
+    @patch("plugins.modules.purefa_policy.check_response")
+    @patch("plugins.modules.purefa_policy.PolicyNfsPatch")
+    @patch("plugins.modules.purefa_policy.patch_with_context")
+    @patch("plugins.modules.purefa_policy.get_with_context")
+    @patch("plugins.modules.purefa_policy.LooseVersion", side_effect=LooseVersion)
+    def test_user_mapping_false_is_applied(
+        self, mock_lv, mock_get, mock_patch, mock_nfs_patch, mock_check
+    ):
+        mock_module = _nfs_module(client=None, user_mapping=False)
+        mock_array = Mock()
+        mock_array.get_rest_version.return_value = "2.38"
+        mock_get.side_effect = _by_method(
+            {
+                "get_policies_nfs": Mock(status_code=200, items=[_nfs_policy()]),
+                # nfs_version is only compared once the policy has rules
+                "get_policies_nfs_client_rules": Mock(
+                    status_code=200, items=[_nfs_rule()]
+                ),
+            }
+        )
+        mock_patch.return_value = Mock(status_code=200)
+
+        update_policy(mock_module, mock_array, "2.38", True)
+
+        mock_nfs_patch.assert_called_once_with(user_mapping_enabled=False)
+        mock_module.exit_json.assert_called_once_with(changed=True)
+
+
+class TestSmbClientRuleReplace:
+    @patch("plugins.modules.purefa_policy.check_response")
+    @patch("plugins.modules.purefa_policy.delete_with_context")
+    @patch("plugins.modules.purefa_policy.post_with_context")
+    @patch("plugins.modules.purefa_policy.patch_with_context")
+    @patch("plugins.modules.purefa_policy.get_with_context")
+    @patch("plugins.modules.purefa_policy.LooseVersion", side_effect=LooseVersion)
+    def test_existing_smb_rule_is_replaced_when_settings_differ(
+        self, mock_lv, mock_get, mock_patch, mock_post, mock_delete, mock_check
+    ):
+        mock_module = Mock()
+        mock_module.params = {
+            "name": "smb_policy",
+            "policy": "smb",
+            "enabled": True,
+            "client": "192.168.1.0/24",
+            "smb_anon_allowed": True,
+            "smb_encrypt": False,
+            "access_based_enumeration": False,
+            "continuous_availability": False,
+            "directory": None,
+            "context": "",
+        }
+        mock_module.check_mode = False
+        mock_array = Mock()
+        mock_array.get_rest_version.return_value = "2.43"
+        mock_policy = Mock()
+        mock_policy.enabled = True
+        mock_policy.access_based_enumeration_enabled = False
+        mock_policy.continuous_availability_enabled = False
+        rule = Mock()
+        rule.name = "smb_policy.1"
+        rule.client = "192.168.1.0/24"
+        rule.anonymous_access_allowed = False
+        rule.smb_encryption_required = False
+        mock_get.side_effect = _by_method(
+            {
+                "get_policies_smb": Mock(status_code=200, items=[mock_policy]),
+                "get_policies_smb_client_rules": Mock(status_code=200, items=[rule]),
+            }
+        )
+        mock_delete.return_value = Mock(status_code=200)
+        mock_post.return_value = Mock(status_code=200)
+
+        update_policy(mock_module, mock_array, "2.43", False)
+
+        mock_delete.assert_called_once()
+        assert mock_delete.call_args[0][1] == "delete_policies_smb_client_rules"
+        assert mock_delete.call_args[1]["names"] == ["smb_policy.1"]
+        mock_post.assert_called_once()
+        mock_module.exit_json.assert_called_once_with(changed=True)
+
+
+class TestSnapshotRuleModify:
+    @staticmethod
+    def _module(snap_keep_for):
+        mock_module = Mock()
+        mock_module.params = {
+            "name": "snap_policy",
+            "policy": "snapshot",
+            "enabled": True,
+            "snap_at": None,
+            "snap_every": 60,
+            "snap_keep_for": snap_keep_for,
+            "snap_client_name": "client1",
+            "snap_suffix": None,
+            "directory": None,
+            "context": "",
+        }
+        mock_module.check_mode = False
+        return mock_module
+
+    @staticmethod
+    def _responses():
+        mock_policy = Mock()
+        mock_policy.enabled = True
+        rule = Mock()
+        rule.name = "snap_policy.1"
+        rule.client_name = "client1"
+        rule.every = 60 * 60000
+        rule.keep_for = 120 * 60000
+        return _by_method(
+            {
+                "get_policies_snapshot": Mock(status_code=200, items=[mock_policy]),
+                "get_policies_snapshot_rules": Mock(status_code=200, items=[rule]),
+            }
+        )
+
+    @patch("plugins.modules.purefa_policy.check_response")
+    @patch("plugins.modules.purefa_policy.PolicyrulesnapshotpatchRules")
+    @patch("plugins.modules.purefa_policy.patch_with_context")
+    @patch("plugins.modules.purefa_policy.post_with_context")
+    @patch("plugins.modules.purefa_policy.get_with_context")
+    @patch("plugins.modules.purefa_policy.LooseVersion", side_effect=LooseVersion)
+    def test_existing_snapshot_rule_is_patched(
+        self, mock_lv, mock_get, mock_post, mock_patch, mock_patch_rules, mock_check
+    ):
+        mock_module = self._module(240)
+        mock_array = Mock()
+        mock_array.get_rest_version.return_value = "2.38"
+        mock_get.side_effect = self._responses()
+        mock_patch.return_value = Mock(status_code=200)
+
+        update_policy(mock_module, mock_array, "2.38", False)
+
+        mock_post.assert_not_called()
+        mock_patch.assert_called_once()
+        assert mock_patch.call_args[0][1] == "patch_policies_snapshot_rules"
+        assert mock_patch.call_args[1]["names"] == ["snap_policy.1"]
+        mock_patch_rules.assert_called_once_with(every=60 * 60000, keep_for=240 * 60000)
+        mock_module.exit_json.assert_called_once_with(changed=True)
+
+    @patch("plugins.modules.purefa_policy.patch_with_context")
+    @patch("plugins.modules.purefa_policy.post_with_context")
+    @patch("plugins.modules.purefa_policy.get_with_context")
+    @patch("plugins.modules.purefa_policy.LooseVersion", side_effect=LooseVersion)
+    def test_existing_matching_snapshot_rule_is_noop(
+        self, mock_lv, mock_get, mock_post, mock_patch
+    ):
+        mock_module = self._module(120)
+        mock_array = Mock()
+        mock_array.get_rest_version.return_value = "2.38"
+        mock_get.side_effect = self._responses()
+
+        update_policy(mock_module, mock_array, "2.38", False)
+
+        mock_post.assert_not_called()
+        mock_patch.assert_not_called()
+        mock_module.exit_json.assert_called_once_with(changed=False)
+
+
+class TestPasswordPolicyZeroValues:
+    @patch("plugins.modules.purefa_policy.check_response")
+    @patch("plugins.modules.purefa_policy.patch_with_context")
+    @patch("plugins.modules.purefa_policy.get_with_context")
+    @patch("plugins.modules.purefa_policy.LooseVersion", side_effect=LooseVersion)
+    @patch("plugins.modules.purefa_policy.PolicyPassword")
+    def test_password_history_zero_is_applied(
+        self, mock_pwd, mock_lv, mock_get, mock_patch, mock_check
+    ):
+        mock_module = Mock()
+        mock_module.params = {
+            "name": "password_policy",
+            "policy": "password",
+            "enabled": True,
+            "enforce_dictionary_check": None,
+            "enforce_username_check": None,
+            "min_character_groups": None,
+            "min_characters_per_group": None,
+            "min_password_length": None,
+            "min_password_age": None,
+            "max_password_age": None,
+            "max_login_attempts": None,
+            "lockout_duration": None,
+            "password_history": 0,
+            "directory": None,
+            "context": "",
+        }
+        mock_module.check_mode = False
+        mock_array = Mock()
+        mock_array.get_rest_version.return_value = "2.38"
+        mock_policy = Mock()
+        mock_policy.enabled = True
+        mock_policy.enforce_dictionary_check = False
+        mock_policy.enforce_username_check = False
+        mock_policy.min_character_groups = 1
+        mock_policy.min_characters_per_group = 1
+        mock_policy.min_password_length = 8
+        mock_policy.min_password_age = 0
+        mock_policy.max_password_age = 0
+        mock_policy.max_login_attempts = 5
+        mock_policy.lockout_duration = 600000
+        mock_policy.password_history = 3
+        mock_get.return_value = Mock(status_code=200, items=[mock_policy])
+        mock_patch.return_value = Mock(status_code=200)
+
+        update_policy(mock_module, mock_array, "2.38", False)
+
+        mock_patch.assert_called_once()
+        assert mock_pwd.call_args[1]["password_history"] == 0
+        mock_module.exit_json.assert_called_once_with(changed=True)
+
+
+class TestQuotaRuleEnforcedUpdate:
+    @patch("plugins.modules.purefa_policy.check_response")
+    @patch("plugins.modules.purefa_policy.PolicyrulequotapatchRules")
+    @patch("plugins.modules.purefa_policy.human_to_bytes", return_value=107374182400)
+    @patch("plugins.modules.purefa_policy.patch_with_context")
+    @patch("plugins.modules.purefa_policy.get_with_context")
+    @patch("plugins.modules.purefa_policy.LooseVersion", side_effect=LooseVersion)
+    def test_quota_rule_enforced_change_patches_enforced_field(
+        self, mock_lv, mock_get, mock_patch, mock_h2b, mock_rules, mock_check
+    ):
+        mock_module = Mock()
+        mock_module.params = {
+            "name": "quota_policy",
+            "policy": "quota",
+            "enabled": True,
+            "quota_limit": "100G",
+            "quota_enforced": False,
+            "quota_notifications": [],
+            "rule_name": "quota_policy.1",
+            "directory": None,
+            "ignore_usage": False,
+            "context": "",
+        }
+        mock_module.check_mode = False
+        mock_array = Mock()
+        mock_array.get_rest_version.return_value = "2.38"
+        mock_policy = Mock()
+        mock_policy.enabled = True
+        rule = Mock()
+        rule.name = "quota_policy.1"
+        rule.enforced = True
+        rule.quota_limit = 107374182400
+        rule.notifications = ""
+        mock_get.side_effect = _by_method(
+            {
+                "get_policies_quota": Mock(status_code=200, items=[mock_policy]),
+                "get_policies_quota_rules": Mock(status_code=200, items=[rule]),
+            }
+        )
+        mock_patch.return_value = Mock(status_code=200)
+
+        update_policy(mock_module, mock_array, "2.38", False)
+
+        mock_patch.assert_called_once()
+        mock_rules.assert_called_once_with(
+            enforced=False, quota_limit=107374182400, notifications=""
+        )
+        mock_module.exit_json.assert_called_once_with(changed=True)
+
+
+class TestUpdateNfsVersionNeedsRules:
+    """The policy-level nfs_version PATCH fails on a policy without rules
+    ("No rules found in the policy to update"); the first rule carries
+    nfs_version itself, so the PATCH only happens once rules exist
+    """
+
+    def _module(self):
+        mock_module = Mock()
+        mock_module.check_mode = False
+        mock_module.params = {
+            "name": "nfs_policy1",
+            "policy": "nfs",
+            "enabled": True,
+            "context": "",
+            "client": None,
+            "nfs_access": None,
+            "nfs_permission": None,
+            "nfs_version": ["nfsv4"],
+            "user_mapping": None,
+            "security": None,
+            "directory": None,
+        }
+        return mock_module
+
+    def _array(self, rules):
+        mock_array = Mock()
+        mock_array.get_rest_version.return_value = "2.38"
+        mock_policy = Mock()
+        mock_policy.enabled = True
+        mock_policy.user_mapping_enabled = False
+        mock_policy.nfs_version = []
+        mock_array.get_policies_nfs.return_value = Mock(
+            status_code=200, items=[mock_policy]
+        )
+        mock_array.get_policies_nfs_client_rules.return_value = Mock(
+            status_code=200, items=rules
+        )
+        mock_array.get_directories_policies_nfs.return_value = Mock(
+            status_code=200, items=[]
+        )
+        mock_array.patch_policies_nfs.return_value = Mock(status_code=200)
+        return mock_array
+
+    @patch("plugins.modules.purefa_policy.LooseVersion", side_effect=LooseVersion)
+    def test_no_rules_skips_nfs_version_patch(self, mock_lv):
+        mock_module = self._module()
+        mock_array = self._array(rules=[])
+
+        update_policy(mock_module, mock_array, "2.38", False)
+
+        mock_array.patch_policies_nfs.assert_not_called()
+        mock_module.exit_json.assert_called_once_with(changed=False)
+
+    @patch("plugins.modules.purefa_policy.PolicyNfsPatch")
+    @patch("plugins.modules.purefa_policy.LooseVersion", side_effect=LooseVersion)
+    def test_with_rules_patches_nfs_version(self, mock_lv, mock_nfs_patch):
+        mock_module = self._module()
+        rule = Mock()
+        rule.client = "*"
+        mock_array = self._array(rules=[rule])
+
+        update_policy(mock_module, mock_array, "2.38", False)
+
+        mock_nfs_patch.assert_called_once_with(nfs_version=["nfsv4"])
+        mock_array.patch_policies_nfs.assert_called_once()
+        mock_module.exit_json.assert_called_once_with(changed=True)
+
+    @patch("plugins.modules.purefa_policy.LooseVersion", side_effect=LooseVersion)
+    def test_with_rules_and_matching_version_is_noop(self, mock_lv):
+        mock_module = self._module()
+        rule = Mock()
+        rule.client = "*"
+        mock_array = self._array(rules=[rule])
+        list(mock_array.get_policies_nfs.return_value.items)[0].nfs_version = ["nfsv4"]
+
+        update_policy(mock_module, mock_array, "2.38", False)
+
+        mock_array.patch_policies_nfs.assert_not_called()
+        mock_module.exit_json.assert_called_once_with(changed=False)

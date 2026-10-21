@@ -186,7 +186,7 @@ class TestLookups:
 
 class TestCreateTgroup:
     @patch("plugins.modules.purefa_tgroup.add_members")
-    @patch("plugins.modules.purefa_tgroup.check_response")
+    @patch("plugins.modules.purefa_tgroup.fail_on_error")
     @patch("plugins.modules.purefa_tgroup.post_with_context")
     def test_create_tgroup_with_parent_and_members(
         self,
@@ -224,7 +224,7 @@ class TestCreateTgroup:
 
 class TestUpdateTgroup:
     @patch("plugins.modules.purefa_tgroup.add_members")
-    @patch("plugins.modules.purefa_tgroup.check_response")
+    @patch("plugins.modules.purefa_tgroup.fail_on_error")
     @patch("plugins.modules.purefa_tgroup.patch_with_context")
     @patch("plugins.modules.purefa_tgroup.rename_exists", return_value=False)
     def test_update_tgroup_rename_move_and_add_members(
@@ -269,7 +269,7 @@ class TestUpdateTgroup:
         mock_module.exit_json.assert_called_once_with(changed=True)
 
     @patch("plugins.modules.purefa_tgroup.add_members")
-    @patch("plugins.modules.purefa_tgroup.check_response")
+    @patch("plugins.modules.purefa_tgroup.fail_on_error")
     @patch("plugins.modules.purefa_tgroup.patch_with_context")
     def test_update_tgroup_move_only_includes_topology_group_body(
         self,
@@ -387,3 +387,122 @@ class TestMain:
             [],
         )
         mock_module.exit_json.assert_called_once_with(changed=False)
+
+    @patch("plugins.modules.purefa_tgroup.create_tgroup")
+    @patch("plugins.modules.purefa_tgroup.rename_exists", return_value=True)
+    @patch("plugins.modules.purefa_tgroup.validate_inputs")
+    @patch("plugins.modules.purefa_tgroup.get_tgroup", return_value=None)
+    @patch("plugins.modules.purefa_tgroup.check_fleet_membership")
+    @patch("plugins.modules.purefa_tgroup.check_api_version")
+    @patch("plugins.modules.purefa_tgroup.get_array")
+    @patch("plugins.modules.purefa_tgroup.AnsibleModule")
+    def test_main_rename_repeat_is_unchanged(
+        self,
+        mock_ansible_module,
+        mock_get_array,
+        _mock_check_api_version,
+        _mock_check_fleet,
+        _mock_get_tgroup,
+        _mock_validate_inputs,
+        _mock_rename_exists,
+        mock_create_tgroup,
+    ):
+        """A rename whose target already exists reports no change, not a failure"""
+        mock_module = Mock()
+        mock_module.params = {
+            "name": "old-tg",
+            "state": "present",
+            "rename": "new-tg",
+            "parent": None,
+            "array": [],
+            "tgroup": [],
+            "context": "",
+        }
+        mock_module.exit_json.side_effect = SystemExit(0)
+        mock_ansible_module.return_value = mock_module
+        mock_get_array.return_value = Mock()
+
+        try:
+            main()
+        except SystemExit:
+            pass
+
+        mock_create_tgroup.assert_not_called()
+        mock_module.exit_json.assert_called_once_with(changed=False)
+
+
+class TestErrorReporting:
+    """Errors must show every message and context, not only errors[0].message"""
+
+    def test_error_text_uses_context_when_message_is_none(self):
+        from plugins.modules.purefa_tgroup import _error_text
+
+        res = SimpleNamespace(
+            status_code=400,
+            errors=[SimpleNamespace(message=None, context="Array is not in a fleet")],
+        )
+
+        assert _error_text(res) == "Array is not in a fleet"
+
+    def test_error_text_joins_all_errors(self):
+        from plugins.modules.purefa_tgroup import _error_text
+
+        res = SimpleNamespace(
+            status_code=400,
+            errors=[
+                SimpleNamespace(message="Invalid name", context="names"),
+                SimpleNamespace(message=None, context="second problem"),
+            ],
+        )
+
+        assert _error_text(res) == "Invalid name (names); second problem"
+
+    def test_fail_on_error_reports_full_detail(self):
+        from plugins.modules.purefa_tgroup import fail_on_error
+
+        mock_module = Mock()
+        res = SimpleNamespace(
+            status_code=400,
+            errors=[SimpleNamespace(message=None, context="Array is not in a fleet")],
+        )
+
+        fail_on_error(res, mock_module, "Failed to create topology group tg")
+
+        mock_module.fail_json.assert_called_once()
+        msg = mock_module.fail_json.call_args[1]["msg"]
+        assert "Array is not in a fleet" in msg
+        assert "None" not in msg
+
+    def test_fail_on_error_ignores_success(self):
+        from plugins.modules.purefa_tgroup import fail_on_error
+
+        mock_module = Mock()
+
+        fail_on_error(SimpleNamespace(status_code=200), mock_module, "op")
+
+        mock_module.fail_json.assert_not_called()
+
+
+class TestFleetMembership:
+    def test_array_outside_fleet_fails_early(self):
+        from plugins.modules.purefa_tgroup import check_fleet_membership
+
+        mock_module = Mock()
+        mock_array = Mock()
+        mock_array.get_fleets.return_value = Mock(status_code=200, items=[])
+
+        check_fleet_membership(mock_module, mock_array)
+
+        mock_module.fail_json.assert_called_once()
+        assert "fleet" in mock_module.fail_json.call_args[1]["msg"]
+
+    def test_fleet_member_passes(self):
+        from plugins.modules.purefa_tgroup import check_fleet_membership
+
+        mock_module = Mock()
+        mock_array = Mock()
+        mock_array.get_fleets.return_value = Mock(status_code=200, items=[Mock()])
+
+        check_fleet_membership(mock_module, mock_array)
+
+        mock_module.fail_json.assert_not_called()

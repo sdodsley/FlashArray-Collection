@@ -129,7 +129,7 @@ def main():
     module = AnsibleModule(argument_spec, supports_check_mode=True)
 
     state = module.params["state"]
-    if 5 < module.params["timeout"] > 180 and module.params["timeout"] != 0:
+    if module.params["timeout"] != 0 and not 5 <= module.params["timeout"] <= 180:
         module.fail_json(msg="Timeout value must be between 5 and 180 minutes")
     module.params["timeout"] = module.params["timeout"] * 60000
     if not HAS_PURESTORAGE:

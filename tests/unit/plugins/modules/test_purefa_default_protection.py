@@ -319,3 +319,54 @@ class TestUpdateDefault:
         update_default(mock_module, mock_array, current_default)
 
         mock_module.exit_json.assert_called_once_with(changed=True)
+
+
+class TestPodScopePayload:
+    """Pod-scope delete must send a ContainerDefaultProtection model"""
+
+    @patch("plugins.modules.purefa_default_protection.flasharray")
+    @patch("plugins.modules.purefa_default_protection.get_with_context")
+    def test_delete_default_pod_scope_sends_model(self, mock_get, mock_flasharray):
+        mock_module = Mock()
+        mock_module.check_mode = False
+        mock_module.params = {
+            "scope": "pod",
+            "name": ["pg1"],
+            "pod": "test-pod",
+            "context": "",
+        }
+        mock_get.return_value = Mock(status_code=200)
+
+        delete_default(mock_module, Mock())
+
+        mock_flasharray.ContainerDefaultProtection.assert_called_once_with(
+            name="test-pod", type="pod", default_protections=[]
+        )
+        assert (
+            mock_get.call_args[1]["container_default_protection"]
+            is mock_flasharray.ContainerDefaultProtection.return_value
+        )
+        assert mock_get.call_args[1]["names"] == ["test-pod"]
+        mock_module.exit_json.assert_called_once_with(changed=True)
+
+
+class TestUpdateDefaultOrdering:
+    """The current list arrives in array order, not sorted"""
+
+    def test_update_default_no_change_with_unsorted_current(self):
+        mock_module = Mock()
+        mock_module.check_mode = False
+        mock_module.params = {
+            "scope": "array",
+            "name": ["pg1", "pg2"],
+            "state": "present",
+            "context": "",
+        }
+        first = Mock()
+        first.name = "pg2"
+        second = Mock()
+        second.name = "pg1"
+
+        update_default(mock_module, Mock(), [first, second])
+
+        mock_module.exit_json.assert_called_once_with(changed=False)

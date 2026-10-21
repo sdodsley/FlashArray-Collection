@@ -116,7 +116,7 @@ class TestEnableVnc:
 
         enable_vnc(mock_module, mock_array, mock_app)
 
-        mock_module.exit_json.assert_called_once_with(changed=False, vnc=[])
+        mock_module.exit_json.assert_called_once_with(changed=False, vnc={})
         mock_array.patch_apps.assert_not_called()
 
     def test_enable_vnc_check_mode(self):
@@ -130,7 +130,7 @@ class TestEnableVnc:
 
         enable_vnc(mock_module, mock_array, mock_app)
 
-        mock_module.exit_json.assert_called_once_with(changed=True, vnc=[])
+        mock_module.exit_json.assert_called_once_with(changed=True, vnc={})
         mock_array.patch_apps.assert_not_called()
 
     def test_enable_vnc_success(self):
@@ -172,3 +172,35 @@ class TestEnableVnc:
         enable_vnc(mock_module, mock_array, mock_app)
 
         mock_module.fail_json.assert_called_once()
+
+
+class TestMainDeprecatedPurity:
+    """On REST >= 2.36 the app name is validated before the deprecation exit"""
+
+    @patch("plugins.modules.purefa_vnc.check_response")
+    @patch("plugins.modules.purefa_vnc.get_array")
+    @patch("plugins.modules.purefa_vnc.AnsibleModule")
+    def test_unknown_app_is_still_validated(
+        self, mock_ansible_module, mock_get_array, mock_check_response
+    ):
+        import pytest
+        from plugins.modules.purefa_vnc import main
+
+        mock_module = Mock()
+        mock_module.params = {"name": "no-such-app", "state": "present"}
+        mock_module.exit_json.side_effect = SystemExit(0)
+        mock_ansible_module.return_value = mock_module
+        mock_array = Mock()
+        mock_array.get_rest_version.return_value = "2.38"
+        missing = Mock(status_code=400)
+        mock_array.get_apps.return_value = missing
+        mock_get_array.return_value = mock_array
+
+        with pytest.raises(SystemExit):
+            main()
+
+        mock_array.get_apps.assert_called_once_with(names=["no-such-app"])
+        assert mock_check_response.call_args[0][0] is missing
+        # The unchanged return value is a dict, as documented
+        mock_module.exit_json.assert_called_once_with(changed=False, vnc={})
+        mock_array.patch_apps.assert_not_called()

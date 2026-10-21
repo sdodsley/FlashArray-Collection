@@ -170,3 +170,100 @@ class TestAdminNoChange:
         main()
 
         mock_module.exit_json.assert_called_once_with(changed=False)
+
+
+def _run_main(params, current):
+    """Run main() against mocked current admin settings, returning the mocks"""
+    mock_module = Mock()
+    mock_module.check_mode = False
+    mock_module.params = params
+    mock_module.fail_json.side_effect = SystemExit(1)
+    mock_array = Mock()
+    mock_array.get_rest_version.return_value = "2.3"
+    mock_array.get_admins_settings.return_value = Mock(items=[current])
+    mock_array.patch_admins_settings.return_value = Mock(status_code=200)
+    with patch(
+        "plugins.modules.purefa_admin.AnsibleModule", return_value=mock_module
+    ), patch("plugins.modules.purefa_admin.get_array", return_value=mock_array), patch(
+        "plugins.modules.purefa_admin.LooseVersion", side_effect=float
+    ), patch(
+        "plugins.modules.purefa_admin.AdminSettings"
+    ) as mock_settings:
+        main()
+    return mock_module, mock_array, mock_settings
+
+
+def _current(sso=False, min_password=1, lockout=None, max_login=None):
+    """Current admin settings; the array omits unset lockout and max_login"""
+    spec = ["single_sign_on_enabled", "min_password_length"]
+    if lockout is not None:
+        spec.append("lockout_duration")
+    if max_login is not None:
+        spec.append("max_login_attempts")
+    current = Mock(spec=spec)
+    current.single_sign_on_enabled = sso
+    current.min_password_length = min_password
+    if lockout is not None:
+        current.lockout_duration = lockout
+    if max_login is not None:
+        current.max_login_attempts = max_login
+    return current
+
+
+class TestAdminLockoutClear:
+    """lockout: 0 clears an existing lockout duration"""
+
+    def test_zero_clears_existing_lockout(self):
+        params = {"sso": None, "max_login": None, "min_password": 1, "lockout": 0}
+        mock_module, mock_array, mock_settings = _run_main(
+            params, _current(lockout=300000)
+        )
+
+        mock_module.exit_json.assert_called_once_with(changed=True)
+        mock_array.patch_admins_settings.assert_called_once()
+        assert mock_settings.call_args[1]["lockout_duration"] == 0
+
+    def test_zero_on_unset_lockout_is_no_change(self):
+        params = {"sso": None, "max_login": None, "min_password": 1, "lockout": 0}
+        mock_module, mock_array, dummy = _run_main(params, _current())
+
+        mock_module.exit_json.assert_called_once_with(changed=False)
+        mock_array.patch_admins_settings.assert_not_called()
+
+    def test_zero_passes_range_check(self):
+        params = {"sso": None, "max_login": None, "min_password": 1, "lockout": 0}
+        mock_module, dummy, dummy2 = _run_main(params, _current())
+
+        mock_module.fail_json.assert_not_called()
+
+    def test_existing_lockout_is_kept_when_omitted(self):
+        params = {"sso": True, "max_login": None, "min_password": 1, "lockout": None}
+        mock_module, dummy, mock_settings = _run_main(params, _current(lockout=300000))
+
+        mock_module.exit_json.assert_called_once_with(changed=True)
+        assert mock_settings.call_args[1]["lockout_duration"] == 300000
+
+
+class TestAdminSso:
+    """sso is tri-state so that false can switch Single Sign-On off"""
+
+    def test_false_disables_sso(self):
+        params = {"sso": False, "max_login": None, "min_password": 1, "lockout": None}
+        mock_module, mock_array, mock_settings = _run_main(params, _current(sso=True))
+
+        mock_module.exit_json.assert_called_once_with(changed=True)
+        assert mock_settings.call_args[1]["single_sign_on_enabled"] is False
+
+    def test_omitted_leaves_sso_alone(self):
+        params = {"sso": None, "max_login": None, "min_password": 1, "lockout": None}
+        mock_module, mock_array, dummy = _run_main(params, _current(sso=True))
+
+        mock_module.exit_json.assert_called_once_with(changed=False)
+        mock_array.patch_admins_settings.assert_not_called()
+
+    def test_true_enables_sso(self):
+        params = {"sso": True, "max_login": None, "min_password": 1, "lockout": None}
+        mock_module, dummy, mock_settings = _run_main(params, _current(sso=False))
+
+        mock_module.exit_json.assert_called_once_with(changed=True)
+        assert mock_settings.call_args[1]["single_sign_on_enabled"] is True

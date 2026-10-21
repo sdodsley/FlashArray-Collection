@@ -241,7 +241,6 @@ try:
         ProtectionGroupSnapshotPatch,
         VolumePost,
         Reference,
-        FixedReference,
         DestroyedPatchPost,
     )
 except ImportError:
@@ -533,7 +532,8 @@ def create_pgsnapshot(module, array):
         snap_data = list(res.items)[0]
     module.exit_json(
         changed=changed,
-        suffix=snap_data.suffix,
+        # In check mode nothing was created, so report the requested suffix
+        suffix=snap_data.suffix if snap_data is not None else module.params["suffix"],
     )
 
 
@@ -596,9 +596,10 @@ def restore_pgsnapvolume(module, array):
     if not module.check_mode:
         if LooseVersion(DEFAULT_API) <= LooseVersion(array.get_rest_version()):
             if module.params["add_to_pgs"]:
-                add_to_pgs = []
-                for add_pg in module.params["add_to_pgs"]:
-                    add_to_pgs.append(FixedReference(name=add_pg))
+                # Reference objects without an id crash inside the SDK
+                # (_process_references reads ref.id, which raises
+                # AttributeError), so pass the protection group names
+                # straight to the add_to_protection_group_names parameter
                 res = post_with_context(
                     array,
                     "post_volumes",
@@ -607,7 +608,7 @@ def restore_pgsnapvolume(module, array):
                     names=[module.params["target"]],
                     volume=VolumePost(source=Reference(name=source_volume)),
                     with_default_protection=module.params["with_default_protection"],
-                    add_to_protection_groups=add_to_pgs,
+                    add_to_protection_group_names=module.params["add_to_pgs"],
                 )
             else:
                 if module.params["overwrite"]:
@@ -623,10 +624,17 @@ def restore_pgsnapvolume(module, array):
                         overwrite=module.params["overwrite"],
                     )
                 elif LooseVersion(CONTEXT_API_VERSION) <= LooseVersion(api_version):
-                    res = array.post_volumes(
+                    res = post_with_context(
+                        array,
+                        "post_volumes",
+                        CONTEXT_API_VERSION,
+                        module,
                         names=[module.params["target"]],
                         volume=VolumePost(source=Reference(name=source_volume)),
                         overwrite=module.params["overwrite"],
+                        with_default_protection=module.params[
+                            "with_default_protection"
+                        ],
                     )
                 else:
                     res = array.post_volumes(
